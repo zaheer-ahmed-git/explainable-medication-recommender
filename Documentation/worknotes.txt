@@ -1,0 +1,41 @@
+"""Build model-ready tables for the medical recommendation module.
+
+The main artifact is a patient-condition-medication table: patient_id, condition, medication, label_prescribed, ...
+
+Rows are created by pairing each observed patient condition with the medications that are plausible candidates for that condition, 
+based on medications observed for the same indication in the source data. Observed prescriptions are positive labels; unobserved 
+condition-specific candidates are negative labels.
+
+Outcome columns are merged as patient-level historical summaries. Treat them as
+evaluation/risk context unless you later add temporal cutoffs, because outcomes
+can occur after the medication start date.
+"""
+
+
+"""Train and evaluate a baseline ML medication ranking model.
+
+The model treats each row in patient_condition_medication.csv as a candidate:
+
+    patient + condition + medication -> probability medication is prescribed
+
+It trains a simple logistic SGD classifier and evaluates the output as a
+ranking problem within each patient-condition group.
+"""
+
+
+"""Two-stage medication recommender using XGBoost.
+
+Stage 1: candidate generation
+    Retrieve medication candidates for a condition from observed condition-medication
+    frequencies in patient_condition_medication.csv.
+
+Stage 2: ranking
+    Score each patient-condition-medication candidate using patient context
+    features, then return top-k medications.
+
+This script works with the existing processed CSV:
+
+    Datasets/processed/patient_condition_medication.csv
+
+No extra training CSV is required.
+"""
