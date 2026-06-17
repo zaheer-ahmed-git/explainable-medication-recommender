@@ -1,0 +1,9 @@
+# Default repository owner inferred from the GitHub remote.
+* @NxtGen-Dev-ZAH
+
+# Research documentation and agent guidance.
+*.md @NxtGen-Dev-ZAH
+Documentation/ @NxtGen-Dev-ZAH
+.agents/ @NxtGen-Dev-ZAH
+.codex/ @NxtGen-Dev-ZAH
+.cursor/ @NxtGen-Dev-ZAH

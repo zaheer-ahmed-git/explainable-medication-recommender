@@ -1,0 +1,17 @@
+# Licensed clinical data must not be exposed to AI context.
+Dataset/
+
+# Secrets and credentials.
+.env
+.env.*
+*.key
+*.pem
+credentials.json
+secrets.json
+
+# Generated model artifacts may contain derived patient-level information.
+Models/
+models/
+artifacts/
+*.pkl
+*.joblib

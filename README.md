@@ -1,177 +1,145 @@
-## ResearchModule: Explainable Medication Recommendation Pipeline
+# Explainable Conversational Medication Recommender
 
-End-to-end research prototype for building a medication recommendation system from synthetic EHR data.  
-The current codebase includes data preprocessing, a baseline ML ranking model, and an XGBoost-based ranker.
+Research foundation for a clinician-facing medication recommendation system
+that combines conversational clinical understanding, hybrid
+Transformer-GNN ranking, and grounded explanations.
 
-## Project Goal
+The central research question is:
 
-Build a model that uses patient context (condition, diagnoses, labs, demographics, comorbidity features) to rank likely medications for each patient-condition pair, with a path toward explainable and conversational clinical decision support.
+> How can a medical conversational recommender generate medication rankings
+> that are accurate, faithful, grounded, and clinically understandable?
+
+This repository is research software. It is not a medical device, does not
+prescribe medication, and must not replace professional clinical judgment.
 
 ## Current Status
 
-- Data preprocessing pipeline implemented
-- Patient-level train/valid/test splitting implemented
-- Baseline medication ranker implemented (`SGDClassifier` logistic loss)
-- Advanced medication ranker implemented (`XGBoost`)
-- Ranking metrics and artifact export implemented
+The repository is currently in the data-foundation and architecture stage.
 
-## Repository Structure
+- The research objective and target architecture are documented.
+- Licensed MIMIC-IV v3.1, MIMIC-IV-Note v2.2, and eICU-CRD v2.0 data are
+  available locally under the ignored `Dataset/` directory.
+- A previous synthetic preprocessing and ranking prototype is retained in the
+  ignored `DepreciatedCode/` directory for reference.
+- Python dependencies for analysis, DuckDB processing, baseline modeling, and
+  testing are declared in `pyproject.toml`.
+- The active `pipeline/`, `tests/`, and notebook implementation described in
+  the roadmap has not yet been rebuilt in the current working tree.
 
-- `data_preprocessing.py`  
-  Builds model-ready artifacts from raw CSVs.
-- `medication_ranking_model.py`  
-  Baseline ML medication ranking model (linear SGD logistic classifier).
-- `xgboost_medication_ranker.py`  
-  Two-stage recommendation pipeline with XGBoost ranking.
-- `DataAnalysis.ipynb`  
-  EDA and visualization notebook.
-- `Datasets/`  
-  Raw synthetic EHR source files and generated images.
-- `Datasets/processed/`  
-  Generated training tables and preprocessing report.
-- `Documentation/`  
-  Research notes and architecture docs.
+Do not interpret the poster's illustrative medication table or planned system
+diagram as a clinically validated implementation.
 
-## Data Flow
+## Target System
 
-Raw tables:
+The proposed system has four cooperating layers:
 
-- `patients.csv`
-- `diagnoses.csv`
-- `lab_results.csv`
-- `medications.csv`
-- `outcomes.csv`
+1. **Conversational understanding:** an LLM extracts a structured patient
+   profile from clinical dialogue, notes, and structured EHR fields.
+2. **Hybrid recommendation:** a Transformer models patient-context and temporal
+   interactions while a heterogeneous GNN models patient, diagnosis,
+   medication, laboratory, and knowledge relations.
+3. **Grounded explainability:** local attribution, graph evidence, clinical
+   rules, uncertainty, and provenance are assembled before an LLM verbalizes
+   the evidence.
+4. **Clinician review:** ranked medication candidates are presented with
+   rationale, warnings, uncertainty, and an audit trail.
 
-Preprocessing outputs:
+Recommendation generation and explanation generation remain separate so that
+the explanation is tied to actual model evidence instead of a plausible
+free-form narrative.
 
-- `Datasets/processed/patient_features.csv`
-- `Datasets/processed/patient_condition_medication.csv`
-- `Datasets/processed/preprocessing_report.json`
+See [ARCHITECTURE.md](ARCHITECTURE.md) for boundaries and
+[Documentation/DataFoundationRoadmap.md](Documentation/DataFoundationRoadmap.md)
+for the implementation sequence.
 
-Model outputs:
+## Data Strategy
 
-- Baseline model output directory (default): `Models/medication_ranker/`
-- XGBoost model output directory (default): `Models/xgboost_medication_ranker/`
+The project uses:
 
-## Modeling Approach
+- **MIMIC-IV v3.1** for deep single-center hospital and ICU development data.
+- **MIMIC-IV-Note v2.2** for de-identified discharge and radiology text.
+- **eICU-CRD v2.0** for multi-center ICU data and external validation.
 
-### 1) Candidate training table
+The preferred evaluation design is development on MIMIC-IV and external
+validation on eICU after careful schema and vocabulary harmonization. Pooled
+training is optional and must not be attempted until concept coverage, units,
+cohort definitions, and label semantics are demonstrably compatible.
 
-`data_preprocessing.py` constructs rows of:
+Raw PhysioNet data is licensed and must never be committed or redistributed.
 
-`patient_id + condition + medication -> label_prescribed`
+## Planned Data Product
 
-- Positive label (`1`): medication observed for that patient-condition
-- Negative label (`0`): medication is condition-plausible but not observed for that patient
+The main modeling artifact is a candidate-ranking table with one row per:
 
-### 2) Baseline ranker
+```text
+patient/stay + condition + candidate medication
+```
 
-`medication_ranking_model.py`:
+Each row should include a prescription label, pre-decision patient context,
+source and cohort provenance, a deterministic patient-level split, and explicit
+temporal boundaries. Observed prescribing is a historical label, not proof that
+a medication is clinically optimal.
 
-- Uses sklearn pipeline (imputation + encoding + scaling + SGD classifier)
-- Predicts prescription probability per candidate row
-- Ranks medications within each `patient_id + condition` group
+## Repository Guide
 
-### 3) XGBoost ranker
+- `Documentation/ResearchDetail.md`: current research framing and contribution.
+- `Documentation/DataFoundationRoadmap.md`: phased implementation plan.
+- `Documentation/PosterPresentationGuide.md`: poster explanation and Q&A.
+- `Documentation/SimilarPapers.md`: related-work notes.
+- `FinalPosterCDS.pdf`: research poster.
+- `ARCHITECTURE.md`: system and data architecture.
+- `WORKFLOWS.md`: repeatable development and research workflows.
+- `TESTING.md`: verification strategy.
+- `CODE_REVIEW.md`: review checklist.
+- `AGENTS.md`: durable instructions for coding agents.
+- `.agents/skills/`: reusable repository workflows.
 
-`xgboost_medication_ranker.py`:
+Local-only directories:
 
-- Builds candidate catalog from observed positives
-- Trains `XGBClassifier` for candidate scoring
-- Produces top-k recommendations and scored candidate outputs
+- `Dataset/`: licensed source data and generated data artifacts.
+- `DepreciatedCode/`: synthetic prototype and historical artifacts.
 
-## Evaluation Metrics
+## Environment
 
-Implemented metrics include:
-
-- Binary metrics:
-  - `average_precision`
-  - `roc_auc`
-- Ranking metrics (per patient-condition group):
-  - `precision@k`
-  - `recall@k`
-  - `hit_rate@k`
-  - `ndcg@k`
-  - `mrr@k`
-
-## Environment Setup (uv)
-
-This project uses `uv` for dependency management and execution.
-
-1. Install dependencies:
+This project uses Python 3.13 and `uv` exclusively.
 
 ```powershell
 uv sync
+uv run ruff check .
 ```
 
-2. Run scripts with:
+When active tests exist:
 
 ```powershell
-uv run <script>.py
+uv run pytest
 ```
 
-## How to Run
+Do not use `pip`, Poetry, Conda, global Python, or system site-packages.
 
-### Step 1: Build processed training data
+## Working Principles
 
-```powershell
-uv run data_preprocessing.py --data-dir Datasets --output-dir Datasets/processed
-```
+- Plan before risky or multi-file changes.
+- Use bounded DuckDB queries or chunked readers for large compressed tables.
+- Split by patient and apply temporal cutoffs before modeling.
+- Keep source-specific extraction separate from harmonization.
+- Log cohort, feature, label, split, and model provenance.
+- Use synthetic fixtures in tests.
+- Review the diff, verification results, data-safety implications, and research
+  claims before merging.
 
-Optional controls:
+## Research References
 
-- `--max-candidates-per-condition` (default: `20`; use `0` for all)
-- `--min-candidate-count` (default: `5`)
+The project direction and related-work notes are maintained in
+`Documentation/ResearchDetail.md` and `Documentation/SimilarPapers.md`.
+Dataset users must also cite the official MIMIC-IV, MIMIC-IV-Note, and eICU-CRD
+publications and comply with their PhysioNet data-use agreements.
 
-### Step 2: Train baseline medication ranker
+## Security and Contributions
 
-Quick experiment:
+Read [SECURITY.md](SECURITY.md) before handling clinical data or reporting a
+vulnerability. Contribution expectations are in
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-```powershell
-uv run medication_ranking_model.py --training-table Datasets/processed/patient_condition_medication.csv --output-dir Models/medication_ranker_quick --max-rows 50000
-```
-
-Full run:
-
-```powershell
-uv run medication_ranking_model.py --training-table Datasets/processed/patient_condition_medication.csv --output-dir Models/medication_ranker
-```
-
-### Step 3: Train XGBoost medication ranker
-
-```powershell
-uv run xgboost_medication_ranker.py --training-table Datasets/processed/patient_condition_medication.csv --output-dir Models/xgboost_medication_ranker
-```
-
-## Leakage Controls
-
-By default, modeling scripts exclude potentially leaky features:
-
-- `medication_*` history features
-- `outcome_*` features
-- `candidate_*` popularity features
-
-You can enable them explicitly via CLI flags for ablation studies, but keep defaults for cleaner baseline reporting.
-
-## Example Artifacts
-
-- `Datasets/processed/preprocessing_report.json`: table-level stats and split counts
-- `metrics.json`: current baseline metric snapshot
-- `Models/.../model.pkl`: serialized model pipeline and metadata
-- `Models/.../scored_candidates.csv`: candidate-level scores
-- `Models/.../top_recommendations.csv` (XGBoost): top-k recommendations per patient-condition
-
-## Research Direction
-
-This repository currently covers the structured-data recommendation core.  
-Planned work includes:
-
-- stronger benchmark comparisons (random/popularity baselines)
-- per-condition evaluation and calibration
-- explainability layer integration (feature attribution + evidence logging)
-- conversational/LLM integration for clinician-facing interaction
-
-## Notes
-
-- Dataset is synthetic and intended for research/education.
-- This system is decision-support oriented and not a replacement for clinical judgment.
+No open-source license has been selected for this repository. Unless a license
+is added by the maintainers, no permission to reuse or redistribute the code is
+granted.

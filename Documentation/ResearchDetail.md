@@ -69,8 +69,8 @@ The recommendation module is designed as a hybrid model that combines Transforme
 The best interpretation of this module is:
 
 - **Transformer models** capture feature interaction and long-range dependency modeling.
-- **GNN models** capture relational, semantic, structural, and similarity-based dependency modeling.
-- Both representations are combined to rank or predict clinically relevant treatment options.
+- **GNN models** capture relational, semantic, structural, and similarity-based dependency modeling.GNN propose Candidate medication based on the relationships .
+- Both representations are combined to rank the proposed candidate medications clinically relevant treatment options.
 
 This hybrid design allows the system to capture both deep contextual interactions and explicit relational dependencies that are important in medical decision-making.
 

@@ -56,9 +56,6 @@ This is much better than directly asking the LLM to invent an explanation.
 
 Existing conversational and recommendation-based AI systems in healthcare often lack faithful, grounded, and clinically interpretable explanation mechanisms. This work addresses that gap by proposing a hybrid medical recommender that combines conversational preference and patient-state understanding with Transformer- and GNN-based recommendation, and explains its outputs through LIME, knowledge-graph evidence, and rule-based reasoning.
 
-## Updated Contributions
-
-Your contributions can now be written like this:
 
 1. We propose a **modular explainable conversational medical recommender system for clinical decision support**, designed to assist domain experts in evaluating and prioritizing treatment options.
 
@@ -70,16 +67,12 @@ Your contributions can now be written like this:
 
 5. We evaluate the framework in terms of **recommendation quality**, **explanation faithfulness**, and **expert-oriented trustworthiness and usability**, focusing on how effectively the system supports professional decision-making.
 
-## Updated One-Paragraph Project Summary
+
 
 > This project aims to develop an explainable conversational medical recommender system for clinical decision support. Rather than serving as a patient-facing recommendation tool, the system is designed to assist healthcare professionals by organizing patient information, identifying clinically relevant patterns, generating treatment suggestions, and providing grounded explanations for those suggestions. An LLM-based conversational layer processes dialogue, case descriptions, and structured patient data to extract key clinical factors such as symptoms, diagnoses, history, and contextual constraints. A hybrid recommendation module then combines Transformer-based modeling of long-range clinical dependencies with Graph Neural Network modeling of semantic, structural, and similarity-based relations among medical entities to identify relevant treatment options. To ensure transparency and usefulness for the domain expert, the recommendation process is complemented by a grounded explainability layer that integrates LIME, medical knowledge graphs, and rule-based clinical reasoning. The overall goal is to support expert judgment with recommendations that are not only relevant, but also faithful, interpretable, and clinically understandable.
 
-## Updated Short Version
 
 > We propose an explainable conversational medical recommender system for clinical decision support, in which an LLM extracts structured clinical information, a hybrid Transformer-GNN recommendation module identifies relevant treatment options, and a grounded explainability layer justifies recommendations using LIME, knowledge graphs, and rule-based reasoning to assist domain experts.
 
-## Recommended Working Version for Now
-
-This is the version I think you should use as your current documented direction:
 
 > A modular explainable conversational medical recommender system for clinical decision support that uses LLM-based clinical information understanding, a hybrid Transformer-GNN recommendation module, and a grounded explanation layer based on LIME, knowledge graphs, and rule-based reasoning to generate transparent and expert-assisting treatment recommendations.

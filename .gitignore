@@ -5,11 +5,37 @@ build/
 dist/
 wheels/
 *.egg-info
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 
 # Virtual environments
-.venv
+.venv/
+.uv-cache/
 
-# Datasets
-Datasets/
+# Secrets and local configuration
+.env
+.env.*
+*.key
+*.pem
+credentials.json
+secrets.json
 
+# Licensed datasets and generated research artifacts
+Dataset/
+DepreciatedCode/
+Models/
+models/
+reports/
+artifacts/
+*.pkl
+*.joblib
+*.parquet
+*.feather
 
+# Notebook and editor state
+.ipynb_checkpoints/
+.DS_Store
+Thumbs.db

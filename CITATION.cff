@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use this research software, please cite it using this metadata."
+title: "Explainable Conversational Medication Recommender for Clinical Decision Support"
+type: software
+version: 0.1.0
+authors:
+  - family-names: "AHMAD"
+    given-names: "Adeel"
+    email: "adeel.ahmad@univ-littoral.fr"
+  - family-names: "AHMED"
+    given-names: "Zaheer"
+    email: "dev.zaheer.ahmad@gmail.com"
+repository-code: "https://github.com/NxtGen-Dev-ZAH/explainable-medication-recommender"
+keywords:
+  - clinical decision support
+  - medication recommendation
+  - explainable artificial intelligence
+  - transformer
+  - graph neural network

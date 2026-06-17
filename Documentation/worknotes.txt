@@ -1,4 +1,4 @@
-"""Build model-ready tables for the medical recommendation module.
+Build model-ready tables for the medical recommendation module.
 
 The main artifact is a patient-condition-medication table: patient_id, condition, medication, label_prescribed, ...
 
@@ -9,33 +9,198 @@ condition-specific candidates are negative labels.
 Outcome columns are merged as patient-level historical summaries. Treat them as
 evaluation/risk context unless you later add temporal cutoffs, because outcomes
 can occur after the medication start date.
-"""
 
 
-"""Train and evaluate a baseline ML medication ranking model.
 
 The model treats each row in patient_condition_medication.csv as a candidate:
 
-    patient + condition + medication -> probability medication is prescribed
+patient + condition + diagnosis + medication -> probability medication is prescribed
 
-It trains a simple logistic SGD classifier and evaluates the output as a
-ranking problem within each patient-condition group.
-"""
+After Reading similar Research Papers My findings :
 
+**LEADER** : Instead of treating patients as flat vectors or simple code sequences, represent the patient as a structured clinical knowledge graph.
 
-"""Two-stage medication recommender using XGBoost.
+LOST CONTEXT DUE TO VECTOR : When diseases occurred, Which disease came first, Relationships between diseases, Severity, Clinical context. Doesn't explicitly model medical relationships, Doesn't understand hierarchy, Doesn't capture rich medical semantics (meaning and Relationships).
 
-Stage 1: candidate generation
-    Retrieve medication candidates for a condition from observed condition-medication
-    frequencies in patient_condition_medication.csv.
+**cold-start problem (history is missing/no prior Information)**
+clinical structure, not just historical patterns.
 
-Stage 2: ranking
-    Score each patient-condition-medication candidate using patient context
-    features, then return top-k medications.
+**MGRN** : single-view approach drops structural context. It simultaneously analyzes the patient-to-drug relationship across three distinct views (Visit,Sequence,Token). Visit (Distinct Hos Admission), Sequence( Within a *single* admission, diagnoses and procedures are processed as an ordered sequence of codes), Token (maps individual medical tokens (e.g., a specific ICD-10 code for acute kidney injury) *directly* to specific drug tokens) **exact underlying symptom-to-chemical link**
 
-This script works with the existing processed CSV:
+**GAMENet** : medication combinations for patients using their multi-visit clinical history while explicitly minimizing harmful drug–drug interactions (DDIs) by incorporating a medical knowledge graph built from known drug interaction data. Predicts medications prescribed within the first 24 hours of admission. Integrating a DDI KG into recommendation through a GNN memory module
 
-    Datasets/processed/patient_condition_medication.csv
+**SafeDrug** recommends clinically effective and safer medication combinations by combining patient history with drug molecular structures and explicitly avoiding harmful drug–drug interactions (DDIs). **SMILES** (chemical structure) information. Extracts molecular substructures/fingerprints to understand drug properties at the chemical level. controlling DDIs through a dedicated loss
 
-No extra training CSV is required.
-"""
+- **GAMENet** focuses on leveraging patient history and a DDI graph to avoid unsafe combinations.
+- **SafeDrug** goes further by incorporating the **chemical structure of drugs (SMILES substructures)**, allowing the model to reason about drug properties in addition to interaction knowledge.
+
+**CausalMed** improves medication recommendation by modeling causal relationships among diagnoses, procedures, and medications within each patient visit, rather than relying only on correlations in historical EHR data. Patient Visit Data, Causal Graph Construction (Nodes represent diagnoses, procedures, and medications, Edges represent inferred causal relationships rather than simple co-occurrence. ), Graph-based Representation Learning. Aims for better generalization and explainability than purely correlation-based methods. Recommendation guided by cause-and-effect relationships among clinical events.
+
+**HypeMed**  modeling patients and clinical events as hypergraphs that capture higher-order relationships among multiple medical concepts simultaneously, while demonstrating stronger cross-dataset generalization on MIMIC-III, MIMIC-IV, and eICU.  
+Hypergraph Neural Network Encoder ( Learns patient representations from hypergraph structures, Captures higher-order dependencies among medical concepts, Aggregates information across visits and patients.) Medication Recommendation Module ( Uses learned hypergraph embeddings, Predicts the most appropriate medication combinations. )
+
+**KEHGCN** Hierarchical clinical structures within patient records and External medical knowledge beyond the observed EHR are imp for good recomm; KEHGCN improves medication recommendation by combining hierarchical hypergraph learning with external medical knowledge graphs, enabling richer modeling of complex clinical relationships and medically informed decision-making. 
+
+The hierarchy captures:
+
+- Concept-level relationships
+    - Disease–disease relationships
+    - Disease–procedure relationships
+    - Disease–medication relationships
+    - Procedure–medication relationships
+- Visit-level relationships ( similarities between visits )
+    - Disease progression
+    - Treatment evolution
+    - Changes in medication across visits
+    - Clinical trajectories
+- Patient-level relationships (Individuals are different irrespective of the treatment given)
+    - Similar patient populations
+    - Shared disease patterns
+    - Shared treatment strategies
+    - Population-level clinical knowledge
+
+### External Knowledge Graph Integration
+
+An external medical knowledge graph provides:
+
+- Disease–disease relationships
+- Disease–drug relationships
+- Drug–drug relationships
+- Medical ontology information
+
+This supplements information missing from EHR data.
+
+**HiRef (2025)** Limited interpretability HiRef improves medication recommendation by learning hierarchical and interpretable patient–drug representations from longitudinal EHR data and molecular drug structures while enforcing strict data standardization across MIMIC-III and MIMIC-IV. Curating the dataset through ICD-9 standardization, removal of single-visit patients, and exclusion of drugs lacking SMILES structures. 
+
+**PIE-Med** combines graph neural network–based medication recommendation with an LLM-powered explanation agent to generate both accurate medication predictions and human-readable clinical rationales. Limitation in explanation : Clinicians see a rationale but may not see the exact evidence trail. Posthoc The LLM explains the prediction after it is made. The paper focuses on interpretability rather than evidence provenance.
+
+Difference b/w pie med and our system
+
+PIE-Med focuses on generating understandable natural-language explanations for medication recommendations, whereas your framework aims to generate clinician-reviewable evidence chains by grounding every recommendation in feature attributions (LIME), knowledge-graph reasoning paths, clinical rules, and explicit provenance.
+
+**GraphCare** argues that healthcare prediction should combine:
+
+1. **Patient-specific clinical information**, and
+2. **External biomedical knowledge graphs**
+
+to produce more accurate and personalized predictions. Incorporating external medical knowledge into patient modeling.
+
+Patient EHR + Medical Knowledge Graph → Patient-Specific Knowledge Graph → Prediction
+KG=(V,E)  . V = medical entities, E = medical relationships 
+
+- Message Passing ⇒ hv = node embedding, N(v) = neighboring nodes, W= learnable parameters, σ = activation function
+
+!image.png
+
+zp=GNN(KGp)  zp = learned final patient embedding, KGp subset of knowledge graph enriched with patient features KGp=Retrieve(P,KG)
+
+**EGNet** combines attention-based patient representation learning, graph convolutional networks, external medical knowledge graphs, and DDI-aware graph modeling to generate safer and more explainable medication recommendations. The attention mechanism determines which clinical events are most important for representing the patient. Patient embedding: p=i∑αihi where αi is attention weight , hi is event embedding
+
+H(l+1)=σ(D~^−1/2A~D~^−1/2H(l)W(l)) 
+
+zp=GCN(p,KG,DDI)    ,    y^=σ(Wzp+b)\hat y = \sigma(Wz_p+b), y^=σ(Wzp+b)
+
+**Similarity-Based Explanation Module** : Similar patient cases, Similar graph neighborhoods, Similar medication patterns 
+
+!image.png
+
+EHR→Attention→GCN(KG,DDI)→Medication Recommendation→Similarity Explanation
+
+**KGDNet** combines admission-level knowledge graphs, graph neural networks, recurrent temporal modeling, and Transformer-style multi-head attention to recommend safe medications from longitudinal patient records while explicitly controlling drug-drug interactions
+
+EHR + Medical Ontologies + DDI Knowledge → Knowledge Graphs → GNN → Temporal Modeling → Attention-Based Recommendation
+
+Clinical KG : Patient + diagnosis + Procedure connected through semantic + ontological + clinical relations , Medical KG : drugs → disease relationship, DDI KG 
+(Relational Graph Convolutional Networks) 
+Clinical graphs contain multiple relation types.
+
+!image.png
+
+- R = relation types
+- Nir = neighbors under relation r
+- Wr = relation-specific weights
+
+**Gated Recurrent Unit** (GRU) networks are a type of recurrent neural network designed to handle sequential data while reducing the complexity of traditional RNNs
+
+ht=RNN(et,ht−1)
+
+**KindMed** enriches longitudinal EHR data with external medical knowledge graphs, learns relation-aware graph embeddings, models temporal clinical and medication evolution separately, and combines them through attentive prescribing for personalized medication recommendation.
+
+an attention-based "attentive prescribing" scheme over three representation
+vectors: history, progression, and current state
+
+EHR + External Medical Knowledge → Medical Knowledge Graphs → Relation-Aware Graph Learning → Hierarchical Sequence Learning → Attentive Prescribing → Medication Recommendation
+
+Inject external medical knowledge before temporal learning rather than after prediction.
+Ontology, Clinical, Semantic Relations
+
+KG=(V,E,R)
+
+- V = medical entities
+- E = edges
+- R = relation types
+
+!image.png
+
+Recommendation=f(KG,RelationAwareGNN,ClinicalRNN,MedicationRNN,Attention)
+
+Train the LLM to understand and verbalize knowledge graph structure before using it for conversational recommendation.
+
+GNNExplainer aims to identify the **minimal graph structure and node features** responsible for a prediction.
+
+- Identifying important nodes and edges.
+- Providing faithful explanations without retraining the model.
+- Explaining node, edge, and graph classification tasks.
+
+GNNExplainer explains GNN predictions by learning a compact subgraph and feature mask that maximally preserve the original model prediction.
+
+y^=f(G,X)
+
+where: G = graph, X = node features
+
+Graph Mask            MG           which selects important edges.
+
+Feature Mask          MX           which selects important features.
+
+The explanation graph becomes:
+
+Gs=G⊙MG
+
+where: ⊙  denotes masking.
+
+The key idea is maximizing mutual information:
+
+max⁡GsI(Y,Gs)
+
+where:
+
+- YYY = prediction
+- Gs = explanatory subgraph
+
+Find the smallest subgraph that retains the most information about the prediction
+
+### Fidelity
+
+How much prediction quality remains after keeping only explanatory components.
+
+Fidelity=f(Gs)−f(G)
+
+---
+
+### Sparsity
+
+How small the explanation is.
+
+Sparsity=∣Gs∣/∣G∣
+
+GNNExplainer identifies the minimal graph substructure and node features responsible for a GNN prediction by optimizing a sparse explanation mask that preserves the original prediction.
+
+LIME explains individual predictions by approximating the black-box model locally with a simple interpretable surrogate model.
+
+!image.png
+
+Local Fidelity : How closely the surrogate matches the original model.
+
+Fidelity=L(f,g,πx)
+
+Recommendation Engine → Prediction → LIME (Feature Attribution) +GNNExplainer (Graph Attribution) + Clinical Rules + Retrieved Evidence + KG Paths → LLM Explanation Engine → Clinician-Reviewable Explanation

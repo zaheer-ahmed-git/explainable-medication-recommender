@@ -1,0 +1,19 @@
+---
+description: Core safety and workflow rules for the medication recommender research repository
+alwaysApply: true
+---
+
+- Follow `AGENTS.md` and its referenced canonical documents.
+- Use `uv` exclusively for Python dependencies and execution.
+- Treat `Dataset/` as restricted licensed clinical data. Do not read or expose
+  raw rows, and never place them in chat, logs, fixtures, or version control.
+- Treat `DepreciatedCode/` as historical reference, not the active system.
+- Verify the current tree before repeating implementation claims from older
+  documentation.
+- For schema, cohort, label, or multi-file changes, plan first and implement one
+  milestone at a time.
+- Enforce patient-level splits and temporal cutoffs in modeling work.
+- Use synthetic fixtures for tests.
+- Run focused checks, inspect the diff, and report commands and results.
+- Update the README, architecture, roadmap, tests, workflows, and changelog when
+  their facts change.

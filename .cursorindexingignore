@@ -1,0 +1,28 @@
+# Local environments and caches.
+.venv/
+.uv-cache/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+__pycache__/
+
+# Licensed, generated, and historical material.
+Dataset/
+DepreciatedCode/
+Models/
+models/
+reports/
+artifacts/
+
+# Large or generated binary artifacts.
+*.pdf
+*.doc
+*.docx
+*.odt
+*.csv
+*.csv.gz
+*.parquet
+*.feather
+*.pkl
+*.joblib
+*.ipynb
