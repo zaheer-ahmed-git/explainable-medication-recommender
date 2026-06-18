@@ -247,17 +247,34 @@ Source integrity follow-up:
 
 ```powershell
 uv run python -m pipeline.source_integrity
+uv run python -m pipeline.source_integrity --all-manifest-files
 ```
 
-Latest local integrity run for the six profiling-blocked files:
+Latest full local integrity audit across all files listed in configured
+`SHA256SUMS.txt` manifests:
 
-- checksum status: 6 mismatched against local `SHA256SUMS.txt` manifests;
-- gzip integrity status: 6 failed;
-- generated artifact: ignored `reports/source_integrity_failed_tables.json`.
+- MIMIC-IV v3.1: 33 files checked; 29 checksum matches; 4 checksum
+  mismatches with gzip failures: `hosp/emar.csv.gz`,
+  `hosp/emar_detail.csv.gz`, `hosp/pharmacy.csv.gz`, and `hosp/poe.csv.gz`;
+- eICU-CRD v2.0: 32 files checked; 30 checksum matches; 2 checksum
+  mismatches with gzip failures: `carePlanGeneral.csv.gz` and
+  `nurseCharting.csv.gz`;
+- MIMIC-IV-Note v2.2: 5 manifest entries checked; 3 checksum matches; 2
+  manifest/layout reconciliations where `SHA256SUMS.txt` lists
+  `note/discharge_detail.csv.gz` and `note/radiology_detail.csv.gz`, while the
+  configured and locally present source files are the original uncompressed
+  `note/discharge_detail.csv` and `note/radiology_detail.csv`;
+- previously blocked `icu/chartevents.csv.gz` now matches the manifest and
+  passes gzip validation;
+- generated artifacts: ignored `reports/source_integrity_all_mimiciv.json`,
+  `reports/source_integrity_all_eicu_crd.json`, and
+  `reports/source_integrity_all_mimiciv_note.json`.
 
-Because all six files fail both checksum and gzip validation, they should be
-re-transferred or re-downloaded before any downstream extraction or feature
-engineering uses them. Parser fallbacks should only be considered after
+Any mismatched, truly missing, or gzip-failing file should be re-transferred,
+re-downloaded, or reconciled against the official source package before
+downstream extraction or feature engineering uses it. Configured uncompressed
+MIMIC-IV-Note detail files are not treated as corrupt merely because a manifest
+entry uses a `.csv.gz` suffix. Parser fallbacks should only be considered after
 checksum and gzip checks pass.
 
 ## Execution-Plan Milestone 4: EDA and Dataset Understanding

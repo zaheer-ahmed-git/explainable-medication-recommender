@@ -146,6 +146,13 @@ Check source-file integrity for profiling-blocked files with:
 uv run python -m pipeline.source_integrity
 ```
 
+Run a manifest-wide integrity audit across MIMIC-IV, MIMIC-IV-Note, and eICU
+with:
+
+```powershell
+uv run python -m pipeline.source_integrity --all-manifest-files
+```
+
 Do not use `pip`, Poetry, Conda, global Python, or system site-packages.
 
 ## Working Principles

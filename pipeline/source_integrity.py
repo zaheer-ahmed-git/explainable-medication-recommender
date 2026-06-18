@@ -11,7 +11,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Sequence
 
-from pipeline.config import DATASET_ROOT, REPORTS_ROOT, SOURCE_SPECS, ensure_local_directories
+from pipeline.config import (
+    DATASET_ROOT,
+    REPORTS_ROOT,
+    SOURCE_SPECS,
+    ensure_local_directories,
+)
 from pipeline.io_utils import resolve_dataset_path
 
 
@@ -147,8 +152,7 @@ def target_from_manifest_entry(
 
     relative_path = Path(file_relative)
     table_name = (
-        f"{source}_{relative_path.as_posix()}"
-        .replace("/", "_")
+        f"{source}_{relative_path.as_posix()}".replace("/", "_")
         .replace("\\", "_")
         .replace(".csv.gz", "")
         .replace(".csv", "")
@@ -211,6 +215,14 @@ def check_target(
     manifest_key = target.file_relative.as_posix()
     expected_sha256 = expected_manifest.get(manifest_key)
     if not file_path.exists():
+        alternate_local_file = find_alternate_configured_local_file(
+            target, dataset_root=dataset_root
+        )
+        checksum_status = (
+            "missing_manifest_file_but_configured_alternate_present"
+            if alternate_local_file is not None
+            else "missing_local_file"
+        )
         return {
             "source": target.source,
             "source_version": target.source_version,
@@ -219,11 +231,12 @@ def check_target(
             "file_size_bytes": None,
             "expected_sha256": expected_sha256,
             "actual_sha256": None,
-            "checksum_status": "missing_local_file",
+            "checksum_status": checksum_status,
             "gzip_integrity": {
                 "status": "not_checked",
                 "reason": "local file is missing",
             },
+            "alternate_local_file": alternate_local_file,
         }
     actual_sha256 = sha256_file(file_path)
     if expected_sha256 is None:
@@ -243,6 +256,41 @@ def check_target(
         "checksum_status": checksum_status,
         "gzip_integrity": gzip_integrity(file_path),
     }
+
+
+def find_alternate_configured_local_file(
+    target: IntegrityTarget, *, dataset_root: Path = DATASET_ROOT
+) -> dict[str, Any] | None:
+    """Find configured local files that appear to be uncompressed variants."""
+
+    if not target.file_relative.name.endswith(".csv.gz"):
+        return None
+    alternate_relative = target.file_relative.with_name(
+        target.file_relative.name.removesuffix(".gz")
+    )
+    for source_spec in SOURCE_SPECS:
+        if (
+            source_spec.name == target.source
+            and source_spec.root_relative_path == target.source_root_relative
+            and alternate_relative in source_spec.expected_files
+        ):
+            alternate_path = resolve_dataset_path(
+                target.source_root_relative / alternate_relative,
+                dataset_root=dataset_root,
+                must_exist=False,
+            )
+            if alternate_path.exists():
+                return {
+                    "relative_path": (
+                        target.source_root_relative / alternate_relative
+                    ).as_posix(),
+                    "file_size_bytes": alternate_path.stat().st_size,
+                    "reason": (
+                        "configured source layout expects this table as an "
+                        "uncompressed CSV rather than the manifest .csv.gz entry"
+                    ),
+                }
+    return None
 
 
 def summarize_results(results: Sequence[dict[str, Any]]) -> dict[str, Any]:

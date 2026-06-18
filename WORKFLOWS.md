@@ -68,10 +68,18 @@ text.
 
 1. Run `uv run python -m pipeline.source_integrity` for profiling-blocked files.
 2. Review `reports/source_integrity_failed_tables.json`.
-3. Treat checksum mismatches or gzip failures as source-integrity blockers.
-4. Re-transfer or re-download affected files before extraction or feature
+3. Run `uv run python -m pipeline.source_integrity --all-manifest-files` for a
+   complete checksum/gzip audit of all files listed in configured
+   `SHA256SUMS.txt` manifests.
+4. Use `--source mimiciv`, `--source eicu_crd`, or `--source mimiciv_note` to
+   split the full audit into smaller source-specific runs.
+5. Treat checksum mismatches, truly missing local files, or gzip failures as
+   source-integrity blockers. If a configured uncompressed local file exists
+   for a manifest `.csv.gz` entry, document it as a source-layout
+   reconciliation before using the table downstream.
+6. Re-transfer or re-download affected files before extraction or feature
    engineering.
-5. Consider CSV parser fallbacks only after checksum and gzip validation pass.
+7. Consider CSV parser fallbacks only after checksum and gzip validation pass.
 
 ## Build Source Inventory
 

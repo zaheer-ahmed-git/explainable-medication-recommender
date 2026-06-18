@@ -21,6 +21,9 @@ All notable repository changes are recorded here. Dates use ISO 8601.
   EDA tests.
 - Source-integrity checker for profiling-blocked files with SHA256 manifest
   validation, gzip stream checks, aggregate report output, and synthetic tests.
+- Manifest-wide source-integrity mode for checking every file listed in
+  configured MIMIC-IV, MIMIC-IV-Note, and eICU `SHA256SUMS.txt` files, with
+  source-specific filtering and missing-file reporting.
 - `Documentation/CalculcoSetup.md` with verified ULCO Calculco account paths,
   storage layout, completed setup steps, and transfer procedures for username
   `zahmed`.

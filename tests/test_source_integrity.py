@@ -151,3 +151,51 @@ def test_build_integrity_report_supports_manifest_targets_and_plain_files(
         "passed": 1,
         "not_checked": 1,
     }
+
+
+def test_missing_manifest_gzip_can_report_configured_plain_csv_alternate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    dataset_root = tmp_path / "Dataset"
+    source_root = dataset_root / "notes" / "2.2"
+    plain_relative = Path("note") / "detail.csv"
+    manifest_relative = Path("note") / "detail.csv.gz"
+    plain_path = source_root / plain_relative
+    plain_path.parent.mkdir(parents=True, exist_ok=True)
+    plain_path.write_text("note_id,subject_id\n", encoding="utf-8")
+    source_root.joinpath("SHA256SUMS.txt").write_text(
+        f"0000  {manifest_relative.as_posix()}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "pipeline.source_integrity.SOURCE_SPECS",
+        (
+            SourceSpec(
+                name="mimiciv_note",
+                version="2.2",
+                root_relative_path=Path("notes") / "2.2",
+                expected_files=(plain_relative,),
+            ),
+        ),
+    )
+
+    report = build_integrity_report(
+        targets=manifest_targets(dataset_root=dataset_root),
+        dataset_root=dataset_root,
+        output_path=tmp_path / "reports" / "integrity.json",
+    )
+
+    result = report["results"][0]
+    assert (
+        result["checksum_status"]
+        == "missing_manifest_file_but_configured_alternate_present"
+    )
+    assert result["alternate_local_file"] == {
+        "relative_path": "notes/2.2/note/detail.csv",
+        "file_size_bytes": plain_path.stat().st_size,
+        "reason": (
+            "configured source layout expects this table as an uncompressed CSV "
+            "rather than the manifest .csv.gz entry"
+        ),
+    }
