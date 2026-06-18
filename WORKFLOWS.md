@@ -23,6 +23,16 @@
    public counts as exact acceptance criteria.
 7. Update `Documentation/DataFoundationRoadmap.md`.
 
+Current broad adult cohort command:
+
+```powershell
+uv run python -m pipeline.cohort
+```
+
+The generated cohort Parquet files are local ignored artifacts under
+`Dataset/processed/cohorts/`; only aggregate manifest counts should be reported
+outside the local environment.
+
 ## Profile a Large Table
 
 1. Inspect the header and metadata without reading rows into logs.
@@ -32,6 +42,45 @@
 5. Save aggregate results under `reports/`.
 6. Review results for identifiers, units, nulls, duplicates, impossible values,
    and source-specific conventions.
+
+Current aggregate profile command:
+
+```powershell
+uv run python -m pipeline.profile_tables
+```
+
+The generated `reports/quality_profile.json` is an ignored local artifact. It
+must contain aggregate counts and column metrics only, never row samples or note
+text.
+
+## Build EDA Brief
+
+1. Confirm `reports/source_inventory.json`, `reports/cohort_manifest.json`, and
+   `reports/quality_profile.json` exist.
+2. Run `uv run python -m pipeline.eda_summary`.
+3. Review `reports/eda_dataset_understanding.md` for stakeholder-facing
+   messages, quality blockers, and next actions.
+4. Review `reports/figures/` for aggregate charts.
+5. Do not add row examples, note text, identifiers, or clinical
+   recommendations to EDA outputs.
+
+## Check Source Integrity
+
+1. Run `uv run python -m pipeline.source_integrity` for profiling-blocked files.
+2. Review `reports/source_integrity_failed_tables.json`.
+3. Treat checksum mismatches or gzip failures as source-integrity blockers.
+4. Re-transfer or re-download affected files before extraction or feature
+   engineering.
+5. Consider CSV parser fallbacks only after checksum and gzip validation pass.
+
+## Build Source Inventory
+
+1. Inspect only file metadata and CSV headers.
+2. Run `uv run python -m pipeline.source_inventory`.
+3. Confirm `reports/source_inventory.json` remains ignored.
+4. Check missing expected files and checksum-file presence.
+5. Do not print or paste clinical rows, note text, identifiers, or free-text
+   values from the source files.
 
 ## Add an Extraction Module
 

@@ -25,7 +25,26 @@ task context, source-code inspection, or local agent memory.
 
 ## Current Repository State
 
-- The active pipeline and tests are not present as of 2026-06-15.
+- The active Milestone 1 pipeline skeleton and focused tests are present as of
+  2026-06-17.
+- `pipeline/source_inventory.py` generates metadata-only
+  `reports/source_inventory.json`; `reports/` remains ignored.
+- `pipeline/cohort.py` generates adult MIMIC-IV/eICU cohort artifacts under
+  ignored `Dataset/processed/cohorts/` and aggregate
+  `reports/cohort_manifest.json`.
+- `pipeline/profile_tables.py` generates aggregate-only
+  `reports/quality_profile.json`; the latest default run completed 18 of 24
+  configured structured tables and recorded scan failures for several large or
+  malformed local source files.
+- `pipeline/eda_summary.py` synthesizes aggregate inventory, cohort, and
+  quality reports into ignored `reports/eda_dataset_understanding.json`,
+  `reports/eda_dataset_understanding.md`, and figures under `reports/figures/`.
+- `pipeline/source_integrity.py` checks the six profiling-blocked files against
+  local `SHA256SUMS.txt` manifests and gzip integrity. The latest run found all
+  six mismatched and gzip-failed, so those source files need re-transfer or
+  re-download before feature work.
+- Sepsis sub-cohort extraction, harmonization, EDA notebooks, feature tables,
+  and models are not yet implemented.
 - `DepreciatedCode/` contains the ignored synthetic prototype.
 - The prototype includes preprocessing, deterministic patient splitting,
   linear and XGBoost ranking, and ranking metrics.

@@ -6,7 +6,7 @@ This roadmap turns the research architecture into a sequence of verifiable
 data and modeling milestones. It supersedes status assumptions in older plans
 when they conflict with the current working tree.
 
-Last reviewed: 2026-06-15.
+Last reviewed: 2026-06-17.
 
 ## Current Baseline
 
@@ -19,10 +19,13 @@ Available locally under the ignored `Dataset/` directory:
 The source files include multi-gigabyte compressed CSV tables. They require
 DuckDB projection/filtering or chunked streaming.
 
-The active repository currently does not contain the planned `pipeline/`,
-`tests/`, or EDA notebooks. The ignored `DepreciatedCode/` prototype supplies
-historical conventions for candidate generation, patient-level splitting,
-baseline ranking, and ranking metrics.
+The active repository contains source-inventory, adult ICU/unit-stay cohort
+materialization, aggregate source-table quality profiling, and aggregate EDA
+briefing synthesis code with synthetic tests. EDA notebooks, harmonization,
+feature construction, labels, graph artifacts, and models are not yet
+implemented. The ignored
+`DepreciatedCode/` prototype supplies historical conventions for candidate
+generation, patient-level splitting, baseline ranking, and ranking metrics.
 
 ## Locked Research Direction
 
@@ -44,8 +47,10 @@ baseline ranking, and ranking metrics.
 pipeline/
   config.py
   io_utils.py
+  source_inventory.py
   cohort.py
   profile_tables.py
+  eda_summary.py
   mimic_extract.py
   eicu_extract.py
   harmonize.py
@@ -96,13 +101,14 @@ Exit gate:
 
 ## Milestone 1: Pipeline Skeleton and Source Inventory
 
-Status: not started.
+Status: implemented for initial metadata-only source inventory.
 
 Deliverables:
 
 - `pipeline/config.py` with logical paths, source versions, seeds, and cohort
   parameters;
 - `pipeline/io_utils.py` with DuckDB and chunked-read helpers;
+- `pipeline/source_inventory.py` CLI for `reports/source_inventory.json`;
 - machine-readable inventory of source files, sizes, headers, and checksums;
 - synthetic fixtures that mirror only required schemas.
 
@@ -118,19 +124,36 @@ Exit gate:
 - no implementation requires loading a full large table into pandas;
 - source inventory is reproducible without printing records.
 
+Implemented command:
+
+```powershell
+uv run python -m pipeline.source_inventory
+```
+
+Latest local metadata-only run:
+
+- sources present: 3;
+- files inventoried: 79;
+- missing expected files: 0;
+- generated artifact: ignored `reports/source_inventory.json`.
+
 ## Milestone 2: Cohorts
 
-Status: not started.
+Status: implemented for broad adult ICU/unit-stay cohorts; sepsis sub-cohort
+definition remains pending approval.
 
 ### MIMIC-IV
 
 Define adult ICU stays using `icustays`, `patients`, and `admissions`.
-Determine whether to use first ICU stay per admission or another reviewed rule.
+Default rule implemented: first ICU stay per admission.
 
 ### eICU
 
 Define ICU unit stays from `patient.csv.gz`. Decide and document treatment of
 multiple unit stays and age values such as `> 89`.
+
+Default rule implemented: adult unit stays from `patient.csv.gz`; `> 89` ages
+are top-coded to age 90 for filtering and flagged as top-coded.
 
 ### Sepsis
 
@@ -150,9 +173,27 @@ Exit gate:
 - no patient crosses data splits;
 - source count differences are explained.
 
+Implemented command:
+
+```powershell
+uv run python -m pipeline.cohort
+```
+
+Latest local aggregate run:
+
+- MIMIC-IV selected stays: 85,242 from 94,458 adult ICU stays after excluding
+  9,216 non-first ICU stays within admission;
+- eICU selected stays: 200,234 adult unit stays from 200,859 source unit stays,
+  with 95 missing or unparseable ages and 7,081 top-coded age stays;
+- unified selected stays: 285,476;
+- duplicate `stay_uid` count: 0 for each source and unified cohort;
+- generated artifacts: ignored `Dataset/processed/cohorts/*.parquet` and
+  ignored `reports/cohort_manifest.json`.
+
 ## Milestone 3: Schema and Quality Profiling
 
-Status: not started.
+Status: implemented for default structured source-table profiling; notebook
+visualization remains planned.
 
 Profile:
 
@@ -170,15 +211,90 @@ Deliverables:
 
 - `pipeline/profile_tables.py`;
 - `reports/quality_profile.json`;
-- `notebooks/01_schema_quality.ipynb`;
-- aggregate figures under `reports/figures/`.
+- `notebooks/01_schema_quality.ipynb` (planned after profile report review);
+- aggregate figures under `reports/figures/` (planned after notebook build).
 
 Exit gate:
 
 - every source table used later has an explicit key and quality assessment;
 - sensitive rows and note text are absent from reports.
 
-## Milestone 4: Source-Specific Extraction
+Implemented command:
+
+```powershell
+uv run python -m pipeline.profile_tables
+```
+
+Latest local aggregate run:
+
+- configured structured tables: 24;
+- completed aggregate profiles: 18;
+- table-level scan failures recorded: 6;
+- failed scans: MIMIC `prescriptions`, `labevents`, `chartevents`,
+  `inputevents`; eICU `medication`, `apachePatientResult`;
+- completed profiles showed no duplicate-key excess rows and no referential
+  orphan rows across configured checks;
+- aggregate plausibility checks flagged out-of-bounds values in selected
+  weight, vital-sign, and APACHE variables that require review before feature
+  engineering;
+- generated artifact: ignored `reports/quality_profile.json`.
+
+The scan failures are treated as data-quality/source-integrity blockers for
+those tables until the local compressed files and CSV parser settings are
+reviewed. No patient rows or note text are written to the report.
+
+Source integrity follow-up:
+
+```powershell
+uv run python -m pipeline.source_integrity
+```
+
+Latest local integrity run for the six profiling-blocked files:
+
+- checksum status: 6 mismatched against local `SHA256SUMS.txt` manifests;
+- gzip integrity status: 6 failed;
+- generated artifact: ignored `reports/source_integrity_failed_tables.json`.
+
+Because all six files fail both checksum and gzip validation, they should be
+re-transferred or re-downloaded before any downstream extraction or feature
+engineering uses them. Parser fallbacks should only be considered after
+checksum and gzip checks pass.
+
+## Execution-Plan Milestone 4: EDA and Dataset Understanding
+
+Status: implemented for aggregate report synthesis, stakeholder briefing, and
+figure pack. Detailed notebook EDA over cohort-filtered extracts remains
+planned after source scan blockers are reviewed.
+
+Deliverables:
+
+- `pipeline/eda_summary.py`;
+- ignored `reports/eda_dataset_understanding.json`;
+- ignored `reports/eda_dataset_understanding.md`;
+- ignored figure pack under `reports/figures/`.
+
+Implemented command:
+
+```powershell
+uv run python -m pipeline.eda_summary
+```
+
+Latest local aggregate run:
+
+- source groups summarized: 3;
+- files summarized: 79;
+- broad adult unified cohort: 285,476 stays and 204,234 patients;
+- quality profiles summarized: 18 completed out of 24 configured structured
+  tables;
+- generated figures: cohort selected stays by source, quality profile status,
+  largest completed tables, and quality issue categories;
+- key stakeholder message: medication and several large event tables require
+  scan/parser review before extraction or feature engineering.
+
+This EDA layer uses only aggregate inventory, cohort, and quality-profile
+reports. It does not inspect raw rows, note text, or patient-level records.
+
+## Roadmap Milestone 4: Source-Specific Extraction
 
 Status: not started.
 
@@ -394,11 +510,16 @@ Exit gate:
 
 ## Immediate Next Plan
 
-The next implementation task should be Milestone 1 only:
+The next implementation task should be source scan-blocker review, notebook
+EDA, or Roadmap Milestone 4 extraction only after reviewing
+`reports/quality_profile.json` and `reports/eda_dataset_understanding.md`:
 
-1. Create `pipeline/` and `tests/`.
-2. Define configuration and logical source locations.
-3. Add bounded DuckDB/header inspection helpers.
-4. Build synthetic schema fixtures.
-5. Test path, schema, and bounded-read behavior.
-6. Update this roadmap with commands and results.
+1. Review scan failures and decide whether to re-download/repair local source
+   files or add reviewed parser fallbacks.
+2. Build `notebooks/01_schema_quality.ipynb` and
+   `notebooks/02_distributions_correlations.ipynb` from safe aggregate and
+   cohort-filtered extracts.
+3. Begin Roadmap Milestone 4 source-specific extraction only for tables that
+   pass the relevant quality gates.
+4. Add extraction tests for cohort filtering, required columns, and row-count
+   manifests.

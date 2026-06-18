@@ -23,8 +23,12 @@ The repository is currently in the data-foundation and architecture stage.
   ignored `DepreciatedCode/` directory for reference.
 - Python dependencies for analysis, DuckDB processing, baseline modeling, and
   testing are declared in `pyproject.toml`.
-- The active `pipeline/`, `tests/`, and notebook implementation described in
-  the roadmap has not yet been rebuilt in the current working tree.
+- The active `pipeline/` currently includes source-inventory helpers and adult
+  ICU/unit-stay cohort materialization for MIMIC-IV and eICU, plus
+  aggregate-only source-table quality profiling and EDA briefing synthesis.
+- Focused synthetic tests cover the current source-inventory, cohort,
+  profiling, and EDA-summary skeleton. Harmonization, EDA notebooks, feature
+  tables, labels, and models are still planned.
 
 Do not interpret the poster's illustrative medication table or planned system
 diagram as a clinically validated implementation.
@@ -108,10 +112,38 @@ uv sync
 uv run ruff check .
 ```
 
-When active tests exist:
-
 ```powershell
 uv run pytest
+```
+
+Generate the metadata-only source inventory locally with:
+
+```powershell
+uv run python -m pipeline.source_inventory
+```
+
+Build local ignored adult ICU/unit-stay cohort artifacts with:
+
+```powershell
+uv run python -m pipeline.cohort
+```
+
+Build the aggregate-only source quality profile with:
+
+```powershell
+uv run python -m pipeline.profile_tables
+```
+
+Build the aggregate EDA summary, stakeholder brief, and figure pack with:
+
+```powershell
+uv run python -m pipeline.eda_summary
+```
+
+Check source-file integrity for profiling-blocked files with:
+
+```powershell
+uv run python -m pipeline.source_integrity
 ```
 
 Do not use `pip`, Poetry, Conda, global Python, or system site-packages.

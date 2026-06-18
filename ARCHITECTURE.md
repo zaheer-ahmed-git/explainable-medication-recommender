@@ -7,10 +7,14 @@ target research architecture.
 
 ## Current State
 
-As of 2026-06-15, the active repository contains research documents,
-configuration, local licensed datasets, and an ignored synthetic prototype.
-The planned `pipeline/`, `tests/`, and analysis notebooks are not present in
-the active working tree.
+As of 2026-06-17, the active repository contains research documents,
+configuration, local licensed datasets, an ignored synthetic prototype,
+metadata-only source inventory, and adult ICU/unit-stay cohort materialization.
+The active `pipeline/` provides configuration, safe path/header inspection,
+bounded DuckDB CSV reads, source-inventory CLI, cohort CLI, and aggregate
+source-table quality profiling plus aggregate EDA briefing synthesis.
+Harmonization, analysis notebooks, feature tables, labels, and recommendation
+models are not yet implemented in the active working tree.
 
 The legacy prototype demonstrates useful conventions such as:
 
@@ -45,8 +49,10 @@ The system is divided into six boundaries:
 pipeline/
   config.py
   io_utils.py
+  source_inventory.py
   cohort.py
   profile_tables.py
+  eda_summary.py
   mimic_extract.py
   eicu_extract.py
   harmonize.py

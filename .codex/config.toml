@@ -1,5 +1,12 @@
-# Conservative project defaults. This layer is loaded only for a trusted repo.
-approval_policy = "on-request"
+# Trusted-repo defaults: prompt only on sandbox-boundary crossings (network,
+# writes outside workspace, etc.). Routine workspace work runs without nagging.
+approval_policy = { granular = {
+  sandbox_approval = true,
+  rules = false,
+  mcp_elicitations = false,
+  request_permissions = false,
+  skill_approval = false
+} }
 sandbox_mode = "workspace-write"
 project_doc_max_bytes = 32768
 web_search = "cached"

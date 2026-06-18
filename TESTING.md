@@ -2,9 +2,10 @@
 
 ## Current State
 
-The active working tree does not yet contain a `tests/` directory or active
-pipeline modules. The `pytest` development dependency is available, but a
-no-tests result is not evidence that the project is correct.
+The active working tree contains the source-inventory, adult cohort, aggregate
+table-profiling, and EDA-summary pipeline skeleton with focused synthetic
+tests. Later harmonization, feature, label, graph, and model modules still need
+their own tests as they are added.
 
 Every new active module should arrive with focused tests.
 
@@ -19,7 +20,11 @@ uv run ruff format --check .
 During development, prefer a focused path:
 
 ```powershell
+uv run pytest tests/test_config.py tests/test_io_utils.py
 uv run pytest tests/test_cohort.py
+uv run pytest tests/test_profile_tables.py
+uv run pytest tests/test_eda_summary.py
+uv run pytest tests/test_source_integrity.py
 uv run pytest tests/test_cohort.py -k patient_split
 ```
 

@@ -180,7 +180,7 @@ module spider python
 module keyword pytorch
 ```
 
-## Shell Configuration To Add on Server
+## Shell Configuration To Add on Server ( Status : Done )
 
 Add to `~/.bashrc` on Calculco (if not already present):
 
@@ -198,21 +198,6 @@ alias cscratch='cd $WORK_SCRATCH/runs'
 
 Reload: `source ~/.bashrc`
 
-## SSH Client Configuration (Local Windows PC)
-
-Create or edit `%USERPROFILE%\.ssh\config`:
-
-```text
-Host calculco
-    Hostname calculco.univ-littoral.fr
-    User zahmed
-
-Host pcsdata
-    Hostname pcsdata.univ-littoral.fr
-    User zahmed
-```
-
-Then connect with `ssh calculco` and transfer with `pcsdata` as the host alias.
 
 ## Next Step: Transfer ResearchModule
 
@@ -230,7 +215,7 @@ cd ResearchModule
 
 Do not clone licensed datasets into a public remote. Keep `Dataset/` out of Git.
 
-### Option B — rsync from Windows (code)
+### Option B — rsync from Windows (code) ( Status : Done using scp since rsync wasn't installed)
 
 From PowerShell on the local machine (with OpenSSH/rsync available):
 
@@ -263,7 +248,7 @@ scp -Cr C:\ZaheerWork\Research\ResearchModule\pyproject.toml `
 
 Prefer `rsync` for anything large or resumable.
 
-## After Transfer: Python Environment on Calculco
+## After Transfer: Python Environment on Calculco ( Status : Done )
 
 The repository declares Python 3.13 and `uv` locally. On Calculco, system Python
 is 3.11.2. Choose one path:
@@ -277,7 +262,7 @@ is 3.11.2. Choose one path:
    conda activate researchmodule
    ```
 
-2. **Install uv in home** (matches repo `AGENTS.md`):
+2. **Install uv in home** (matches repo `AGENTS.md`): ( Status : Done )
 
    ```bash
    curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -286,14 +271,14 @@ is 3.11.2. Choose one path:
    uv sync
    ```
 
-Verify after setup:
+Verified :
 
 ```bash
 uv run python -V
 uv run pytest   # when tests exist in the tree
 ```
 
-## First OAR Test Job (after code is present)
+## First OAR Test Job  ( Status : Done )
 
 Create `~/scripts/test_job.sh`:
 
@@ -356,7 +341,7 @@ External tutorial repo:
 
 ## Security Reminders
 
-- Username is `zahmed`; do not confuse with `zrahmed1122` from the welcome email.
+- Username is `zahmed` .
 - Never commit passwords, SSH private keys, or raw clinical rows.
 - Change the initial LDAP password when `passwd` or the web portal allows it.
 - Prefer SSH keys (`ssh-keygen -t ed25519`) over password-only login.
