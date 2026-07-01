@@ -4,16 +4,30 @@ alwaysApply: true
 ---
 
 - Follow `AGENTS.md` and its referenced canonical documents.
+- Development runs on **ULCO Calculco**; export `PROJECT_HOME`, `DATASET_ROOT`,
+  and `WORK_SCRATCH` before pipeline work. See `Documentation/Environment.md`.
+- Account-specific server paths live in gitignored `*.local.md` and
+  `.env.calculco` files.
 - Use `uv` exclusively for Python dependencies and execution.
-- Treat `Dataset/` as restricted licensed clinical data. Do not read or expose
-  raw rows, and never place them in chat, logs, fixtures, or version control.
+- Honor `PROJECT_HOME`, `DATASET_ROOT`, `DATA_PROTECTED`, `REPORTS_ROOT`, and
+  `WORK_SCRATCH` (see `AGENTS.md` and `.env.example`). Do not hard-code NFS
+  paths in source changes.
+- Treat licensed clinical data as restricted. Resolve via `DATASET_ROOT`; do not
+  read or expose raw rows, and never place them in chat, logs, fixtures, or
+  version control.
 - Treat `DepreciatedCode/` as historical reference, not the active system.
-- Verify the current tree before repeating implementation claims from older
-  documentation.
+- Inspect files before editing; make minimal, targeted changes; do not rewrite
+  unrelated documentation.
+- Do not run destructive commands or delete raw data, mapping files, or
+  generated outputs unless explicitly requested.
+- Ask for clarification when a required server path, credential, or dataset
+  location is missing.
 - For schema, cohort, label, or multi-file changes, plan first and implement one
   milestone at a time.
 - Enforce patient-level splits and temporal cutoffs in modeling work.
 - Use synthetic fixtures for tests.
+- Prefer lightweight verification (`uv run pytest`, `uv run ruff check .`);
+  submit heavy extraction via OAR only when explicitly requested.
 - Run focused checks, inspect the diff, and report commands and results.
 - Update the README, architecture, roadmap, tests, workflows, and changelog when
   their facts change.

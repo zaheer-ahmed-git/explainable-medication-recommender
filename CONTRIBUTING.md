@@ -13,9 +13,12 @@ For modeling or data work, also read `TESTING.md` and `CODE_REVIEW.md`.
 
 ## Environment
 
-Use `uv` from the repository root:
+**Execution context:** ULCO Calculco HPC. Read `Documentation/CalculcoSetup.md`
+and export paths via gitignored `.env.calculco` before pipeline work.
 
-```powershell
+Use `uv` from the repository root (`$PROJECT_HOME`):
+
+```bash
 uv sync
 uv run ruff check .
 ```

@@ -13,16 +13,20 @@ description: Verify a non-trivial repository change with focused tests, Ruff, co
 
 ## Steps
 
-1. Read `AGENTS.md` and `TESTING.md`.
+1. Read `AGENTS.md`, `TESTING.md`, and `Documentation/CalculcoSetup.md` when
+   the change touches paths, pipeline CLIs, or protected data.
 2. Inspect the changed files and identify the smallest meaningful test surface.
 3. Check whether the change affects data safety, cohort logic, temporal logic,
    labels, splits, schemas, metrics, or research claims.
-4. Run focused tests first.
-5. Run `uv run ruff check .` for Python or configuration changes.
-6. Run `uv run ruff format --check .` when Python formatting is relevant.
-7. Parse TOML or JSON configuration files with an appropriate standard parser.
-8. Run `git diff --check` and inspect the final diff.
-9. Distinguish regressions from pre-existing failures or missing test coverage.
+4. Confirm `PROJECT_HOME` and `DATASET_ROOT` are set when running pipeline CLIs
+   against licensed data; otherwise use synthetic tests only.
+5. Run focused tests first (login-node tier).
+6. Run `uv run ruff check .` for Python or configuration changes.
+7. Run `uv run ruff format --check .` when Python formatting is relevant.
+8. Parse TOML or JSON configuration files with an appropriate standard parser.
+9. Run `git diff --check` and inspect the final diff.
+10. Distinguish regressions from pre-existing failures or missing test coverage.
+11. Do not submit OAR jobs unless the user explicitly requests HPC verification.
 
 ## Success Criteria
 

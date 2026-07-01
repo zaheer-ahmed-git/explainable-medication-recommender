@@ -25,7 +25,7 @@
 
 Current broad adult cohort command:
 
-```powershell
+```bash
 uv run python -m pipeline.cohort
 ```
 
@@ -45,7 +45,7 @@ outside the local environment.
 
 Current aggregate profile command:
 
-```powershell
+```bash
 uv run python -m pipeline.profile_tables
 ```
 
@@ -99,6 +99,50 @@ text.
 5. Add synthetic contract tests.
 6. Record row counts and mapping coverage.
 
+Current extraction commands:
+
+```bash
+uv run python -m pipeline.mimic_extract
+uv run python -m pipeline.eicu_extract
+```
+
+Extraction commands depend on `reports/quality_profile.json`,
+`reports/source_integrity_failed_tables.json`, and
+`Dataset/processed/cohorts/cohort_stays.parquet`. Blocked tables are skipped
+with aggregate manifest entries rather than forced through parser or integrity
+failures.
+
+## Run Milestone 5 Harmonization
+
+1. Confirm source-specific extraction manifests are available and aggregate-only.
+2. Place reviewed medication mapping files under
+   `Dataset/mappings/medications/`:
+   `mimic_ndc_rxnorm_atc.csv` and `eicu_drug_rxnorm_atc.csv`. These are a hard
+   gate; harmonization fails without them.
+3. Optionally add condition mapping files under `Dataset/mappings/conditions/`
+   (`icd10_ccsr.csv`, `icd9_ccs.csv`, `icd9_to_icd10_gem.csv`,
+   `icd_chapters.csv`, `eicu_diagnosis_text_condition_map.csv`,
+   `project_condition_groups.csv`). These are optional; missing files degrade to
+   structural ICD categories and source-native tokens without failing.
+   - Run `uv run python scripts/fetch_condition_reference_files.py` (needs
+     network) to download authoritative AHRQ CCSR/CCS and CDC GEM sources and
+     write `icd10_ccsr.csv`, `icd9_ccs.csv`, `icd9_to_icd10_gem.csv`, and a
+     derived `icd_chapters.csv`.
+   - Run `uv run python scripts/build_condition_mappings.py` to inventory
+     distinct diagnosis concepts and emit review-ready templates for the
+     curation-only files (eICU text map, project condition groups).
+4. Run `uv run python -m pipeline.harmonize`.
+5. Review `reports/harmonization_manifest.json`,
+   `reports/harmonization_coverage.json`, `reports/unmapped_concepts.json`,
+   `reports/condition_normalization_coverage.json`, and
+   `reports/eicu_diagnosis_text_mapping_review.csv`.
+6. Confirm the manifest lists `cohort_stays`, `demographics`, `conditions`,
+   `medications`, `labs`, `vitals`, `allergies`, `interventions`, and
+   `temporal_events`, and inspect `condition_mapping_resources`.
+7. Do not enable pooled training from harmonized artifacts until coverage
+   thresholds (see `Documentation/ConditionNormalization.md`) and
+   source-specific semantic differences are reviewed.
+
 ## Build a Training Table
 
 1. Freeze cohort, index time, feature window, label window, and patient split.
@@ -148,14 +192,114 @@ text.
 
 ## Calculco HPC (ULCO)
 
-Use the cluster for heavy extraction, modeling, and long-running jobs. Canonical
-server reference: `Documentation/CalculcoSetup.md`.
+Use the cluster for heavy extraction, modeling, and long-running jobs.
 
-1. SSH as `zahmed@calculco.univ-littoral.fr`.
-2. Keep code in `/nfs/home/lisic/zahmed/ResearchModule`.
-3. Keep licensed clinical data only under
-   `/nfs/data/protected/lisic/zahmed/ResearchModule/Dataset`.
-4. Use `/workdir/lisic/zahmed/runs` for temporary job I/O; copy results back to protected storage after jobs complete.
+1. Confirm `PROJECT_HOME` and `DATASET_ROOT` are exported.
+2. Read account-specific paths in gitignored `Documentation/CalculcoSetup.local.md`
+   (create from `Documentation/CalculcoSetup.example.md`). Generic platform notes:
+   `Documentation/CalculcoSetup.md`.
+3. Export runtime paths via `.env.calculco` or `scripts/calculco/common.local.sh`
+   (both gitignored) before pipeline work.
+4. Use `$WORK_SCRATCH/runs` for temporary job I/O; copy results back to protected
+   storage after jobs complete.
 5. Transfer large files with `rsync` via `pcsdata.univ-littoral.fr`.
-6. Submit compute with OAR (`oarsub -S script.sh`), not on the login node.
-7. Load software with `module load` or a conda/uv environment as documented in `Documentation/CalculcoSetup.md`.
+6. Submit compute with OAR (`oarsub`), not on the login node.
+7. Load software with `module load` or `uv` as documented on the Calculco website.
+
+### Run Source Extraction on Calculco
+
+Repository OAR scripts live under `scripts/calculco/`. `common.sh` loads
+`.env.calculco` / `common.local.sh`, requires `DATASET_ROOT`, and sets scratch
+for `TMPDIR` and `UV_CACHE_DIR` when `WORK_SCRATCH` is set. Outputs go to
+`$DATASET_ROOT/processed/extracts/`; manifests to `$PROJECT_HOME/reports/`.
+
+Preflight on the login node:
+
+```bash
+test -f "$DATASET_ROOT/processed/cohorts/cohort_stays.parquet"
+test -f "$PROJECT_HOME/reports/quality_profile.json"
+test -f "$PROJECT_HOME/reports/source_integrity_failed_tables.json"
+cd "$PROJECT_HOME" && uv run python -V
+```
+
+Submit (pass log paths at submit time — not hard-coded in Git):
+
+```bash
+chmod +x scripts/calculco/*.sh
+oarsub -O "$PROJECT_HOME/scripts/calculco/logs/rm_extract_%jobid%.out" \
+       -E "$PROJECT_HOME/scripts/calculco/logs/rm_extract_%jobid%.err" \
+       -S "$PROJECT_HOME/scripts/calculco/extract_mimic_eicu.sh"
+
+# or run MIMIC and eICU in parallel:
+oarsub -O "$PROJECT_HOME/scripts/calculco/logs/rm_mimic_%jobid%.out" \
+       -E "$PROJECT_HOME/scripts/calculco/logs/rm_mimic_%jobid%.err" \
+       -S "$PROJECT_HOME/scripts/calculco/extract_mimic.sh"
+oarsub -O "$PROJECT_HOME/scripts/calculco/logs/rm_eicu_%jobid%.out" \
+       -E "$PROJECT_HOME/scripts/calculco/logs/rm_eicu_%jobid%.err" \
+       -S "$PROJECT_HOME/scripts/calculco/extract_eicu.sh"
+```
+
+Monitor with `oarstatmon.py` (overview) or `oarstat`. During the 2026 platform
+migration, see `Documentation/CalculcoSetup.md` for `ritchie` login and node
+property changes. Review only aggregate manifests after completion:
+
+### Run Harmonization on Calculco
+
+Outputs go to `$DATASET_ROOT/processed/harmonized/`; reports to
+`$PROJECT_HOME/reports/`. Medication mapping files are a **hard gate**;
+condition roll-up files under `$DATASET_ROOT/mappings/conditions/` are optional
+(fetch with `uv run python scripts/fetch_condition_reference_files.py` on the
+login node before submit).
+
+Preflight on the login node:
+
+```bash
+test -f "$DATASET_ROOT/processed/cohorts/cohort_stays.parquet"
+test -f "$DATASET_ROOT/processed/extracts/mimiciv/diagnoses_icd.parquet"
+test -f "$DATASET_ROOT/processed/extracts/eicu_crd/diagnosis.parquet"
+test -f "$DATASET_ROOT/mappings/medications/mimic_ndc_rxnorm_atc.csv"
+test -f "$DATASET_ROOT/mappings/medications/eicu_drug_rxnorm_atc.csv"
+cd "$PROJECT_HOME" && uv run python -V
+```
+
+Submit:
+
+```bash
+oarsub -O "$PROJECT_HOME/scripts/calculco/logs/rm_harmonize_%jobid%.out" \
+       -E "$PROJECT_HOME/scripts/calculco/logs/rm_harmonize_%jobid%.err" \
+       -S "$PROJECT_HOME/scripts/calculco/harmonize.sh"
+```
+
+If submission fails with **"There are not enough resources"**, run
+`oarstatmon.py`. On the legacy `calculco` front-end during the 2026 migration,
+most CPU nodes may be **Dead** while `gpudevice='-1'` excludes the only **Alive**
+GPU nodes — see [OAR troubleshooting](#oar-troubleshooting-calculco-migration)
+below. `harmonize.sh` omits `gpudevice='-1'` by default during migration.
+
+Review only aggregate manifests after completion:
+
+- `reports/harmonization_manifest.json`
+- `reports/harmonization_coverage.json`
+- `reports/condition_normalization_coverage.json`
+- `reports/unmapped_concepts.json`
+
+### OAR troubleshooting (Calculco migration)
+
+```bash
+oarstatmon.py
+```
+
+| Symptom | Likely cause | Fix |
+|---------|----------------|-----|
+| `not enough resources` + type constraints | CPU nodes Dead; `gpudevice='-1'` leaves no nodes | SSH to `ritchie.univ-littoral.fr`, or omit `gpudevice='-1'` in the script |
+| Job waits (`W`) a long time | Cluster busy | Try `-t besteffort` or fewer cores |
+
+Probe that scheduling works (then `oardel <jobid>`):
+
+```bash
+oarsub -l /nodes=1/core=4,walltime=1:00:00 -t besteffort \
+       -O /tmp/oar_probe_%jobid%.out -E /tmp/oar_probe_%jobid%.err "echo ok"
+```
+
+Job stdout/stderr are written under `scripts/calculco/logs/` and are gitignored.
+Do not paste patient-level extract rows into chat, docs, or version control.

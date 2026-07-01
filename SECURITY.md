@@ -2,9 +2,19 @@
 
 ## Scope
 
-This repository contains research code and local access paths for licensed,
-de-identified clinical datasets. It is not a production clinical system or a
-medical device.
+This repository contains research code and paths to licensed, de-identified
+clinical datasets on Calculco protected NFS. It is not a production clinical
+system or a medical device.
+
+## Calculco and Protected Storage
+
+- Licensed MIMIC/eICU data stays on **protected** NFS (`$DATASET_ROOT`), not in
+  Git or agent indexes.
+- Code and aggregate reports live under `$PROJECT_HOME` (home storage).
+- Ephemeral job I/O uses `$WORK_SCRATCH` when set; scratch may be purged (see
+  `Documentation/CalculcoSetup.local.md` on the server).
+- Do not copy raw clinical tables into home, docs, issues, or chat context.
+- See `Documentation/CalculcoSetup.md` for account, transfer, and OAR rules.
 
 ## Supported Version
 
@@ -58,6 +68,9 @@ ignored and must not appear in documentation.
 - Do not paste restricted notes or records into external LLM services.
 - Keep workspace permissions and network access constrained by default.
 - Review generated commands and diffs before execution or merge.
+- Ensure `.cursorignore` and `.cursorindexingignore` exclude `Dataset/`,
+  `reports/`, artifacts, secrets, and OAR logs from indexing.
+- Agents must not store credentials or patient-level excerpts in memory files.
 
 ## Clinical Safety
 

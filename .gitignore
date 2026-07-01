@@ -15,9 +15,31 @@ htmlcov/
 .venv/
 .uv-cache/
 
-# Secrets and local configuration
+# Secrets and environment-specific configuration
+# Copy from .env.example into a machine-specific file; never commit overrides.
 .env
+.env.local
+.env.calculco
+.env.server
 .env.*
+!.env.example
+
+# Optional per-machine shell exports (alternative to .env files).
+environment.local.sh
+environment.calculco.sh
+
+# Machine-specific documentation and OAR overrides (copy from *.example.*).
+Documentation/*.local.md
+scripts/calculco/common.local.sh
+scripts/calculco/oar.local.sh
+
+# Editor/IDE machine settings (shared .cursor/rules/ stay tracked).
+.vscode/
+.idea/
+*.code-workspace
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
 *.key
 *.pem
 credentials.json
@@ -25,6 +47,8 @@ secrets.json
 
 # Licensed datasets and generated research artifacts
 Dataset/
+derived/
+outputs/
 DepreciatedCode/
 Models/
 models/
@@ -35,7 +59,18 @@ artifacts/
 *.parquet
 *.feather
 
+# OAR job logs (may contain paths; not for version control)
+scripts/calculco/logs/*.out
+scripts/calculco/logs/*.err
+!scripts/calculco/logs/.gitkeep
+
+# Ephemeral Calculco scratch markers (if copied into the repo by mistake)
+workdir/
+scratch/
+
 # Notebook and editor state
 .ipynb_checkpoints/
 .DS_Store
 Thumbs.db
+
+Environment.md

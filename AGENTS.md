@@ -1,5 +1,36 @@
 # Project Instructions
 
+## Execution Environment
+
+Development runs on **ULCO Calculco**. Git tracks shared code only;
+machine-specific paths live in **gitignored** files (see
+`Documentation/Environment.md`).
+
+### Calculco layout
+
+Code lives in home storage; licensed data lives on protected NFS. Export path
+variables before pipeline work:
+
+```bash
+export PROJECT_HOME=$HOME/ResearchModule
+export DATASET_ROOT=$DATA_PROTECTED/Dataset   # or set DATA_PROTECTED parent
+export WORK_SCRATCH=/workdir/<lab>/<username>   # for OAR job I/O
+```
+
+Account-specific server details are in gitignored
+`Documentation/CalculcoSetup.local.md` (template:
+`Documentation/CalculcoSetup.example.md`). Platform notes:
+`Documentation/CalculcoSetup.md`.
+
+### Shared rules
+
+- Resolve paths through `pipeline/config.py` and environment variables.
+- Licensed clinical data is never committed; aggregate reports only in `reports/`.
+- Run heavy extraction via OAR on Calculco (`scripts/calculco/`); lightweight
+  checks (`uv run pytest`, `uv run ruff check .`) on the login node.
+- Do not run destructive commands or delete raw data unless explicitly requested.
+- Ask when paths or credentials are missing instead of guessing.
+
 ## Repository Overview
 
 - This is a research repository for an explainable conversational medication
@@ -23,6 +54,7 @@ Read only the documents needed for the task:
 - `Documentation/DataFoundationRoadmap.md`: implementation sequence and gates.
 - `Documentation/ResearchDetail.md`: research problem and contribution.
 - `WORKFLOWS.md`: repeatable engineering and research procedures.
+- `Documentation/Environment.md`: runtime detection and gitignored local files.
 - `TESTING.md`: verification strategy.
 - `CODE_REVIEW.md`: review priorities.
 - `AGENT-MEMORY.md`: stable repository facts and known pitfalls.
@@ -51,6 +83,39 @@ as the source of current project status.
 
 Prefer the smallest relevant verification command. If no active tests cover a
 change, say so explicitly and add focused tests when behavior is introduced.
+
+## Path Configuration
+
+Runtime paths are resolved in `pipeline/config.py`:
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `PROJECT_HOME` or `RESEARCHMODULE_ROOT` | Repository root for code and default reports | directory containing `pipeline/` |
+| `DATASET_ROOT` | Licensed clinical data root | `Dataset/` under project root |
+| `DATA_PROTECTED` | Protected storage parent used when `DATASET_ROOT` is unset | none |
+| `REPORTS_ROOT` | Aggregate report output directory | `reports/` under project root |
+| `WORK_SCRATCH` | Ephemeral job I/O on Calculco (used by OAR scripts, not `config.py`) | none |
+
+On Calculco, export `PROJECT_HOME`, `DATASET_ROOT`, and optionally
+`WORK_SCRATCH` in `~/.bashrc` so agents and pipeline CLIs find protected
+clinical data while code stays in home storage. See `Documentation/CalculcoSetup.md`
+and `.env.example`. Do not hard-code user-specific absolute paths in code;
+prefer these variables and `pathlib.Path` resolution in `pipeline/config.py`.
+
+## Verification Tiers
+
+Choose the smallest check that answers the question:
+
+| Tier | When | Examples |
+|------|------|----------|
+| Lightweight | Config, docs, unit tests, lint | `uv run pytest tests/test_config.py`, `uv run ruff check .` |
+| Pipeline (login node) | Small bounded CLIs on aggregate fixtures | `uv run pytest`, metadata-only inventory |
+| HPC (OAR) | Cohort-filtered extraction, large-table scans | `oarsub -S scripts/calculco/extract_mimic.sh` |
+
+Do not submit GPU jobs, full-dataset extraction, or long walltime OAR jobs unless
+the user explicitly requests them. Tests that need protected data should document
+required environment variables and skip when `DATASET_ROOT` is unset or paths are
+missing.
 
 ## Data Safety
 

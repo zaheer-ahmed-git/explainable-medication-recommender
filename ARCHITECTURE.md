@@ -7,14 +7,20 @@ target research architecture.
 
 ## Current State
 
-As of 2026-06-17, the active repository contains research documents,
+As of 2026-06-30, the active repository contains research documents,
 configuration, local licensed datasets, an ignored synthetic prototype,
 metadata-only source inventory, and adult ICU/unit-stay cohort materialization.
 The active `pipeline/` provides configuration, safe path/header inspection,
 bounded DuckDB CSV reads, source-inventory CLI, cohort CLI, and aggregate
-source-table quality profiling plus aggregate EDA briefing synthesis.
-Harmonization, analysis notebooks, feature tables, labels, and recommendation
-models are not yet implemented in the active working tree.
+source-table quality profiling plus aggregate EDA briefing synthesis. It also
+contains initial report-gated source extraction CLIs for MIMIC-IV and eICU and
+Milestone 5 harmonization that can materialize cohort-stay, demographics,
+condition, RxNorm/ATC-mapped medication, lab, vital, allergy, intervention, and
+temporal-event tables from local extracts. Lab, vital, allergy, and
+intervention concepts are preserved as source-native tokens unless reviewed
+mapping resources are available. Feature tables, labels, recommendation
+models, and clinical recommendations are not yet implemented in the active
+working tree.
 
 The legacy prototype demonstrates useful conventions such as:
 
@@ -53,6 +59,7 @@ pipeline/
   cohort.py
   profile_tables.py
   eda_summary.py
+  extract_utils.py
   mimic_extract.py
   eicu_extract.py
   harmonize.py
@@ -205,8 +212,16 @@ unsupported clinical claims or substitute narrative confidence for evidence.
 
 ## Open Decisions
 
-- Exact sepsis cohort definition and coding system.
-- Shared condition vocabulary and roll-up level.
+- Exact sepsis cohort definition and coding system. Interim: sepsis is applied
+  as a curated, clinically reviewed `project_condition_groups.csv` layer on top
+  of the roll-up, not as fabricated code logic (see
+  `Documentation/ConditionNormalization.md`).
+- Shared condition vocabulary and roll-up level. **Resolved for the
+  data-foundation stage:** CCSR (ICD-10-CM) and CCS (ICD-9-CM) are the preferred
+  shared roll-ups, with ICD chapter and structural ICD category fallbacks and a
+  conservative eICU text dictionary; source-native ICD/text is always preserved.
+  Mapping is optional and degrades gracefully. See
+  `Documentation/ConditionNormalization.md`.
 - Medication ingredient normalization and RxNorm/ATC mapping strategy.
 - Prescription decision time and label window.
 - Graph node and edge definitions.

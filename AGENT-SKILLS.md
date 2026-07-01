@@ -3,6 +3,10 @@
 Repository skills live under `.agents/skills/` and are available to compatible
 coding agents through progressive disclosure.
 
+**Execution context:** ULCO Calculco HPC. Read `Documentation/CalculcoSetup.md`
+and `Documentation/Environment.md`. Account paths live in gitignored
+`Documentation/CalculcoSetup.local.md`.
+
 ## code-change-verification
 
 Use after a non-trivial code or configuration change.

@@ -1,363 +1,176 @@
-# Calculco Server Setup — ResearchModule
+# Calculco Platform — ResearchModule
 
-Operational reference for the ULCO Calculco HPC account used by this project.
-Last verified on the cluster: **2026-06-17**.
+Generic ULCO Calculco (CalcULCO) notes for this project. **Account-specific paths,
+usernames, and setup status live in gitignored local files** — not in this
+document.
+
+**Platform migration (2026):** CalcULCO is being moved to a new hardware platform
+(phase II, summer 2026). During the transition, the login hostname may be
+`ritchie.univ-littoral.fr` while compute nodes are renamed (`orval*` →
+`chimay*`). The name `calculco` will remain as an alias once migration is
+complete. See [Platform migration (2026)](#platform-migration-2026) below.
+
+## Before You Run Commands
+
+1. Confirm `PROJECT_HOME` and `DATASET_ROOT` are exported (see
+   `Documentation/Environment.md`).
+2. On Calculco, read `Documentation/CalculcoSetup.local.md` if present (create
+   from `Documentation/CalculcoSetup.example.md`).
 
 ## Platform Overview
 
-**Calculco** (CalcULCO) is the scientific computing platform of Université du
-Littoral Côte d'Opale (ULCO), managed by the Pôle Calcul Scientifique (SCoSI).
-It provides shared CPU/GPU compute nodes, networked storage, licensed software,
-and the **OAR** batch scheduler.
+Calculco is the ULCO scientific computing platform (OAR scheduler, NFS storage,
+environment modules).
 
 | Item | Value |
 |------|-------|
-| Login host (SSH) | `calculco.univ-littoral.fr` |
-| File transfer host (large data) | `pcsdata.univ-littoral.fr` (preferred for heavy I/O) |
-| Web documentation | [www-calculco.univ-littoral.fr](https://www-calculco.univ-littoral.fr) |
-| Job scheduler | **OAR** (`oarsub`, not Slurm) |
-| Lab | LISIC |
-| OS on login node | Debian Linux, kernel 6.1 (x86_64) |
+| Login host (stable name) | `calculco.univ-littoral.fr` |
+| Login host (during migration) | `ritchie.univ-littoral.fr` — use when the old front-end has no compute nodes |
+| Transfer host (large I/O) | `pcsdata.univ-littoral.fr` |
+| Scheduler | **OAR** (`oarsub`, not Slurm) |
+| Web docs | [www-calculco.univ-littoral.fr](https://www-calculco.univ-littoral.fr) |
+| Transitional docs archive | [PCSBox essentials archive](https://pcsbox.univ-littoral.fr/d/a6d7b17d78694755974b/) |
 
-Official usage guide (login required): **Utilisation → Accéder** and related
-sections on the Calculco website. English summary: **Calculco Quick Reference
-(gb)** in the same menu.
+## Storage Roles (typical)
 
-## Account Identity
+| Role | Pattern | Use |
+|------|---------|-----|
+| Home | `/nfs/home/<lab>/<user>` | Code, configs, small results |
+| Protected | `/nfs/data/protected/<lab>/<user>` | Licensed clinical data |
+| Unprotected | `/nfs/data/unprotected/<lab>/<user>` | Large non-sensitive outputs |
+| Workdir | `/workdir/<lab>/<user>` | Ephemeral job scratch (purged) |
+| Node scratch | `/scratch` on compute nodes | Intra-node heavy I/O (purged) |
 
-The **active SSH and web login username is `zahmed`**.
+**Rules:** never commit raw clinical rows; do not run heavy jobs on the login node;
+copy important results from scratch to protected storage after jobs finish.
 
-| Field | Value |
-|-------|-------|
-| Username | `zahmed` |
-| Display name | Zaheer Ahmed |
-| Lab | `lisic` |
-| Email | `dev.zaheer.ahmad@gmail.com` |
-| Shell | `/bin/bash` |
-
-**SSH command (Windows PowerShell, macOS, Linux):**
-
-```bash
-ssh zahmed@calculco.univ-littoral.fr
-```
-
-**Web portal login:** same username and password at
-[www-calculco.univ-littoral.fr](https://www-calculco.univ-littoral.fr) →
-**Identifiant** = `zahmed`, **Mot de passe** = LDAP password.
-
-## Storage Layout
-
-Calculco exposes four storage roles. Only **home** and **protected data** are
-nightly backed up.
-
-| Role | Path | Quota / size | Backed up | Purge | Use for |
-|------|------|--------------|-----------|-------|---------|
-| **Home** | `/nfs/home/lisic/zahmed` | 102400 MB (~100 GB) per user | Yes | No | Code, scripts, configs, small results |
-| **Protected data** | `/nfs/data/protected/lisic/zahmed` | Lab pool (~15 TB total, 2.1 TB used) | Yes | No | Licensed clinical data (MIMIC/eICU), derived artifacts |
-| **Unprotected data** | `/nfs/data/unprotected/lisic/zahmed` | Lab pool (~167 TB total) | No | No | Large non-sensitive outputs |
-| **Workdir (BeeGFS)** | `/workdir/lisic/zahmed` | Shared ~28 TB scratch | No | **180 days** | Temporary job I/O |
-| **Node scratch** | `/scratch` on compute nodes | Local per node | No | **30 days** | Intra-node heavy I/O |
-
-Login MOTD also shows convenience entries in home:
+## Recommended Split Layout
 
 ```text
-data-protected   → symlink to protected data area
-data-unprotected → symlink to unprotected data area
+$PROJECT_HOME/              # git clone (home)
+$DATASET_ROOT/              # MIMIC/eICU (protected NFS)
+$DATASET_ROOT/processed/    # cohorts, extracts, harmonized tables
+$PROJECT_HOME/reports/      # aggregate manifests only
+$WORK_SCRATCH/runs/         # per-job temp I/O
 ```
 
-### Recommended ResearchModule layout
+Set `PROJECT_HOME`, `DATASET_ROOT`, and `WORK_SCRATCH` via `~/.bashrc` or
+`.env.calculco` (gitignored). See `.env.example`.
 
-```text
-/nfs/home/lisic/zahmed/
-  ResearchModule/          # git clone of this repository
-  scripts/                 # OAR job scripts
+## Python on Calculco
 
-/nfs/data/protected/lisic/zahmed/ResearchModule/
-  Dataset/                 # MIMIC-IV, MIMIC-IV-Note, eICU (licensed)
-  derived/                 # cohorts, features, labels
-  outputs/                 # final modeling artifacts
-
-/nfs/data/unprotected/lisic/zahmed/
-  public_outputs/          # non-sensitive large exports only
-
-/workdir/lisic/zahmed/
-  runs/                    # ephemeral per-job scratch
-```
-
-**Rules:**
-
-- Never commit or expose raw clinical rows from `Dataset/`.
-- Do not run heavy jobs on the login node; submit via OAR.
-- Copy important results from `workdir` to `protected` after jobs finish.
-- Use `purgelist` to check upcoming purge dates for scratch/workdir.
-
-## Setup Completed (2026-06-17)
-
-The following steps were completed on Calculco.
-
-### 1. First SSH login
+System Python may differ from the repo's Python 3.13 target. Prefer `uv` in home:
 
 ```bash
-ssh zahmed@calculco.univ-littoral.fr
-```
-
-Login banner confirmed:
-
-- Home usage: 0 MB / 102400 MB
-- Purge: `/scratch` 30 days, `/workdir` 180 days
-- Hostname: `calculco`
-
-### 2. Directory structure created
-
-```bash
-mkdir -p ~/ResearchModule
-mkdir -p ~/scripts
-mkdir -p /workdir/lisic/zahmed/runs
-mkdir -p /nfs/data/protected/lisic/zahmed/ResearchModule/{Dataset,derived,outputs}
-mkdir -p /nfs/data/unprotected/lisic/zahmed/public_outputs
-```
-
-Resulting home listing:
-
-```text
-data-protected  data-unprotected  ResearchModule  scripts
-```
-
-Current working directory: `/nfs/home/lisic/zahmed`
-
-### 3. Environment variables (session)
-
-These were exported in the shell; persist them in `~/.bashrc` on the server:
-
-```bash
-export PROJECT_HOME=$HOME/ResearchModule
-export DATA_PROTECTED=/nfs/data/protected/lisic/zahmed/ResearchModule
-export WORK_SCRATCH=/workdir/lisic/zahmed
-```
-
-### 4. System inspection
-
-| Check | Result |
-|-------|--------|
-| `whoami` | `zahmed` |
-| `hostname` | `calculco` |
-| `python3 --version` | Python 3.11.2 (system) |
-| `which uv` | not installed yet |
-| `which oarsub` | `/usr/bin/oarsub` |
-| `nvidia-smi` on login node | not available (GPUs on compute nodes only) |
-
-### 5. Disk space at setup time
-
-| Mount | Size | Used | Avail | Use% |
-|-------|------|------|-------|------|
-| Home (`pcsdata:/home`) | 19T | 12T | 6.0T | 67% |
-| Protected lab | 15T | 2.1T | 13T | 15% |
-| Unprotected lab | 167T | 50T | 114T | 31% |
-| Workdir (BeeGFS) | 28T | 64G | 28T | 1% |
-
-### 6. Software modules available (sample)
-
-Environment modules are managed with Lmod under `/nfs/opt/apps/modulefiles/`.
-
-Notable modules for this project:
-
-| Module | Notes |
-|--------|-------|
-| `conda/23.7` | Conda environments (Calculco tutorial path) |
-| `fidle/pytorch-2.7-et-cie-gpu` | GPU PyTorch stack |
-| `fidle/pytorch-2.7-et-cie-cpu` (default) | CPU PyTorch |
-| `fidle/tensorflow-keras` | TensorFlow/Keras |
-| `matlab/R2025b` | MATLAB (token/license rules apply) |
-| `cuda/cuda-12.1` (default) | CUDA toolkit |
-| `gcc/gcc-14.3.0` (default) | GCC compiler |
-| `dmtcp/4.0.0` (default) | Checkpointing for long OAR jobs |
-
-Discover more:
-
-```bash
-module avail
-module spider python
-module keyword pytorch
-```
-
-## Shell Configuration To Add on Server ( Status : Done )
-
-Add to `~/.bashrc` on Calculco (if not already present):
-
-```bash
-# ResearchModule paths
-export PROJECT_HOME=$HOME/ResearchModule
-export DATA_PROTECTED=/nfs/data/protected/lisic/zahmed/ResearchModule
-export WORK_SCRATCH=/workdir/lisic/zahmed
-
-# Optional: quick navigation
-alias cproj='cd $PROJECT_HOME'
-alias cdata='cd $DATA_PROTECTED'
-alias cscratch='cd $WORK_SCRATCH/runs'
-```
-
-Reload: `source ~/.bashrc`
-
-
-## Next Step: Transfer ResearchModule
-
-Clinical data must go only to **protected** storage. Code goes to **home**.
-
-### Option A — Git (recommended for code)
-
-On Calculco:
-
-```bash
-cd ~
-git clone <repository-url> ResearchModule
-cd ResearchModule
-```
-
-Do not clone licensed datasets into a public remote. Keep `Dataset/` out of Git.
-
-### Option B — rsync from Windows (code) ( Status : Done using scp since rsync wasn't installed)
-
-From PowerShell on the local machine (with OpenSSH/rsync available):
-
-```powershell
-rsync -azuv --exclude Dataset --exclude .git --exclude __pycache__ `
-  C:\ZaheerWork\Research\ResearchModule\ `
-  zahmed@pcsdata.univ-littoral.fr:~/ResearchModule/
-```
-
-Use `pcsdata` for large transfers. The `--exclude Dataset` flag keeps clinical
-data off the code sync; transfer datasets separately to protected paths.
-
-### Option C — rsync clinical data to protected storage
-
-```powershell
-rsync -azuv --progress `
-  C:\ZaheerWork\Research\ResearchModule\Dataset\ `
-  zahmed@pcsdata.univ-littoral.fr:/nfs/data/protected/lisic/zahmed/ResearchModule/Dataset/
-```
-
-Only run this if PhysioNet license terms are satisfied and data stays on
-Calculco protected storage.
-
-### Option D — scp (small transfers only)
-
-```powershell
-scp -Cr C:\ZaheerWork\Research\ResearchModule\pyproject.toml `
-  zahmed@calculco.univ-littoral.fr:~/ResearchModule/
-```
-
-Prefer `rsync` for anything large or resumable.
-
-## After Transfer: Python Environment on Calculco ( Status : Done )
-
-The repository declares Python 3.13 and `uv` locally. On Calculco, system Python
-is 3.11.2. Choose one path:
-
-1. **Conda module** (Calculco standard — see website tutorial *Environnements
-   virtuels Python*):
-
-   ```bash
-   module load conda/23.7
-   conda create -n researchmodule python=3.13 -y
-   conda activate researchmodule
-   ```
-
-2. **Install uv in home** (matches repo `AGENTS.md`): ( Status : Done )
-
-   ```bash
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   source ~/.bashrc
-   cd ~/ResearchModule
-   uv sync
-   ```
-
-Verified :
-
-```bash
+cd "$PROJECT_HOME"
+uv sync
 uv run python -V
-uv run pytest   # when tests exist in the tree
 ```
 
-## First OAR Test Job  ( Status : Done )
+Conda module path is documented on the Calculco website (*Environnements virtuels
+Python*) if needed.
 
-Create `~/scripts/test_job.sh`:
+## OAR Jobs (extraction and harmonization)
+
+Version-controlled scripts: `scripts/calculco/`. Submit from `$PROJECT_HOME`.
+Pass log paths at submit time so they stay machine-specific:
 
 ```bash
-#!/bin/bash
-#OAR -n test_hello
-#OAR -l /nodes=1/core=1,walltime=00:10:00
-#OAR -O ~/test_%jobid%.out
-#OAR -E ~/test_%jobid%.err
+oarsub -O "$PROJECT_HOME/scripts/calculco/logs/rm_mimic_%jobid%.out" \
+       -E "$PROJECT_HOME/scripts/calculco/logs/rm_mimic_%jobid%.err" \
+       -S "$PROJECT_HOME/scripts/calculco/extract_mimic.sh"
 
-echo "Job on $(hostname) at $(date)"
-echo "OAR_WORKDIR=$OAR_WORKDIR"
+oarsub -O "$PROJECT_HOME/scripts/calculco/logs/rm_harmonize_%jobid%.out" \
+       -E "$PROJECT_HOME/scripts/calculco/logs/rm_harmonize_%jobid%.err" \
+       -S "$PROJECT_HOME/scripts/calculco/harmonize.sh"
 ```
 
-Submit:
+Repository CPU extraction scripts request `gpudevice='-1'` so jobs do not land on
+GPU nodes during the migration. You do not need to pin a host name; request
+cores and walltime only unless you have a specific hardware need.
+
+Preflight (aggregate gates):
 
 ```bash
-chmod +x ~/scripts/test_job.sh
-oarsub -S ~/scripts/test_job.sh
-oarstat
+test -f "$DATASET_ROOT/processed/cohorts/cohort_stays.parquet"
+test -f "$PROJECT_HOME/reports/quality_profile.json"
 ```
 
-## Useful Commands Reference
+## Useful Commands
 
 ```bash
-# Identity and paths
 whoami
-pwd
-quota -s
-df -h ~
-df -h /nfs/data/protected/lisic/zahmed
-df -h /nfs/data/unprotected/lisic/zahmed
-df -h /workdir/lisic/zahmed
-du -sh /nfs/data/protected/lisic/zahmed/*
-
-# Purge schedule
-purgelist
-
-# Modules
+hostname
 module avail
-module load conda/23.7
-
-# Jobs
-oarsub -S ~/scripts/my_job.sh
+oarstatmon.py          # platform usage at a glance (preferred during migration)
 oarstat
+oarstat -u
+purgelist
+df -h "$HOME"
 ```
 
-## Documentation Map (Calculco Website)
+## Platform migration (2026)
 
-Read in this order after account setup:
+CalcULCO admins are transferring nodes in batches from the legacy `orval*` names
+to the new `chimay*` platform. Expect reduced capacity and changing hostnames
+through summer 2026.
 
-1. **Accéder** — SSH, storage, transfers
-2. **Calculco Quick Reference (gb)** — English cheat sheet
-3. **Environnement logiciel** — modules and software
-4. **Lancer un calcul** — OAR job submission
-5. **Tutoriaux** — Python/conda, checkpointing, VS Code remote
+### Access during transition
 
-External tutorial repo:
-[gogs.univ-littoral.fr/PoleCalcul/tutoriaux_calculco](https://gogs.univ-littoral.fr/PoleCalcul/tutoriaux_calculco)
+| Phase | What to expect |
+|-------|----------------|
+| CPU batches | Chimay 1–20 online on the new front-end; older `orval04`–`orval17` nodes follow in further CPU batches |
+| GPU batch (last) | GPU nodes (`orval39`–`orval43`) migrate after CPU batches; short windows where only `ritchie` has runnable nodes |
+| After migration | `calculco.univ-littoral.fr` remains the familiar alias for `ritchie` |
 
-## Security Reminders
+SSH to **`ritchie.univ-littoral.fr`** when `calculco` cannot schedule jobs. First
+login may prompt you to accept an updated host key — follow the on-screen
+instructions.
 
-- Username is `zahmed` .
-- Never commit passwords, SSH private keys, or raw clinical rows.
-- Change the initial LDAP password when `passwd` or the web portal allows it.
-- Prefer SSH keys (`ssh-keygen -t ed25519`) over password-only login.
-- MIMIC/eICU data stays on **protected** storage only.
+Monitoring and refreshed web documentation are still being rolled out; the
+[PCSBox archive](https://pcsbox.univ-littoral.fr/d/a6d7b17d78694755974b/) holds
+essential usage notes from the legacy site.
 
-## Status Checklist
+### Node naming and OAR properties
 
-| Step | Status |
-|------|--------|
-| SSH login works | Done |
-| Storage directories created | Done |
-| System inspected (modules, OAR, disk) | Done |
-| Environment variables defined | Done (add to `~/.bashrc`) |
-| Password changed | Pending (`passwd` error — contact support) |
-| SSH keys configured | Not started |
-| ResearchModule code transferred | **Next** |
-| Clinical data transferred to protected | Pending |
-| Python/uv or conda environment | Pending |
-| First OAR test job | Pending |
+**Do not** pin jobs with legacy host names such as `-p host='orval18'`. Nodes are
+renamed (for example `orval34` → `chimay19`, `orval35` → `chimay20`).
+
+Prefer homogeneous selectors when you need a specific CPU family:
+
+| Node family | Example legacy names | New names (partial) | OAR property options |
+|-------------|---------------------|---------------------|----------------------|
+| Intel Xeon Gold 6348, 512 GB RAM | orval18, orval19, … | chimay 5–12 | `-p nodemodel='HPE_DL360'` or `-p cputype='Xeon_Gold_6348'` |
+| AMD EPYC 7643, 512 GB RAM | orval27–orval33 | chimay 13–18 | `-p nodemodel='HPE_DL365'` or `-p cputype='EPYC_7643'` |
+
+For **CPU-only** jobs (including this project's extraction scripts), always add:
+
+```bash
+-p gpudevice='-1'
+```
+
+You may also request resources by core count only; the scheduler will place jobs on
+suitable 512 GB / AVX-512 nodes. The main rule from admins: do not omit
+`gpudevice='-1'` on CPU work, or jobs may occupy GPU nodes that others need.
+
+**Project-dedicated nodes:** `orval34` (RUPTURE / LISIC) and `orval35` (FAAR /
+LPCA) became `chimay19` and `chimay20`. Project members have default access;
+others may run there in best-effort mode (killable by project members).
+
+### Planned summer outage
+
+A CGU-wide power event for solar-panel grid connection is expected in the **first
+half of July 2026** (exact date not yet announced). Even a short mains interruption
+will trigger a **platform shutdown of at least 24 hours** for storage rewiring and
+Infiniband cleanup. Plan long OAR jobs and data transfers accordingly.
+
+### New accounts
+
+Request access via **calculco-admins@liste.univ-littoral.fr** if you need an
+account form during the transition.
+
+## Account-Specific Details
+
+Record usernames, quotas, transfer history, and checklist status only in
+**`Documentation/CalculcoSetup.local.md`** (gitignored). Template:
+`Documentation/CalculcoSetup.example.md`.

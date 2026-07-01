@@ -16,7 +16,6 @@ from pipeline.config import (
     DATASET_ROOT,
     DEFAULT_COHORT_PARAMETERS,
     REPORTS_ROOT,
-    ensure_local_directories,
 )
 from pipeline.io_utils import DatasetPathError, inspect_header, resolve_dataset_path
 
@@ -472,7 +471,6 @@ def build_cohort_artifacts(
 ) -> dict[str, Any]:
     """Build source-specific and unified cohort artifacts plus a safe manifest."""
 
-    ensure_local_directories()
     config.cohorts_root.mkdir(parents=True, exist_ok=True)
     config.manifest_path.parent.mkdir(parents=True, exist_ok=True)
 

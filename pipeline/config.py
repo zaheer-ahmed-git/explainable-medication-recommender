@@ -2,17 +2,149 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+_CODE_ROOT = Path(__file__).resolve().parents[1]
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATASET_ROOT = PROJECT_ROOT / "Dataset"
+
+def _path_from_env(name: str, environ: Mapping[str, str]) -> Path | None:
+    raw = environ.get(name)
+    if not raw:
+        return None
+    return Path(raw).expanduser().resolve()
+
+
+def resolve_project_root(
+    *,
+    code_root: Path = _CODE_ROOT,
+    environ: Mapping[str, str] | None = None,
+) -> Path:
+    """Resolve the repository root for code, reports, and default local paths."""
+
+    env = os.environ if environ is None else environ
+    return (
+        _path_from_env("PROJECT_HOME", env)
+        or _path_from_env("RESEARCHMODULE_ROOT", env)
+        or code_root.resolve()
+    )
+
+
+def resolve_dataset_root(
+    project_root: Path,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> Path:
+    """Resolve licensed clinical data root (protected NFS on Calculco)."""
+
+    env = os.environ if environ is None else environ
+    dataset_root = _path_from_env("DATASET_ROOT", env)
+    if dataset_root is not None:
+        return dataset_root
+
+    data_protected = _path_from_env("DATA_PROTECTED", env)
+    if data_protected is not None:
+        return data_protected / "Dataset"
+
+    return project_root / "Dataset"
+
+
+def resolve_reports_root(
+    project_root: Path,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> Path:
+    """Resolve aggregate report output directory."""
+
+    env = os.environ if environ is None else environ
+    return _path_from_env("REPORTS_ROOT", env) or (project_root / "reports")
+
+
+def resolve_duckdb_temp_dir(
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> Path:
+    """Resolve a writable directory DuckDB may use to spill to disk.
+
+    An in-memory DuckDB database has no spill directory by default and cannot
+    offload larger-than-memory operators, which makes big ``COPY ... TO parquet``
+    unions (notably the eICU ``vital_periodic`` fan-out) get OOM-killed by the
+    OAR cgroup before DuckDB's own memory limit engages. DuckDB does not read the
+    OS ``TMPDIR`` on its own, so this value is passed explicitly via
+    ``SET temp_directory``.
+
+    Resolution order: ``DUCKDB_TEMP_DIR`` -> ``TMPDIR`` -> the system temp dir
+    (typically node-local ``/tmp``). The result is not required to exist yet.
+    """
+
+    env = os.environ if environ is None else environ
+    for name in ("DUCKDB_TEMP_DIR", "TMPDIR"):
+        raw = env.get(name)
+        if raw:
+            return Path(raw).expanduser() / "duckdb_spill"
+    return Path(tempfile.gettempdir()) / "duckdb_spill"
+
+
+def resolve_duckdb_memory_limit(
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> str | None:
+    """Resolve an optional DuckDB memory ceiling (e.g. ``"24GB"``).
+
+    Bounding DuckDB below the OAR cgroup allocation lets it spill gracefully
+    instead of being SIGKILLed. ``None`` keeps DuckDB's own default (80% of
+    physical RAM), which is unsafe under a cgroup smaller than the machine.
+    """
+
+    env = os.environ if environ is None else environ
+    raw = env.get("DUCKDB_MEMORY_LIMIT")
+    value = raw.strip() if raw else ""
+    return value or None
+
+
+def resolve_duckdb_threads(
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> int | None:
+    """Resolve an optional DuckDB thread cap.
+
+    Fewer threads lower the peak buffered memory of parallel ``COPY`` pipelines.
+    ``None`` keeps DuckDB's default (one thread per core).
+    """
+
+    env = os.environ if environ is None else environ
+    raw = env.get("DUCKDB_THREADS")
+    if not raw:
+        return None
+    try:
+        threads = int(raw)
+    except ValueError:
+        return None
+    return threads if threads > 0 else None
+
+
+PROJECT_ROOT = resolve_project_root()
+DATASET_ROOT = resolve_dataset_root(PROJECT_ROOT)
 PROCESSED_DATA_ROOT = DATASET_ROOT / "processed"
 COHORTS_ROOT = PROCESSED_DATA_ROOT / "cohorts"
-REPORTS_ROOT = PROJECT_ROOT / "reports"
+EXTRACTS_ROOT = PROCESSED_DATA_ROOT / "extracts"
+HARMONIZED_ROOT = PROCESSED_DATA_ROOT / "harmonized"
+MAPPING_ROOT = DATASET_ROOT / "mappings"
+REPORTS_ROOT = resolve_reports_root(PROJECT_ROOT)
+
+DUCKDB_TEMP_DIR = resolve_duckdb_temp_dir()
+DUCKDB_MEMORY_LIMIT = resolve_duckdb_memory_limit()
+DUCKDB_THREADS = resolve_duckdb_threads()
 
 RANDOM_SEED = 20260617
+COHORT_VERSION = "cohort-manifest-v1"
+EXTRACTION_VERSION = "source-extraction-v1"
+HARMONIZATION_VERSION = "harmonization-v1"
+MEDICATION_MAPPING_VERSION = "medication-rxnorm-atc-v1"
+CONDITION_MAPPING_VERSION = "condition-rollup-v1"
 DEFAULT_COHORT_PARAMETERS = {
     "unit_of_analysis": "icu_stay",
     "adult_age_minimum": 18,
@@ -40,6 +172,114 @@ class SourceSpec:
     @property
     def root(self) -> Path:
         return DATASET_ROOT / self.root_relative_path
+
+
+@dataclass(frozen=True)
+class MappingFileSpec:
+    """Expected local mapping resource for concept harmonization."""
+
+    name: str
+    relative_path: Path
+    required_columns: tuple[str, ...]
+    version: str
+
+
+MEDICATION_MAPPING_SPECS: tuple[MappingFileSpec, ...] = (
+    MappingFileSpec(
+        name="mimic_ndc_rxnorm_atc",
+        relative_path=Path("medications") / "mimic_ndc_rxnorm_atc.csv",
+        required_columns=(
+            "ndc",
+            "rxcui",
+            "ingredient_name",
+            "rxnorm_name",
+            "atc_code",
+            "atc_level",
+        ),
+        version=MEDICATION_MAPPING_VERSION,
+    ),
+    MappingFileSpec(
+        name="eicu_drug_rxnorm_atc",
+        relative_path=Path("medications") / "eicu_drug_rxnorm_atc.csv",
+        required_columns=(
+            "drughiclseqno",
+            "gtc",
+            "drug_name",
+            "rxcui",
+            "ingredient_name",
+            "rxnorm_name",
+            "atc_code",
+            "atc_level",
+        ),
+        version=MEDICATION_MAPPING_VERSION,
+    ),
+)
+
+
+CONDITION_MAPPING_SPECS: tuple[MappingFileSpec, ...] = (
+    MappingFileSpec(
+        name="icd10_ccsr",
+        relative_path=Path("conditions") / "icd10_ccsr.csv",
+        required_columns=(
+            "icd_code",
+            "ccsr_category",
+            "ccsr_category_description",
+        ),
+        version=CONDITION_MAPPING_VERSION,
+    ),
+    MappingFileSpec(
+        name="icd9_ccs",
+        relative_path=Path("conditions") / "icd9_ccs.csv",
+        required_columns=(
+            "icd_code",
+            "ccs_category",
+            "ccs_category_description",
+        ),
+        version=CONDITION_MAPPING_VERSION,
+    ),
+    MappingFileSpec(
+        name="icd9_to_icd10_gem",
+        relative_path=Path("conditions") / "icd9_to_icd10_gem.csv",
+        required_columns=(
+            "icd9_code",
+            "icd10_code",
+            "approximate_flag",
+        ),
+        version=CONDITION_MAPPING_VERSION,
+    ),
+    MappingFileSpec(
+        name="icd_chapters",
+        relative_path=Path("conditions") / "icd_chapters.csv",
+        required_columns=(
+            "icd_version",
+            "category_code",
+            "chapter_code",
+            "chapter_name",
+        ),
+        version=CONDITION_MAPPING_VERSION,
+    ),
+    MappingFileSpec(
+        name="eicu_diagnosis_text_condition_map",
+        relative_path=Path("conditions") / "eicu_diagnosis_text_condition_map.csv",
+        required_columns=(
+            "diagnosisstring_normalized",
+            "condition_rollup_token",
+            "condition_name",
+        ),
+        version=CONDITION_MAPPING_VERSION,
+    ),
+    MappingFileSpec(
+        name="project_condition_groups",
+        relative_path=Path("conditions") / "project_condition_groups.csv",
+        required_columns=(
+            "match_type",
+            "match_value",
+            "project_condition_group",
+            "project_condition_token",
+        ),
+        version=CONDITION_MAPPING_VERSION,
+    ),
+)
 
 
 SOURCE_SPECS: tuple[SourceSpec, ...] = (
@@ -127,4 +367,6 @@ def ensure_local_directories() -> None:
 
     PROCESSED_DATA_ROOT.mkdir(parents=True, exist_ok=True)
     COHORTS_ROOT.mkdir(parents=True, exist_ok=True)
+    EXTRACTS_ROOT.mkdir(parents=True, exist_ok=True)
+    HARMONIZED_ROOT.mkdir(parents=True, exist_ok=True)
     REPORTS_ROOT.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,5 @@
+# Copy to common.local.sh on Calculco (gitignored). Sourced by common.sh after
+# .env.calculco when present.
+
+export DATASET_ROOT=/nfs/data/protected/<lab>/<username>/ResearchModule/Dataset
+export WORK_SCRATCH=/workdir/<lab>/<username>

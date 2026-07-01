@@ -7,10 +7,13 @@ description: Plan and review any task that accesses clinical datasets, derived p
 
 ## Before Access
 
-1. Read `SECURITY.md`, `ARCHITECTURE.md`, and the data rules in `AGENTS.md`.
-2. Confirm the minimum tables, columns, population, and aggregation needed.
-3. Prefer schemas, headers, metadata, and aggregate counts over rows.
-4. Keep network access disabled unless the user explicitly authorizes a
+1. Read `SECURITY.md`, `ARCHITECTURE.md`, `Documentation/CalculcoSetup.md`, and
+   the data rules in `AGENTS.md`.
+2. Confirm `DATASET_ROOT` resolves to protected storage on Calculco; do not read
+   clinical files from home copies or agent context.
+3. Confirm the minimum tables, columns, population, and aggregation needed.
+4. Prefer schemas, headers, metadata, and aggregate counts over rows.
+5. Keep network access disabled unless the user explicitly authorizes a
    necessary trusted source.
 
 ## During Processing
@@ -18,7 +21,8 @@ description: Plan and review any task that accesses clinical datasets, derived p
 1. Use DuckDB projection and cohort filters for large compressed tables.
 2. Avoid printing records, note text, identifiers, or free-text fields.
 3. Preserve source and transformation provenance.
-4. Write derived artifacts only under ignored local paths.
+4. Write derived artifacts only under ignored paths (`$DATASET_ROOT/processed/`,
+   `$PROJECT_HOME/reports/` for aggregates).
 5. Apply patient-level splitting and temporal cutoffs before fitting any
    learned preprocessing or model.
 6. Use synthetic fixtures for debugging and tests.

@@ -9,6 +9,8 @@ line. Focus on correctness and risk before style.
   fixtures, reports, or model artifacts?
 - Are secrets, credentials, access tokens, or local paths exposed?
 - Are PhysioNet access and redistribution restrictions preserved?
+- On Calculco, is licensed data confined to protected NFS (`DATASET_ROOT`) rather than home or public remotes?
+- Do ignore rules (`.gitignore`, `.cursorignore`, `.cursorindexingignore`) cover datasets, reports, artifacts, and job logs?
 
 ## Cohort and Schema Correctness
 
@@ -41,7 +43,7 @@ line. Focus on correctness and risk before style.
 - Are seeds, cohort parameters, windows, mappings, feature lists, and versions
   recorded?
 - Can generated artifacts be traced to code and configuration?
-- Are absolute machine-specific paths avoided?
+- Are absolute machine-specific paths avoided in favor of `PROJECT_HOME`,`DATASET_ROOT`, and related environment variables?
 
 ## Performance
 
