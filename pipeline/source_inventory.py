@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Sequence
 
-from pipeline.config import REPORTS_ROOT, SOURCE_SPECS, ensure_local_directories
+from pipeline.config import REPORTS_ROOT, SOURCE_SPECS
 from pipeline.io_utils import build_source_inventory
 
 
@@ -19,7 +19,6 @@ def write_source_inventory(
 ) -> dict[str, object]:
     """Write source metadata and return the generated inventory."""
 
-    ensure_local_directories()
     inventory = build_source_inventory(SOURCE_SPECS)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(

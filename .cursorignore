@@ -1,5 +1,7 @@
 # Licensed clinical data must not be exposed to AI context.
 Dataset/
+derived/
+outputs/
 
 # Secrets and credentials.
 .env
@@ -9,9 +11,25 @@ Dataset/
 credentials.json
 secrets.json
 
-# Generated model artifacts may contain derived patient-level information.
+# Generated research artifacts (may contain derived patient-level information).
+DepreciatedCode/
 Models/
 models/
+reports/
 artifacts/
+*.parquet
+*.feather
 *.pkl
 *.joblib
+
+# Calculco job logs and scratch (aggregate manifests live under reports/).
+scripts/calculco/logs/*.out
+scripts/calculco/logs/*.err
+
+# Local environments and caches.
+.venv/
+.uv-cache/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+__pycache__/

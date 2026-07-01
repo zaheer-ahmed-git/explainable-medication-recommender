@@ -11,6 +11,18 @@ sandbox_mode = "workspace-write"
 project_doc_max_bytes = 32768
 web_search = "cached"
 
+developer_instructions = """
+ULCO Calculco HPC only. Export PROJECT_HOME, DATASET_ROOT, and WORK_SCRATCH
+before pipeline or data work. Account-specific server paths are gitignored
+(*.local.md, .env.calculco, common.local.sh). See Documentation/Environment.md.
+
+Path rules: resolve via pipeline/config.py and PROJECT_HOME, DATASET_ROOT,
+REPORTS_ROOT, WORK_SCRATCH. Never commit or paste raw clinical rows.
+
+Use uv exclusively. Lightweight checks: pytest, ruff. OAR extraction only when
+requested. Inspect before editing; minimal changes.
+"""
+
 [sandbox_workspace_write]
 network_access = false
 

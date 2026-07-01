@@ -32,4 +32,6 @@ extend-exclude = [
     ".venv",
     "Dataset",
     "DepreciatedCode",
+    "reports",
+    "scripts/calculco/logs",
 ]

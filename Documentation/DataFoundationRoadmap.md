@@ -6,7 +6,7 @@ This roadmap turns the research architecture into a sequence of verifiable
 data and modeling milestones. It supersedes status assumptions in older plans
 when they conflict with the current working tree.
 
-Last reviewed: 2026-06-17.
+Last reviewed: 2026-07-01.
 
 ## Current Baseline
 
@@ -20,10 +20,12 @@ The source files include multi-gigabyte compressed CSV tables. They require
 DuckDB projection/filtering or chunked streaming.
 
 The active repository contains source-inventory, adult ICU/unit-stay cohort
-materialization, aggregate source-table quality profiling, and aggregate EDA
-briefing synthesis code with synthetic tests. EDA notebooks, harmonization,
-feature construction, labels, graph artifacts, and models are not yet
-implemented. The ignored
+materialization, aggregate source-table quality profiling, aggregate EDA
+briefing synthesis, report-gated source extraction CLIs, full local
+cohort-filtered MIMIC/eICU extraction runs, and Milestone 5 harmonization for
+cohort stays, demographics, conditions, medications, labs, vitals, allergies,
+interventions, and temporal events with synthetic tests. Feature construction,
+labels, graph artifacts, and models are not yet implemented. The ignored
 `DepreciatedCode/` prototype supplies historical conventions for candidate
 generation, patient-level splitting, baseline ranking, and ranking metrics.
 
@@ -51,6 +53,7 @@ pipeline/
   cohort.py
   profile_tables.py
   eda_summary.py
+  extract_utils.py
   mimic_extract.py
   eicu_extract.py
   harmonize.py
@@ -126,7 +129,7 @@ Exit gate:
 
 Implemented command:
 
-```powershell
+```bash
 uv run python -m pipeline.source_inventory
 ```
 
@@ -175,7 +178,7 @@ Exit gate:
 
 Implemented command:
 
-```powershell
+```bash
 uv run python -m pipeline.cohort
 ```
 
@@ -221,17 +224,17 @@ Exit gate:
 
 Implemented command:
 
-```powershell
+```bash
 uv run python -m pipeline.profile_tables
 ```
 
-Latest local aggregate run:
+Latest local aggregate run (2026-06-18):
 
 - configured structured tables: 24;
-- completed aggregate profiles: 18;
-- table-level scan failures recorded: 6;
-- failed scans: MIMIC `prescriptions`, `labevents`, `chartevents`,
-  `inputevents`; eICU `medication`, `apachePatientResult`;
+- completed aggregate profiles: 22;
+- table-level scan failures recorded: 2;
+- failed scans: MIMIC `chartevents` and `inputevents` (stale relative to the
+  corrected local files verified on 2026-06-30);
 - completed profiles showed no duplicate-key excess rows and no referential
   orphan rows across configured checks;
 - aggregate plausibility checks flagged out-of-bounds values in selected
@@ -239,36 +242,39 @@ Latest local aggregate run:
   engineering;
 - generated artifact: ignored `reports/quality_profile.json`.
 
-The scan failures are treated as data-quality/source-integrity blockers for
-those tables until the local compressed files and CSV parser settings are
-reviewed. No patient rows or note text are written to the report.
+Re-run `pipeline.profile_tables` after source-file correction so extraction
+gates and EDA summaries reflect the current `chartevents` and `inputevents`
+files. No patient rows or note text are written to the report.
 
 Source integrity follow-up:
 
-```powershell
+```bash
 uv run python -m pipeline.source_integrity
 uv run python -m pipeline.source_integrity --all-manifest-files
 ```
 
-Latest full local integrity audit across all files listed in configured
-`SHA256SUMS.txt` manifests:
+Latest targeted integrity audit of the six previously profiling-blocked files
+(2026-06-30):
 
-- MIMIC-IV v3.1: 33 files checked; 29 checksum matches; 4 checksum
-  mismatches with gzip failures: `hosp/emar.csv.gz`,
-  `hosp/emar_detail.csv.gz`, `hosp/pharmacy.csv.gz`, and `hosp/poe.csv.gz`;
-- eICU-CRD v2.0: 32 files checked; 30 checksum matches; 2 checksum
-  mismatches with gzip failures: `carePlanGeneral.csv.gz` and
-  `nurseCharting.csv.gz`;
+- checksum/gzip passed: MIMIC `prescriptions`, MIMIC `labevents`, MIMIC
+  `chartevents`, MIMIC `inputevents`, eICU `medication`, and eICU
+  `apachePatientResult`;
+- generated artifact: ignored `reports/source_integrity_failed_tables.json`.
+
+Earlier full local integrity audit across all files listed in configured
+`SHA256SUMS.txt` manifests (2026-06-18):
+
+- files checked: 70;
+- checksum matches: 66;
+- checksum mismatches with gzip failures: MIMIC `icu/chartevents.csv.gz` and
+  MIMIC `icu/inputevents.csv.gz` (superseded by the 2026-06-30 targeted
+  re-audit on corrected local files);
 - MIMIC-IV-Note v2.2: 5 manifest entries checked; 3 checksum matches; 2
   manifest/layout reconciliations where `SHA256SUMS.txt` lists
   `note/discharge_detail.csv.gz` and `note/radiology_detail.csv.gz`, while the
   configured and locally present source files are the original uncompressed
   `note/discharge_detail.csv` and `note/radiology_detail.csv`;
-- previously blocked `icu/chartevents.csv.gz` now matches the manifest and
-  passes gzip validation;
-- generated artifacts: ignored `reports/source_integrity_all_mimiciv.json`,
-  `reports/source_integrity_all_eicu_crd.json`, and
-  `reports/source_integrity_all_mimiciv_note.json`.
+- generated artifact: ignored `reports/source_integrity_all_manifest_files.json`.
 
 Any mismatched, truly missing, or gzip-failing file should be re-transferred,
 re-downloaded, or reconciled against the official source package before
@@ -280,8 +286,9 @@ checksum and gzip checks pass.
 ## Execution-Plan Milestone 4: EDA and Dataset Understanding
 
 Status: implemented for aggregate report synthesis, stakeholder briefing, and
-figure pack. Detailed notebook EDA over cohort-filtered extracts remains
-planned after source scan blockers are reviewed.
+figure pack. The latest EDA summary predates corrected `chartevents` and
+`inputevents` files and full extraction runs; re-run after refreshed quality
+profiles. Detailed notebook EDA over cohort-filtered extracts remains planned.
 
 Deliverables:
 
@@ -292,7 +299,7 @@ Deliverables:
 
 Implemented command:
 
-```powershell
+```bash
 uv run python -m pipeline.eda_summary
 ```
 
@@ -305,31 +312,42 @@ Latest local aggregate run:
   tables;
 - generated figures: cohort selected stays by source, quality profile status,
   largest completed tables, and quality issue categories;
-- key stakeholder message: medication and several large event tables require
-  scan/parser review before extraction or feature engineering.
+- key stakeholder message at run time: medication and several large event tables
+  required scan/parser review before extraction or feature engineering (MIMIC
+  `chartevents` and `inputevents` source files now pass integrity; refresh
+  quality profiles and re-run EDA to update this message).
 
 This EDA layer uses only aggregate inventory, cohort, and quality-profile
 reports. It does not inspect raw rows, note text, or patient-level records.
 
 ## Roadmap Milestone 4: Source-Specific Extraction
 
-Status: not started.
+Status: implemented for report-gated extraction CLIs with synthetic contract
+tests. Full local cohort-filtered extraction runs completed on 2026-06-28;
+aggregate manifests reviewed.
 
 MIMIC domains:
 
-- demographics and admissions;
-- diagnoses and procedures;
-- labs and ICU vitals;
-- prescriptions, pharmacy, eMAR, and input events;
-- optional discharge and radiology notes.
+- demographics and admissions, extracted;
+- diagnoses and procedures, extracted;
+- labs, extracted;
+- ICU procedure events, extracted;
+- ICU input events, implemented as a gated spec; skipped on the 2026-06-28 run
+  because the 2026-06-18 quality profile still recorded `scan_failed` (local
+  `inputevents.csv.gz` now passes the 2026-06-30 integrity audit; re-profile and
+  re-extract to materialize);
+- prescriptions, extracted;
+- pharmacy, eMAR, POE, and charted ICU vitals (`chartevents`), extraction specs
+  not yet added to the CLI; local `chartevents.csv.gz` now passes the
+  2026-06-30 integrity audit;
+- optional discharge and radiology notes remain deferred.
 
 eICU domains:
 
-- demographics and unit stays;
-- diagnoses;
-- labs and vitals;
-- medication and infusion;
-- allergy, APACHE, treatment, and optional notes.
+- demographics and unit stays, extracted;
+- diagnoses, labs, vitals, medication, infusion, allergy, APACHE, and treatment,
+  extracted;
+- optional notes remain deferred.
 
 Deliverables:
 
@@ -337,6 +355,35 @@ Deliverables:
 - `pipeline/eicu_extract.py`;
 - bounded, cohort-filtered Parquet outputs;
 - extraction manifests.
+
+Implemented commands:
+
+```bash
+uv run python -m pipeline.mimic_extract
+uv run python -m pipeline.eicu_extract
+```
+
+Latest local cohort-filtered extraction runs (2026-06-28):
+
+- MIMIC: 10 of 11 configured tables completed; 1 skipped (`mimic_inputevents`,
+  stale quality gate); ~50.1M cohort-filtered rows across completed tables;
+  generated artifact: ignored `reports/mimic_extraction_manifest.json` and
+  ignored Parquet under `Dataset/processed/extracts/mimiciv/`.
+- eICU: 12 of 12 configured tables completed; ~230.1M cohort-filtered rows;
+  generated artifact: ignored `reports/eicu_extraction_manifest.json` and ignored
+  Parquet under `Dataset/processed/extracts/eicu/`.
+
+Current implementation notes:
+
+- `pipeline/extract_utils.py` centralizes required-column checks, cohort joins,
+  source quality/integrity gates, local Parquet writes, and aggregate manifests.
+- Extraction manifests are aggregate-only; patient-level extracted rows are
+  written only under ignored `Dataset/processed/extracts/`.
+- Synthetic tests verify cohort filtering before materialization, blocked-table
+  skipping, and aggregate-only manifests.
+- MIMIC `inputevents` re-extraction and new `chartevents` extraction require a
+  refreshed `reports/quality_profile.json` after the corrected source files are
+  profiled.
 
 Exit gate:
 
@@ -346,7 +393,16 @@ Exit gate:
 
 ## Milestone 5: Harmonization
 
-Status: not started.
+Status: implemented for the CLI, mapping-resource gate, cohort-stay,
+demographics, semantically normalized conditions, RxNorm/ATC-mapped medication,
+lab, vital, allergy, intervention, and temporal-event artifacts, plus aggregate
+coverage/unmapped reports and the aggregate overlap notebook. Conditions now add
+optional shared roll-up tokens (CCSR/CCS/GEM/chapter/structural category, eICU
+curated text, and project groups such as sepsis) while preserving source-native
+codes; missing condition mapping files degrade gracefully rather than failing.
+Reviewed coverage thresholds remain a gate before any pooled MIMIC/eICU
+training. Shared condition vocabulary and roll-up level are resolved for this
+stage in `Documentation/ConditionNormalization.md`.
 
 Create a source-tagged common schema for:
 
@@ -374,9 +430,53 @@ Deliverables:
 - mapping tables with version and provenance;
 - `notebooks/03_harmonization_and_overlap.ipynb`.
 
+Implemented command:
+
+```bash
+uv run python -m pipeline.harmonize
+```
+
+Latest local aggregate run (2026-07-01):
+
+- harmonization status: completed;
+- harmonized artifacts: 9 of 9 configured tables (`cohort_stays`,
+  `demographics`, `conditions`, `medications`, `labs`, `vitals`, `allergies`,
+  `interventions`, `temporal_events`);
+- unified cohort stays harmonized: 285,476;
+- generated artifacts: ignored `Dataset/processed/harmonized/*.parquet`,
+  `reports/harmonization_manifest.json`, `reports/harmonization_coverage.json`,
+  and `reports/unmapped_concepts.json`.
+
+Current implementation notes:
+
+- Medication harmonization requires local ignored mapping files under
+  `Dataset/mappings/medications/`:
+  `mimic_ndc_rxnorm_atc.csv` and `eicu_drug_rxnorm_atc.csv`.
+- Condition normalization uses optional local ignored files under
+  `Dataset/mappings/conditions/` (CCSR/CCS/GEM/chapter/eICU-text/project-group).
+  Missing files degrade to structural ICD categories and source-native tokens;
+  `scripts/build_condition_mappings.py` writes review-ready templates. See
+  `Documentation/ConditionNormalization.md`.
+- Missing or malformed mapping resources produce
+  `reports/harmonization_manifest.json` with
+  `failed_missing_mapping_resources` and a nonzero CLI exit.
+- Aggregate coverage and unmapped reports are written to
+  `reports/harmonization_coverage.json` and
+  `reports/unmapped_concepts.json` when harmonization runs.
+- Harmonized artifacts are written under `Dataset/processed/harmonized/`:
+  `cohort_stays.parquet`, `demographics.parquet`, `conditions.parquet`,
+  `medications.parquet`, `labs.parquet`, `vitals.parquet`,
+  `allergies.parquet`, `interventions.parquet`, and
+  `temporal_events.parquet`.
+- Lab and vital concepts use reviewed mappings only when present; otherwise
+  source-native tokens and units are preserved and reported with aggregate unit
+  availability/compatibility counts.
+
 Exit gate:
 
 - unmapped concepts are reported, not silently dropped;
+- every harmonized artifact records source, cohort version, extraction
+  version, mapping version, harmonization version, and generation timestamp;
 - pooled training remains disabled until reviewed coverage thresholds pass.
 
 ## Milestone 6: Temporal Features and Labels
@@ -527,16 +627,19 @@ Exit gate:
 
 ## Immediate Next Plan
 
-The next implementation task should be source scan-blocker review, notebook
-EDA, or Roadmap Milestone 4 extraction only after reviewing
-`reports/quality_profile.json` and `reports/eda_dataset_understanding.md`:
+Extraction and initial harmonization have run locally. The next tasks are:
 
-1. Review scan failures and decide whether to re-download/repair local source
-   files or add reviewed parser fallbacks.
-2. Build `notebooks/01_schema_quality.ipynb` and
-   `notebooks/02_distributions_correlations.ipynb` from safe aggregate and
-   cohort-filtered extracts.
-3. Begin Roadmap Milestone 4 source-specific extraction only for tables that
-   pass the relevant quality gates.
-4. Add extraction tests for cohort filtering, required columns, and row-count
-   manifests.
+1. Re-run `pipeline.profile_tables` and `pipeline.eda_summary` so MIMIC
+   `chartevents` and `inputevents` quality gates reflect the corrected local
+   files verified on 2026-06-30.
+2. Re-run `pipeline.mimic_extract` to materialize `inputevents` and add or run
+   `chartevents` extraction once quality profiles complete.
+3. Re-run `pipeline.harmonize` after any refreshed MIMIC extracts and review
+   aggregate coverage, unmapped counts, and condition-normalization reports.
+4. Build `notebooks/03_harmonization_and_overlap.ipynb` from aggregate CLI
+   reports only.
+5. Approve a reproducible sepsis sub-cohort definition before sepsis-focused
+   work.
+6. Keep pooled training disabled until reviewed coverage thresholds pass.
+7. Begin Milestone 6 temporal feature and label contracts after harmonization
+   coverage is reviewed.

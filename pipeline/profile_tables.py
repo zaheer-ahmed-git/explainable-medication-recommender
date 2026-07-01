@@ -12,11 +12,7 @@ from typing import Any, Sequence
 
 import duckdb
 
-from pipeline.config import (
-    DATASET_ROOT,
-    REPORTS_ROOT,
-    ensure_local_directories,
-)
+from pipeline.config import DATASET_ROOT, REPORTS_ROOT
 from pipeline.io_utils import (
     inspect_header,
     quote_identifier,
@@ -545,7 +541,6 @@ def profile_quality(
 ) -> dict[str, Any]:
     """Build a quality profile report for configured source tables."""
 
-    ensure_local_directories()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with duckdb.connect(database=":memory:") as connection:
         connection.execute("PRAGMA enable_progress_bar=false")

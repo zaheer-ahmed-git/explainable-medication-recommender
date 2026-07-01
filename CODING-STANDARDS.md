@@ -39,7 +39,8 @@
 - Centralize random seeds and cohort parameters.
 - Prefer deterministic hash-based patient assignment when practical.
 - Write machine-readable manifests beside derived artifacts.
-- Include source paths by logical name, not machine-specific absolute paths.
+- Include source paths by logical name and environment variables (`DATASET_ROOT`,
+  `PROJECT_HOME`), not machine-specific absolute paths in committed code.
 - Record software versions through `uv.lock`.
 
 ## Models and Metrics

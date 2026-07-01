@@ -14,7 +14,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from pipeline.config import REPORTS_ROOT, ensure_local_directories
+from pipeline.config import REPORTS_ROOT
 
 
 SCHEMA_VERSION = "eda-dataset-understanding-v1"
@@ -564,7 +564,6 @@ def generate_eda_outputs(
     figures_root: Path = DEFAULT_FIGURES_ROOT,
     write_charts: bool = True,
 ) -> dict[str, Any]:
-    ensure_local_directories()
     summary = build_eda_summary(
         load_json(inventory_path),
         load_json(cohort_path),

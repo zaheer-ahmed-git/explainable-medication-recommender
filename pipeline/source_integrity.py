@@ -15,7 +15,6 @@ from pipeline.config import (
     DATASET_ROOT,
     REPORTS_ROOT,
     SOURCE_SPECS,
-    ensure_local_directories,
 )
 from pipeline.io_utils import resolve_dataset_path
 
@@ -322,7 +321,6 @@ def build_integrity_report(
 ) -> dict[str, Any]:
     """Run integrity checks and write a safe aggregate/local report."""
 
-    ensure_local_directories()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     results = [check_target(target, dataset_root=dataset_root) for target in targets]
     report = {

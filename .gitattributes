@@ -1,0 +1,14 @@
+# Normalize text files to LF in the repository for cross-platform consistency.
+* text=auto eol=lf
+
+# Shell and Python entry points should remain executable with Unix line endings.
+*.sh text eol=lf
+*.py text eol=lf
+
+# Binary artifacts
+*.gz binary
+*.parquet binary
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary

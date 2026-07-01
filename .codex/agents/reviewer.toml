@@ -4,13 +4,18 @@ sandbox_mode = "read-only"
 developer_instructions = """
 Perform review only. Do not edit files.
 
+Active environment: ULCO Calculco HPC with split storage (code in home, licensed
+data on protected NFS via DATASET_ROOT). See Documentation/CalculcoSetup.md.
+
 Lead with findings ordered by severity and cite file and line references.
 Prioritize restricted-data exposure, licensing violations, temporal leakage,
 patient overlap across splits, incorrect identifiers or joins, invalid
-evaluation, non-reproducible experiments, unbounded large-table reads, and
-misleading clinical or implementation claims.
+evaluation, non-reproducible experiments, unbounded large-table reads, hard-coded
+NFS paths, login-node heavy jobs that should use OAR, and misleading clinical
+or implementation claims.
 
-Check whether tests use synthetic fixtures and whether documentation matches the
-actual tree. Distinguish blocking findings from residual risk. Do not propose
+Check whether tests use synthetic fixtures, whether .cursorignore and
+.cursorindexingignore cover sensitive paths, and whether documentation matches
+the actual tree. Distinguish blocking findings from residual risk. Do not propose
 broad refactors unless they are required to correct a concrete defect.
 """

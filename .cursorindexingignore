@@ -5,14 +5,28 @@
 .ruff_cache/
 .mypy_cache/
 __pycache__/
+.ipynb_checkpoints/
 
 # Licensed, generated, and historical material.
 Dataset/
 DepreciatedCode/
+derived/
+outputs/
 Models/
 models/
 reports/
 artifacts/
+
+# Calculco OAR job logs.
+scripts/calculco/logs/
+
+# Secrets.
+.env
+.env.*
+*.key
+*.pem
+credentials.json
+secrets.json
 
 # Large or generated binary artifacts.
 *.pdf

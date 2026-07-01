@@ -4,7 +4,21 @@
 
 Build Milestone 5 as an executable data-foundation stage, including the missing Roadmap Milestone 4 source-specific extraction prerequisite. The result will be local, ignored, cohort-filtered Parquet extracts and harmonized source-tagged common schemas for demographics, conditions, medications, labs, vitals, allergies, interventions, and temporal events.
 
-Current repo facts to respect: harmonization is not implemented; extraction modules are absent; broad adult cohort artifacts exist; prescriptions, labevents, inputevents, eICU medication, and APACHE result have newer passing profile/integrity artifacts; MIMIC `chartevents` must be treated as blocked unless a fresh integrity/profile run proves it is usable. No pooled training is enabled in this milestone.
+Current repo facts to respect: extraction modules and Milestone 5 harmonization are implemented; broad adult cohort artifacts can be generated locally; current aggregate reports show MIMIC prescriptions/labevents and eICU medication/APACHE result passing quality/integrity gates, while MIMIC `chartevents` and `inputevents` remain blocked unless fresh integrity/profile runs prove they are usable. No pooled training is enabled in this milestone.
+
+## Implementation Progress
+
+Implemented:
+
+- `pipeline/extract_utils.py` for shared report-gated, cohort-filtered extraction behavior.
+- `pipeline/mimic_extract.py` and `pipeline/eicu_extract.py` for local ignored source extracts plus aggregate extraction manifests.
+- `pipeline/harmonize.py` for mapping-resource validation, harmonized `cohort_stays.parquet`, `demographics.parquet`, `conditions.parquet`, `medications.parquet`, `labs.parquet`, `vitals.parquet`, `allergies.parquet`, `interventions.parquet`, `temporal_events.parquet`, and aggregate coverage/unmapped reports.
+- `tests/test_extraction_harmonize.py` for synthetic extraction and harmonization contract coverage.
+- `notebooks/03_harmonization_and_overlap.ipynb` for aggregate-only review of manifest, coverage, and unmapped reports.
+
+Still enforced:
+
+- Coverage-threshold review before any pooled MIMIC/eICU training.
 
 ## Key Changes
 
@@ -28,14 +42,14 @@ Current repo facts to respect: harmonization is not implemented; extraction modu
   - `cohort_stays.parquet`: copied/enriched from current cohort artifacts with source-qualified IDs.
   - `conditions.parquet`: normalized ICD/eICU condition tokens plus original code/string provenance.
   - `medications.parquet`: RxNorm/ATC-normalized medication events, observed-order status, route/timing, and unmapped status.
-  - `labs.parquet` and `vitals.parquet`: shared concepts for creatinine, lactate, WBC, platelets, sodium, potassium, glucose, HR, MAP, SpO2, temperature where available.
+  - `labs.parquet` and `vitals.parquet`: common event schemas that preserve source-native concepts and original units, using reviewed mappings only when available.
   - `allergies.parquet`, `interventions.parquet`, and `temporal_events.parquet`: source-tagged event layer for later feature construction.
 
 - Add coverage and overlap reporting:
   - `reports/harmonization_manifest.json`
   - `reports/harmonization_coverage.json`
   - `reports/unmapped_concepts.json`
-  - `notebooks/03_harmonization_and_overlap.ipynb` after core CLI reports exist.
+  - `notebooks/03_harmonization_and_overlap.ipynb` for aggregate report review after core CLI reports exist.
 
 ## Interfaces And Contracts
 
@@ -43,7 +57,12 @@ Current repo facts to respect: harmonization is not implemented; extraction modu
   - `uv run python -m pipeline.mimic_extract`
   - `uv run python -m pipeline.eicu_extract`
   - `uv run python -m pipeline.harmonize`
-  - Optional flags: `--dataset-root`, `--cohorts-root`, `--extracts-root`, `--harmonized-root`, `--reports-root`, `--mapping-root`.
+  - Optional extraction flags: `--dataset-root`, `--cohort-path`,
+    `--extracts-root`, `--manifest`, `--quality-profile`,
+    `--integrity-report`.
+  - Optional harmonization flags: `--cohort-path`, `--extracts-root`,
+    `--harmonized-root`, `--mapping-root`, `--manifest`, `--coverage`,
+    `--unmapped`.
 
 - Config additions:
   - `EXTRACTS_ROOT = Dataset/processed/extracts`
@@ -70,7 +89,7 @@ Current repo facts to respect: harmonization is not implemented; extraction modu
   - Blocked source tables are skipped unless integrity/profile gates pass.
 
 - Verification commands:
-  - `uv run pytest tests/test_mimic_extract.py tests/test_eicu_extract.py tests/test_harmonize.py`
+  - `uv run pytest tests/test_extraction_harmonize.py`
   - `uv run pytest`
   - `uv run ruff check .`
   - `uv run ruff format --check .`
