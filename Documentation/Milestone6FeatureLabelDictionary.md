@@ -104,6 +104,11 @@ Default behavior excludes medication events. A CLI flag can include
 pre-decision medication events for reviewed experiments, but this should be
 treated as a leakage-sensitive decision.
 
+At protected-data scale, the builder materializes reduced pre-decision events
+once, windows them in stay-hash batches, then combines the batches into this
+single canonical Parquet file. Tune the batch count with
+`--event-sequence-batches` or `EVENT_SEQUENCE_BATCHES` in the OAR wrappers.
+
 Key columns:
 
 - identifiers and `split`

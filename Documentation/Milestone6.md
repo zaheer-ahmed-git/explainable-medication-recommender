@@ -26,6 +26,9 @@ dictionary rather than duplicating it here.
 ## Key Interfaces And Artifacts
 - Add config constants in `pipeline/config.py`: `FEATURES_ROOT`, `TRAINING_ROOT`, `FEATURE_VERSION`, `LABEL_VERSION`, `SPLIT_VERSION`, and reuse `DEFAULT_MODELING_PARAMETERS` defaults: top 50 candidates, `t_pred = t0 + 24h`, 24h label window, seed `20260617`.
 - Add `pipeline/features.py` with `FeatureBuildConfig` and `build_feature_artifacts(config)`. CLI: `uv run python -m pipeline.features`.
+  `event_sequences` uses a staged, stay-hash-batched windowing path
+  (`--event-sequence-batches`, default 8) so large `temporal_events` inputs do
+  not require one global `ROW_NUMBER()` over all pre-decision events.
 - Add `pipeline/build_training_table.py` with `TrainingTableBuildConfig` and `build_training_artifacts(config)`. CLI: `uv run python -m pipeline.build_training_table`.
 - Write ignored artifacts:
   - `Dataset/processed/features/cohort_decision_times.parquet`
@@ -57,7 +60,7 @@ dictionary rather than duplicating it here.
    Build one row per stay in `patient_stay_features`: demographics, admission/ICU context, source, split, temporal bounds, lab/vital summaries before `t_pred`, missingness indicators, prior intervention counts, and conservative allergy/constraint flags only when time-valid. Exclude outcomes, discharge-only fields, full-corpus popularity, future events, and candidate-specific prior-medication leakage from default features.
 
 6. **P2 event sequences**
-   Build `event_sequences` from time-valid pre-decision events only. Preserve event type, token, numeric/text value, normalized unit, source domain, provenance, and `event_time_hours_from_admit`. Use domain tables directly when normalized condition or medication fields are needed.
+   Build `event_sequences` from time-valid pre-decision events only. Preserve event type, token, numeric/text value, normalized unit, source domain, provenance, and `event_time_hours_from_admit`. Use domain tables directly when normalized condition or medication fields are needed. For protected-data scale, first stage the reduced pre-decision events in one scan, apply `ROW_NUMBER()` in stay-hash batches, then combine the part files into the canonical single `event_sequences.parquet`.
 
 7. **P2 candidate catalog**
    Build condition-specific candidate catalogs from MIMIC train positives only. Use `index_condition_token = COALESCE(project_condition_token, normalized_condition_token)`. Use canonical medication token `rxnorm:{rxcui}` when available, else `atc:{atc_code}`. Exclude unmapped condition/medication rows from candidates and report aggregate coverage loss.

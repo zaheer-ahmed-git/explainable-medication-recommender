@@ -549,6 +549,9 @@ Current implementation notes:
 - Pre-decision medication events are excluded from default event sequences to
   reduce target-proxy leakage risk; a CLI flag allows reviewed experiments to
   include them.
+- `event_sequences` is materialized with a staged pre-decision event file and
+  configurable stay-hash batches before final single-file combination to bound
+  DuckDB window-function memory on large `temporal_events` inputs.
 - Reports are aggregate-only; patient-level feature/training artifacts remain
   local and ignored.
 - Protected-data materialization runs via OAR wrappers
