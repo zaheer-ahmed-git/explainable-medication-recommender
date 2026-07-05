@@ -29,10 +29,14 @@ The repository is currently in the data-foundation and architecture stage.
   aggregate-only source-table quality profiling, EDA briefing synthesis,
   report-gated source extraction CLIs, and Milestone 5 harmonization for
   cohort stays, demographics, conditions, medications, labs, vitals,
-  allergies, interventions, and temporal events.
+  allergies, interventions, and temporal events. Milestone 6 temporal feature,
+  split, candidate-catalog, and observed-label artifact builders are also
+  implemented.
 - Focused synthetic tests cover the current source-inventory, cohort,
   profiling, EDA-summary, extraction, and Milestone 5 harmonization contracts.
-  Feature tables, labels, graph artifacts, and models are still planned.
+  Additional synthetic tests cover Milestone 6 temporal cutoffs, censoring,
+  split integrity, train-only candidates, and weak observational labels. Graph
+  artifacts and models are still planned.
 
 Do not interpret the poster's illustrative medication table or planned system
 diagram as a clinically validated implementation.
@@ -93,6 +97,8 @@ a medication is clinically optimal.
 - `Documentation/ResearchDetail.md`: current research framing and contribution.
 - `Documentation/DataFoundationRoadmap.md`: phased implementation plan.
 - `Documentation/PosterPresentationGuide.md`: poster explanation and Q&A.
+- `Documentation/Milestone6FeatureLabelDictionary.md`: feature and label
+  artifact schemas, temporal contract, and observational-label caveats.
 - `Documentation/SimilarPapers.md`: related-work notes.
 - `FinalPosterCDS.pdf`: research poster.
 - `ARCHITECTURE.md`: system and data architecture.
@@ -220,6 +226,20 @@ The harmonization reports are aggregate-only:
 `reports/condition_normalization_coverage.json`, and
 `reports/eicu_diagnosis_text_mapping_review.csv`. See
 `Documentation/ConditionNormalization.md` for the frozen condition contract.
+
+Build Milestone 6 temporal feature artifacts and the observed-label ranking
+table after harmonization coverage and mapping gates are reviewed:
+
+```bash
+uv run python -m pipeline.features
+uv run python -m pipeline.build_training_table
+```
+
+These write patient-level local artifacts under
+`Dataset/processed/features/` and `Dataset/processed/training/`; aggregate-only
+manifests are `reports/milestone6_feature_manifest.json` and
+`reports/training_table_manifest.json`. See
+`Documentation/Milestone6FeatureLabelDictionary.md`.
 
 Do not use `pip`, Poetry, Conda, global Python, or system site-packages.
 

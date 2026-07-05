@@ -54,16 +54,33 @@ task context, source-code inspection, or local agent memory.
 - `pipeline/mimic_extract.py` and `pipeline/eicu_extract.py` provide
   report-gated, cohort-filtered source extraction CLIs. Full local runs
   completed 2026-06-28 (MIMIC 10/11 tables; eICU 12/12); MIMIC `inputevents`
-  was skipped due to a stale quality gate; `chartevents` extraction is not yet
-  in the CLI.
+  was skipped due to a stale quality gate. A gated `mimic_chartevents` spec
+  (charted vitals, restricted to `MIMIC_CHARTEVENTS_VITAL_ITEMIDS` via
+  `ExtractionTableSpec.source_row_filter`) is now in the CLI but, like
+  `inputevents`, materializes only after a refreshed quality/integrity profile.
+- MIMIC charted vitals reach harmonized `vitals.parquet` through a
+  `pipeline.harmonize` chartevents branch that maps the curated itemids to the
+  shared `normalized_vital_token` vocabulary; before this, harmonized MIMIC
+  vitals were effectively empty (only eICU vital tables were wired).
 - `pipeline/harmonize.py` provides harmonization for cohort, demographics,
   conditions, RxNorm/ATC-mapped medications, labs, vitals, allergies,
   interventions, and temporal events. Latest local run completed 2026-07-01.
-- Calculco OAR submission scripts for protected-data extraction live in
+- `pipeline/features.py` and `pipeline/build_training_table.py` implement the
+  initial Milestone 6 temporal feature, patient split, train-only candidate
+  catalog, and observed-label ranking-table artifacts with aggregate-only
+  manifests and synthetic tests.
+- Calculco OAR submission scripts for protected-data work live in
   `scripts/calculco/`; submit with `oarsub -S` from the login node, not
-  interactively on the login node.
-- Sepsis sub-cohort extraction, EDA notebooks, feature tables, and models are
-  not yet implemented.
+  interactively on the login node. These include extraction (`extract_*.sh`),
+  `harmonize.sh`, `profile_tables.sh` (full source-table re-profile),
+  `features.sh`, `build_training_table.sh`, and the `milestone6.sh` chain.
+- `pipeline.profile_tables` rewrites the entire `reports/quality_profile.json`;
+  re-profile all tables (not a `--table` subset) so extraction gate entries are
+  preserved.
+- Sepsis sub-cohort extraction, detailed EDA notebooks, graph artifacts, and
+  models are not yet implemented. A reproducible sepsis definition and
+  index-condition policy are proposed for approval in
+  `Documentation/SepsisCohortAndIndexConditionPolicy.md`.
 - `DepreciatedCode/` contains the ignored synthetic prototype.
 - The prototype includes preprocessing, deterministic patient splitting,
   linear and XGBoost ranking, and ranking metrics.

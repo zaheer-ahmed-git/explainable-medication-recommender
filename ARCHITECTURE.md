@@ -7,7 +7,7 @@ target research architecture.
 
 ## Current State
 
-As of 2026-06-30, the active repository contains research documents,
+As of 2026-07-03, the active repository contains research documents,
 configuration, local licensed datasets, an ignored synthetic prototype,
 metadata-only source inventory, and adult ICU/unit-stay cohort materialization.
 The active `pipeline/` provides configuration, safe path/header inspection,
@@ -18,9 +18,10 @@ Milestone 5 harmonization that can materialize cohort-stay, demographics,
 condition, RxNorm/ATC-mapped medication, lab, vital, allergy, intervention, and
 temporal-event tables from local extracts. Lab, vital, allergy, and
 intervention concepts are preserved as source-native tokens unless reviewed
-mapping resources are available. Feature tables, labels, recommendation
-models, and clinical recommendations are not yet implemented in the active
-working tree.
+mapping resources are available. Milestone 6 temporal feature, patient split,
+candidate catalog, and observed-label ranking-table builders are implemented
+with synthetic tests. Recommendation models, graph artifacts, and clinical
+recommendations are not yet implemented in the active working tree.
 
 The legacy prototype demonstrates useful conventions such as:
 
@@ -223,7 +224,10 @@ unsupported clinical claims or substitute narrative confidence for evidence.
   Mapping is optional and degrades gracefully. See
   `Documentation/ConditionNormalization.md`.
 - Medication ingredient normalization and RxNorm/ATC mapping strategy.
-- Prescription decision time and label window.
+- Prescription decision time and label window. **Resolved for the initial
+  Milestone 6 contract:** `t_pred = ICU/unit admission + 24h`, with observed
+  medication starts in `(24h, 48h]` as historical labels. This remains a
+  reviewable default, not a validated clinical recommendation window.
 - Graph node and edge definitions.
 - Transformer input representation.
 - Rule-source curation and versioning.

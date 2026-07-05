@@ -95,15 +95,24 @@ def test_resolve_duckdb_temp_dir_defaults_to_system_temp() -> None:
 
 
 def test_resolve_duckdb_memory_limit_reads_env() -> None:
-    assert config.resolve_duckdb_memory_limit(environ={"DUCKDB_MEMORY_LIMIT": "24GB"}) == "24GB"
-    assert config.resolve_duckdb_memory_limit(environ={"DUCKDB_MEMORY_LIMIT": "  "}) is None
+    assert (
+        config.resolve_duckdb_memory_limit(environ={"DUCKDB_MEMORY_LIMIT": "24GB"})
+        == "24GB"
+    )
+    assert (
+        config.resolve_duckdb_memory_limit(environ={"DUCKDB_MEMORY_LIMIT": "  "})
+        is None
+    )
     assert config.resolve_duckdb_memory_limit(environ={}) is None
 
 
 def test_resolve_duckdb_threads_reads_positive_int() -> None:
     assert config.resolve_duckdb_threads(environ={"DUCKDB_THREADS": "8"}) == 8
     assert config.resolve_duckdb_threads(environ={"DUCKDB_THREADS": "0"}) is None
-    assert config.resolve_duckdb_threads(environ={"DUCKDB_THREADS": "not-a-number"}) is None
+    assert (
+        config.resolve_duckdb_threads(environ={"DUCKDB_THREADS": "not-a-number"})
+        is None
+    )
     assert config.resolve_duckdb_threads(environ={}) is None
 
 
@@ -130,6 +139,14 @@ def test_milestone5_output_roots_are_under_processed_dataset() -> None:
     assert config.EXTRACTS_ROOT == config.PROCESSED_DATA_ROOT / "extracts"
     assert config.HARMONIZED_ROOT == config.PROCESSED_DATA_ROOT / "harmonized"
     assert config.MAPPING_ROOT == config.DATASET_ROOT / "mappings"
+
+
+def test_milestone6_output_roots_and_versions_are_configured() -> None:
+    assert config.FEATURES_ROOT == config.PROCESSED_DATA_ROOT / "features"
+    assert config.TRAINING_ROOT == config.PROCESSED_DATA_ROOT / "training"
+    assert config.FEATURE_VERSION == "temporal-features-v1"
+    assert config.LABEL_VERSION == "observed-medication-label-v1"
+    assert config.SPLIT_VERSION == "patient-split-v1"
 
 
 def test_medication_mapping_specs_define_required_rxnorm_atc_columns() -> None:

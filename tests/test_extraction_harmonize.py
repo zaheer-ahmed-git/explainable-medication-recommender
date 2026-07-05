@@ -192,6 +192,53 @@ def test_mimic_extract_filters_rows_to_cohort_before_writing(tmp_path: Path) -> 
     assert "A41" not in manifest_text
 
 
+def test_mimic_chartevents_extract_filters_to_vital_itemids(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "Dataset"
+    cohort_path = tmp_path / "cohorts" / "cohort_stays.parquet"
+    output_root = tmp_path / "Dataset" / "processed" / "extracts" / "mimiciv"
+    manifest_path = tmp_path / "reports" / "mimic_manifest.json"
+    write_unified_cohort(cohort_path)
+    write_gzip_text(
+        dataset_root / "mimiciv" / "3.1" / "icu" / "chartevents.csv.gz",
+        "\n".join(
+            [
+                "subject_id,hadm_id,stay_id,charttime,storetime,itemid,value,valuenum,valueuom,warning",
+                # cohort stay, vital itemid -> kept
+                "10,20,30,2026-01-01 01:00:00,2026-01-01 01:05:00,220045,80,80,bpm,0",
+                # cohort stay, non-vital itemid -> dropped by source_row_filter
+                "10,20,30,2026-01-01 01:00:00,2026-01-01 01:05:00,999999,5,5,unit,0",
+                # non-cohort stay, vital itemid -> dropped by cohort join
+                "99,999,999,2026-01-01 01:00:00,2026-01-01 01:05:00,220045,90,90,bpm,0",
+            ]
+        )
+        + "\n",
+    )
+    spec = next(
+        table
+        for table in MIMIC_EXTRACTION_TABLES
+        if table.table_name == "mimic_chartevents"
+    )
+
+    build_mimic_extracts(
+        ExtractionBuildConfig(
+            source="mimiciv",
+            source_version="3.1",
+            dataset_root=dataset_root,
+            cohort_path=cohort_path,
+            output_root=output_root,
+            manifest_path=manifest_path,
+            enforce_table_gates=False,
+        ),
+        table_specs=(spec,),
+    )
+
+    rows = read_parquet_rows(output_root / "chartevents.parquet")
+
+    assert len(rows) == 1
+    assert rows[0]["stay_uid"] == "mimiciv:30"
+    assert rows[0]["itemid"] == "220045"
+
+
 def test_eicu_extract_filters_rows_to_unit_stay_before_writing(tmp_path: Path) -> None:
     dataset_root = tmp_path / "Dataset"
     cohort_path = tmp_path / "cohorts" / "cohort_stays.parquet"
@@ -1009,6 +1056,92 @@ def test_harmonize_writes_all_milestone5_artifacts_and_reports(
     assert unmapped["data_safety"]["contains_patient_rows"] is False
     assert unmapped["data_safety"]["no_source_value_samples"] is True
     assert all("sample" not in row for row in unmapped["unmapped"])
+
+
+def test_harmonize_maps_mimic_chartevents_vitals(tmp_path: Path) -> None:
+    cohort_path = tmp_path / "cohorts" / "cohort_stays.parquet"
+    extracts_root = tmp_path / "Dataset" / "processed" / "extracts"
+    mapping_root = tmp_path / "Dataset" / "mappings"
+    harmonized_root = tmp_path / "Dataset" / "processed" / "harmonized"
+    reports_root = tmp_path / "reports"
+    write_unified_cohort(cohort_path)
+    write_parquet_rows(
+        extracts_root / "mimiciv" / "chartevents.parquet",
+        (
+            "source",
+            "source_version",
+            "patient_uid",
+            "encounter_uid",
+            "stay_uid",
+            "source_patient_id",
+            "source_encounter_id",
+            "source_stay_id",
+            "extraction_version",
+            "charttime",
+            "storetime",
+            "itemid",
+            "value",
+            "valuenum",
+            "valueuom",
+            "warning",
+        ),
+        (
+            (
+                "mimiciv",
+                "3.1",
+                "mimiciv:10",
+                "mimiciv:20",
+                "mimiciv:30",
+                "10",
+                "20",
+                "30",
+                "test-extract",
+                "2026-01-01 01:00:00",
+                "2026-01-01 01:05:00",
+                "220045",
+                "80",
+                "80",
+                "bpm",
+                "0",
+            ),
+        ),
+    )
+    write_parquet_rows(
+        extracts_root / "mimiciv" / "d_items.parquet",
+        ("source", "source_version", "extraction_version", "itemid", "label"),
+        (("mimiciv", "3.1", "test-extract", "220045", "Heart Rate"),),
+    )
+    write_text(
+        mapping_root / "medications" / "mimic_ndc_rxnorm_atc.csv",
+        "ndc,rxcui,ingredient_name,rxnorm_name,atc_code,atc_level\n",
+    )
+    write_text(
+        mapping_root / "medications" / "eicu_drug_rxnorm_atc.csv",
+        "drughiclseqno,gtc,drug_name,rxcui,ingredient_name,rxnorm_name,atc_code,atc_level\n",
+    )
+
+    manifest = build_harmonized_artifacts(
+        HarmonizationBuildConfig(
+            cohort_path=cohort_path,
+            extracts_root=extracts_root,
+            harmonized_root=harmonized_root,
+            mapping_root=mapping_root,
+            manifest_path=reports_root / "harmonization_manifest.json",
+            coverage_path=reports_root / "harmonization_coverage.json",
+            unmapped_path=reports_root / "unmapped_concepts.json",
+        )
+    )
+
+    assert manifest["status"].startswith("completed")
+    vitals = read_parquet_rows(harmonized_root / "vitals.parquet")
+    mimic_vitals = [row for row in vitals if row["source"] == "mimiciv"]
+    assert len(mimic_vitals) == 1
+    vital = mimic_vitals[0]
+    assert vital["normalized_vital_token"] == "heart_rate"
+    assert vital["source_vital_name"] == "Heart Rate"
+    assert vital["value_numeric"] == 80.0
+    assert vital["mapping_status"] == "mapped_vital_itemid"
+    assert vital["source_table"] == "mimic_chartevents"
 
 
 def test_harmonize_prefers_exact_eicu_mapping_concept(tmp_path: Path) -> None:

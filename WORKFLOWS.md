@@ -145,13 +145,23 @@ failures.
 
 ## Build a Training Table
 
-1. Freeze cohort, index time, feature window, label window, and patient split.
-2. Build candidates from the training partition only.
-3. Create observed-positive and sampled/implicit-negative labels with explicit
+1. Confirm Milestone 5 harmonization artifacts and aggregate coverage reports
+   have been reviewed.
+2. Freeze cohort, index time, feature window, label window, and patient split.
+3. Run `uv run python -m pipeline.features` to build decision times,
+   patient-stay features, and event sequences under
+   `Dataset/processed/features/`.
+4. Run `uv run python -m pipeline.build_training_table` to build the split
+   manifest, train-only candidate catalog, and patient-condition-medication
+   table under `Dataset/processed/training/`.
+5. Build candidates from the training partition only.
+6. Create observed-positive and sampled/implicit-negative labels with explicit
    caveats.
-4. Exclude future and leakage-prone features by default.
-5. Validate one patient belongs to one split.
-6. Write a schema and manifest with class balance and candidate coverage.
+7. Exclude future and leakage-prone features by default.
+8. Validate one patient belongs to one split.
+9. Review `reports/milestone6_feature_manifest.json` and
+   `reports/training_table_manifest.json` for censoring, temporal exclusions,
+   candidate coverage, out-of-catalog positives, and aggregate-only contents.
 
 ## Run an Experiment
 
@@ -282,6 +292,67 @@ Review only aggregate manifests after completion:
 - `reports/harmonization_coverage.json`
 - `reports/condition_normalization_coverage.json`
 - `reports/unmapped_concepts.json`
+
+### Re-profile source tables on Calculco
+
+Re-run the **full** aggregate quality profile after correcting local
+`chartevents` / `inputevents` source files so their `scan_failed` entries
+refresh and the extraction gates can materialize `inputevents`. A full run is
+required because `pipeline.profile_tables` rewrites the whole
+`reports/quality_profile.json`; a `--table` subset would drop the other tables'
+gate entries.
+
+```bash
+oarsub -O "$PROJECT_HOME/scripts/calculco/logs/rm_profile_%jobid%.out" \
+       -E "$PROJECT_HOME/scripts/calculco/logs/rm_profile_%jobid%.err" \
+       -S "$PROJECT_HOME/scripts/calculco/profile_tables.sh"
+```
+
+Confirm `mimic_chartevents` and `mimic_inputevents` are `completed` in
+`reports/quality_profile.json`, then re-run the MIMIC extractor so
+`inputevents` materializes past its gate.
+
+### Run Milestone 6 feature and training builds on Calculco
+
+Run only after Milestone 5 harmonization and its aggregate coverage reports are
+reviewed. Outputs go to `$DATASET_ROOT/processed/features/` and
+`$DATASET_ROOT/processed/training/`; manifests to `$PROJECT_HOME/reports/`.
+
+Preflight on the login node:
+
+```bash
+for t in cohort_stays demographics conditions medications labs vitals \
+  allergies interventions temporal_events; do
+  test -f "$DATASET_ROOT/processed/harmonized/$t.parquet" || echo "MISSING $t"
+done
+```
+
+Submit the full Milestone 6 chain (features then training table) in one job:
+
+```bash
+oarsub -O "$PROJECT_HOME/scripts/calculco/logs/rm_milestone6_%jobid%.out" \
+       -E "$PROJECT_HOME/scripts/calculco/logs/rm_milestone6_%jobid%.err" \
+       -S "$PROJECT_HOME/scripts/calculco/milestone6.sh"
+```
+
+Or run the stages as separate jobs (`build_training_table.sh` depends on the
+feature artifacts from `features.sh`):
+
+```bash
+oarsub -O "$PROJECT_HOME/scripts/calculco/logs/rm_features_%jobid%.out" \
+       -E "$PROJECT_HOME/scripts/calculco/logs/rm_features_%jobid%.err" \
+       -S "$PROJECT_HOME/scripts/calculco/features.sh"
+oarsub -O "$PROJECT_HOME/scripts/calculco/logs/rm_training_table_%jobid%.out" \
+       -E "$PROJECT_HOME/scripts/calculco/logs/rm_training_table_%jobid%.err" \
+       -S "$PROJECT_HOME/scripts/calculco/build_training_table.sh"
+```
+
+Review only aggregate manifests after completion:
+
+- `reports/milestone6_feature_manifest.json` (eligibility, splits, temporal
+  exclusions)
+- `reports/training_table_manifest.json` (split integrity, candidate counts,
+  training rows by split, out-of-catalog positives, coverage losses)
 
 ### OAR troubleshooting (Calculco migration)
 
