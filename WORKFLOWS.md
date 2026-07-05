@@ -335,6 +335,10 @@ oarsub -O "$PROJECT_HOME/scripts/calculco/logs/rm_milestone6_%jobid%.out" \
        -S "$PROJECT_HOME/scripts/calculco/milestone6.sh"
 ```
 
+`event_sequences` is staged and windowed in stay-hash batches. The default OAR
+batch count is 8; export `EVENT_SEQUENCE_BATCHES=16` or higher before submit if
+the event-sequence windowing step still runs out of memory.
+
 Or run the stages as separate jobs (`build_training_table.sh` depends on the
 feature artifacts from `features.sh`):
 

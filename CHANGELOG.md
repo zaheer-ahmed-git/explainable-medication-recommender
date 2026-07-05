@@ -88,6 +88,12 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ### Fixed
 
+- Milestone 6 `event_sequences` now avoids one global `ROW_NUMBER()` over the
+  full pre-decision temporal-event set. `pipeline.features` stages the reduced
+  pre-decision events once, windows them in configurable stay-hash batches
+  (`--event-sequence-batches`, default 8), and combines the parts into the
+  canonical single `event_sequences.parquet`; the Calculco feature and
+  milestone wrappers also honor `EVENT_SEQUENCE_BATCHES`.
 - Harmonization no longer gets SIGKILLed (exit 137) at the eICU `vitals` step.
   The in-memory DuckDB connections in `pipeline/harmonize.py` now disable
   `preserve_insertion_order`, set an explicit spill `temp_directory` (DuckDB

@@ -239,7 +239,10 @@ These write patient-level local artifacts under
 `Dataset/processed/features/` and `Dataset/processed/training/`; aggregate-only
 manifests are `reports/milestone6_feature_manifest.json` and
 `reports/training_table_manifest.json`. See
-`Documentation/Milestone6FeatureLabelDictionary.md`.
+`Documentation/Milestone6FeatureLabelDictionary.md`. For large protected-data
+runs, `event_sequences` is staged and stay-hash-batched; tune with
+`--event-sequence-batches` or the OAR `EVENT_SEQUENCE_BATCHES` environment
+variable.
 
 Do not use `pip`, Poetry, Conda, global Python, or system site-packages.
 

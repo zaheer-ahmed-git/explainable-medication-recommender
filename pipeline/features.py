@@ -61,6 +61,7 @@ DEFAULT_CORE_VITAL_TOKENS = (
     "temperature",
     "respiratory_rate",
 )
+DEFAULT_EVENT_SEQUENCE_BATCHES = 8
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,7 @@ class FeatureBuildConfig:
     core_lab_tokens: tuple[str, ...] = DEFAULT_CORE_LAB_TOKENS
     core_vital_tokens: tuple[str, ...] = DEFAULT_CORE_VITAL_TOKENS
     include_predecision_medications: bool = False
+    event_sequence_batches: int = DEFAULT_EVENT_SEQUENCE_BATCHES
     duckdb_temp_directory: Path | None = DUCKDB_TEMP_DIR
     duckdb_memory_limit: str | None = DUCKDB_MEMORY_LIMIT
     duckdb_threads: int | None = DUCKDB_THREADS
@@ -107,6 +109,35 @@ def harmonized_path(config: FeatureBuildConfig, table_name: str) -> Path:
     """Return a harmonized table path."""
 
     return config.harmonized_root / f"{table_name}.parquet"
+
+
+def event_sequence_batch_count(config: FeatureBuildConfig) -> int:
+    """Return a positive event-sequence batch count."""
+
+    return max(1, int(config.event_sequence_batches))
+
+
+def event_sequence_staging_path(config: FeatureBuildConfig) -> Path:
+    """Return the generated pre-decision event-sequence staging path."""
+
+    return config.features_root / "_event_sequences_predecision.parquet"
+
+
+def event_sequence_part_path(config: FeatureBuildConfig, batch_index: int) -> Path:
+    """Return a generated event-sequence part path."""
+
+    return (
+        config.features_root
+        / "_event_sequence_parts"
+        / (f"event_sequences_part_{batch_index:04d}.parquet")
+    )
+
+
+def parquet_scan_paths(paths: Sequence[Path]) -> str:
+    """Return a DuckDB Parquet scan expression for multiple paths."""
+
+    path_list = ", ".join(sql_string(path) for path in paths)
+    return f"read_parquet([{path_list}])"
 
 
 def write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -597,8 +628,8 @@ LEFT JOIN intervention_agg
 """
 
 
-def event_sequences_query(config: FeatureBuildConfig) -> str:
-    """Build pre-decision event sequences."""
+def event_sequence_staging_query(config: FeatureBuildConfig) -> str:
+    """Build reduced pre-decision events before sequence numbering."""
 
     decision = config.cohort_decision_times_path
     temporal = harmonized_path(config, "temporal_events")
@@ -621,7 +652,27 @@ WITH decision AS (
 ),
 events AS (
     SELECT
-        e.*,
+        e.source,
+        e.source_version,
+        e.patient_uid,
+        e.encounter_uid,
+        e.stay_uid,
+        e.event_type,
+        e.source_domain,
+        e.source_table,
+        e.source_event_id,
+        e.event_token,
+        e.source_code,
+        e.source_text,
+        e.value_numeric,
+        e.value_text,
+        e.unit,
+        e.normalized_unit,
+        e.mapping_status,
+        e.cohort_version,
+        e.extraction_version,
+        e.mapping_version,
+        e.harmonization_version,
         d.split,
         {event_hours} AS event_time_hours_from_admit
     FROM {parquet_scan(temporal)} AS e
@@ -635,6 +686,49 @@ predecision AS (
     FROM events
     WHERE event_time_hours_from_admit >= 0
         AND event_time_hours_from_admit <= {prediction}
+)
+SELECT
+    source,
+    source_version,
+    patient_uid,
+    encounter_uid,
+    stay_uid,
+    split,
+    event_type,
+    source_domain,
+    source_table,
+    source_event_id,
+    event_time_hours_from_admit,
+    event_token,
+    source_code,
+    source_text,
+    value_numeric,
+    value_text,
+    unit,
+    normalized_unit,
+    mapping_status,
+    cohort_version,
+    extraction_version,
+    mapping_version,
+    harmonization_version
+FROM predecision
+"""
+
+
+def event_sequence_batch_query(
+    staging_path: Path,
+    *,
+    batch_index: int,
+    batch_count: int,
+) -> str:
+    """Build sequence-numbered events for one stay-hash batch."""
+
+    return f"""
+WITH staged AS (
+    SELECT *
+    FROM {parquet_scan(staging_path)}
+    WHERE HASH(COALESCE(CAST(stay_uid AS VARCHAR), '')) % {batch_count}
+        = {batch_index}
 )
 SELECT
     source,
@@ -663,9 +757,46 @@ SELECT
     cohort_version,
     extraction_version,
     mapping_version,
+    harmonization_version
+FROM staged
+"""
+
+
+def event_sequence_finalize_query(
+    config: FeatureBuildConfig,
+    *,
+    part_paths: Sequence[Path],
+) -> str:
+    """Combine sequence-numbered parts into the public single-file artifact."""
+
+    return f"""
+SELECT
+    source,
+    source_version,
+    patient_uid,
+    encounter_uid,
+    stay_uid,
+    split,
+    event_sequence_position,
+    event_type,
+    source_domain,
+    source_table,
+    source_event_id,
+    event_time_hours_from_admit,
+    event_token,
+    source_code,
+    source_text,
+    value_numeric,
+    value_text,
+    unit,
+    normalized_unit,
+    mapping_status,
+    cohort_version,
+    extraction_version,
+    mapping_version,
     harmonization_version,
     {sql_string(config.feature_version)} AS feature_version
-FROM predecision
+FROM {parquet_scan_paths(part_paths)}
 """
 
 
@@ -737,6 +868,7 @@ def base_manifest(
             "label_window_hours": config.label_window_hours,
             "split_seed": config.split_seed,
             "include_predecision_medications": config.include_predecision_medications,
+            "event_sequence_batches": event_sequence_batch_count(config),
             "core_lab_tokens": list(config.core_lab_tokens),
             "core_vital_tokens": list(config.core_vital_tokens),
         },
@@ -775,6 +907,66 @@ def artifact_record(
         "output_path": str(output_path),
         "status": "completed",
         "row_count": row_count,
+    }
+
+
+def event_sequence_artifact_record(
+    connection: duckdb.DuckDBPyConnection,
+    config: FeatureBuildConfig,
+) -> dict[str, Any]:
+    """Materialize event sequences with bounded-memory stay-hash batches."""
+
+    output_path = config.event_sequences_path
+    staging_path = event_sequence_staging_path(config)
+    batch_count = event_sequence_batch_count(config)
+    part_counts: list[int] = []
+    part_paths = [
+        event_sequence_part_path(config, batch_index)
+        for batch_index in range(batch_count)
+    ]
+    try:
+        staged_row_count = copy_query_to_parquet(
+            connection,
+            event_sequence_staging_query(config),
+            staging_path,
+        )
+        for batch_index, part_path in enumerate(part_paths):
+            part_counts.append(
+                copy_query_to_parquet(
+                    connection,
+                    event_sequence_batch_query(
+                        staging_path=staging_path,
+                        batch_index=batch_index,
+                        batch_count=batch_count,
+                    ),
+                    part_path,
+                )
+            )
+        row_count = copy_query_to_parquet(
+            connection,
+            event_sequence_finalize_query(config, part_paths=part_paths),
+            output_path,
+        )
+    except Exception as error:
+        return {
+            "table_name": "event_sequences",
+            "output_path": str(output_path),
+            "status": "failed",
+            "row_count": None,
+            "reason": safe_error_message(error),
+            "build_strategy": "staged_hash_batches",
+            "batch_count": batch_count,
+        }
+
+    return {
+        "table_name": "event_sequences",
+        "output_path": str(output_path),
+        "status": "completed",
+        "row_count": row_count,
+        "build_strategy": "staged_hash_batches",
+        "batch_count": batch_count,
+        "staged_row_count": staged_row_count,
+        "batch_row_counts": part_counts,
     }
 
 
@@ -864,11 +1056,6 @@ def build_feature_artifacts(
                 patient_stay_features_query(config),
                 config.patient_stay_features_path,
             ),
-            (
-                "event_sequences",
-                event_sequences_query(config),
-                config.event_sequences_path,
-            ),
         )
         for table_name, query, output_path in build_specs:
             record = artifact_record(
@@ -880,6 +1067,11 @@ def build_feature_artifacts(
             tables.append(record)
             if record["status"] == "completed":
                 manifest["artifacts"][table_name] = str(output_path)
+
+        record = event_sequence_artifact_record(connection, config)
+        tables.append(record)
+        if record["status"] == "completed":
+            manifest["artifacts"]["event_sequences"] = str(config.event_sequences_path)
 
         if any(table["status"] == "failed" for table in tables):
             manifest["status"] = "failed"
@@ -940,6 +1132,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--event-sequence-batches",
+        type=int,
+        default=DEFAULT_EVENT_SEQUENCE_BATCHES,
+        help=(
+            "Number of stay-hash batches used for event_sequences windowing. "
+            "Use more batches to lower peak memory on large temporal_events."
+        ),
+    )
+    parser.add_argument(
         "--duckdb-temp-dir",
         type=Path,
         default=DUCKDB_TEMP_DIR,
@@ -970,6 +1171,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             label_window_hours=args.label_window_hours,
             split_seed=args.split_seed,
             include_predecision_medications=args.include_predecision_medications,
+            event_sequence_batches=args.event_sequence_batches,
             duckdb_temp_directory=args.duckdb_temp_dir,
             duckdb_memory_limit=args.duckdb_memory_limit,
             duckdb_threads=args.duckdb_threads,

@@ -22,6 +22,7 @@ def test_feature_builder_applies_temporal_boundaries_and_safe_manifest(
             harmonized_root=Path(fixture["harmonized_root"]),
             features_root=features_root,
             manifest_path=manifest_path,
+            event_sequence_batches=2,
         )
     )
 
@@ -55,15 +56,39 @@ def test_feature_builder_applies_temporal_boundaries_and_safe_manifest(
     event_rows = read_parquet_rows(features_root / "event_sequences.parquet")
     event_ids = {str(row["source_event_id"]) for row in event_rows}
     assert "lab-boundary" in event_ids
+    assert "lab-early" in event_ids
     assert "vital-map" in event_ids
     assert "lab-future" not in event_ids
     assert "train-med-pre" not in event_ids
     assert "condition-1" not in event_ids
     assert all(row["event_time_hours_from_admit"] <= 24.0 for row in event_rows)
+    train_events = sorted(
+        (
+            row
+            for row in event_rows
+            if str(row["stay_uid"]) == str(fixture["train_stay"])
+        ),
+        key=lambda row: row["event_sequence_position"],
+    )
+    assert [row["source_event_id"] for row in train_events] == [
+        "lab-early",
+        "lab-boundary",
+    ]
+    assert [row["event_sequence_position"] for row in train_events] == [1, 2]
 
     manifest_text = manifest_path.read_text(encoding="utf-8")
     assert str(fixture["train_patient_uid"]) not in manifest_text
     assert str(fixture["train_stay"]) not in manifest_text
     parsed_manifest = json.loads(manifest_text)
     assert parsed_manifest["data_safety"]["manifest_contains_patient_rows"] is False
+    assert parsed_manifest["parameters"]["event_sequence_batches"] == 2
+    event_record = next(
+        table
+        for table in parsed_manifest["tables"]
+        if table["table_name"] == "event_sequences"
+    )
+    assert event_record["build_strategy"] == "staged_hash_batches"
+    assert event_record["batch_count"] == 2
+    assert event_record["staged_row_count"] == event_record["row_count"]
+    assert sum(event_record["batch_row_counts"]) == event_record["row_count"]
     assert parsed_manifest["temporal_event_exclusions"]

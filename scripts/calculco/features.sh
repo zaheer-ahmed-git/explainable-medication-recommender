@@ -71,12 +71,16 @@ if [[ -z "${DUCKDB_MEMORY_LIMIT:-}" ]]; then
   (( mem_gb < 6 )) && mem_gb=6
   export DUCKDB_MEMORY_LIMIT="${mem_gb}GB"
 fi
+: "${EVENT_SEQUENCE_BATCHES:=8}"
+export EVENT_SEQUENCE_BATCHES
 echo "DUCKDB_TEMP_DIR=${DUCKDB_TEMP_DIR:-}"
 echo "DUCKDB_THREADS=${DUCKDB_THREADS:-}"
 echo "DUCKDB_MEMORY_LIMIT=${DUCKDB_MEMORY_LIMIT:-}"
+echo "EVENT_SEQUENCE_BATCHES=${EVENT_SEQUENCE_BATCHES:-}"
 
 echo "=== features start ==="
-if uv run python -m pipeline.features; then
+if uv run python -m pipeline.features \
+  --event-sequence-batches "$EVENT_SEQUENCE_BATCHES"; then
   features_rc=0
 else
   features_rc=$?
