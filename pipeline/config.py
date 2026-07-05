@@ -132,6 +132,8 @@ PROCESSED_DATA_ROOT = DATASET_ROOT / "processed"
 COHORTS_ROOT = PROCESSED_DATA_ROOT / "cohorts"
 EXTRACTS_ROOT = PROCESSED_DATA_ROOT / "extracts"
 HARMONIZED_ROOT = PROCESSED_DATA_ROOT / "harmonized"
+FEATURES_ROOT = PROCESSED_DATA_ROOT / "features"
+TRAINING_ROOT = PROCESSED_DATA_ROOT / "training"
 MAPPING_ROOT = DATASET_ROOT / "mappings"
 REPORTS_ROOT = resolve_reports_root(PROJECT_ROOT)
 
@@ -145,6 +147,9 @@ EXTRACTION_VERSION = "source-extraction-v1"
 HARMONIZATION_VERSION = "harmonization-v1"
 MEDICATION_MAPPING_VERSION = "medication-rxnorm-atc-v1"
 CONDITION_MAPPING_VERSION = "condition-rollup-v1"
+FEATURE_VERSION = "temporal-features-v1"
+LABEL_VERSION = "observed-medication-label-v1"
+SPLIT_VERSION = "patient-split-v1"
 DEFAULT_COHORT_PARAMETERS = {
     "unit_of_analysis": "icu_stay",
     "adult_age_minimum": 18,
@@ -156,6 +161,25 @@ DEFAULT_MODELING_PARAMETERS = {
     "prediction_offset_hours": 24,
     "label_window_hours": 24,
     "split_seed": RANDOM_SEED,
+}
+
+# Standard MIMIC-IV (MetaVision) chartevents itemids for core charted vitals,
+# mapped to the harmonized normalized_vital_token vocabulary shared with eICU.
+# Used both to bound the chartevents extraction (itemid filter) and to build the
+# harmonization vital projection so the two stay in sync. Flagged for clinical
+# review before pooled analysis; itemids are stable in MIMIC-IV v3.1 d_items.
+MIMIC_CHARTEVENTS_VITAL_ITEMIDS = {
+    "220045": "heart_rate",
+    "220210": "respiratory_rate",
+    "220277": "spo2",
+    "223761": "temperature",  # Fahrenheit
+    "223762": "temperature",  # Celsius
+    "220052": "mean_arterial_pressure",  # arterial line, invasive
+    "220181": "noninvasive_mean_arterial_pressure",
+    "220050": "systolic_blood_pressure",
+    "220179": "noninvasive_systolic_blood_pressure",
+    "220051": "diastolic_blood_pressure",
+    "220180": "noninvasive_diastolic_blood_pressure",
 }
 
 
@@ -369,4 +393,6 @@ def ensure_local_directories() -> None:
     COHORTS_ROOT.mkdir(parents=True, exist_ok=True)
     EXTRACTS_ROOT.mkdir(parents=True, exist_ok=True)
     HARMONIZED_ROOT.mkdir(parents=True, exist_ok=True)
+    FEATURES_ROOT.mkdir(parents=True, exist_ok=True)
+    TRAINING_ROOT.mkdir(parents=True, exist_ok=True)
     REPORTS_ROOT.mkdir(parents=True, exist_ok=True)

@@ -4,8 +4,9 @@
 
 The active working tree contains the source-inventory, adult cohort, aggregate
 table-profiling, EDA-summary, source-extraction, and Milestone 5 harmonization
-pipeline with focused synthetic tests. Feature, label, graph, and model modules
-still need their own tests as they are added.
+pipeline with focused synthetic tests. Milestone 6 feature and observed-label
+builders also have focused synthetic tests. Graph and model modules still need
+their own tests as they are added.
 
 Every new active module should arrive with focused tests.
 
@@ -40,6 +41,7 @@ uv run pytest tests/test_profile_tables.py
 uv run pytest tests/test_eda_summary.py
 uv run pytest tests/test_source_integrity.py
 uv run pytest tests/test_extraction_harmonize.py
+uv run pytest tests/test_config.py tests/test_features.py tests/test_build_training_table.py
 uv run pytest tests/test_condition_normalization.py
 uv run pytest tests/test_condition_mapping_builder.py
 uv run pytest tests/test_cohort.py -k patient_split
@@ -108,3 +110,7 @@ Milestone 5 harmonization completion additionally requires the manifest to list
 `cohort_stays`, `demographics`, `conditions`, `medications`, `labs`, `vitals`,
 `allergies`, `interventions`, and `temporal_events`, with aggregate coverage
 and unmapped reports.
+
+Milestone 6 completion additionally requires temporal cutoff tests, censoring
+tests, patient split-integrity tests, train-only candidate-catalog tests,
+out-of-catalog positive reporting, and aggregate-only manifest checks.

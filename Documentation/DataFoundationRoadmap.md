@@ -6,7 +6,7 @@ This roadmap turns the research architecture into a sequence of verifiable
 data and modeling milestones. It supersedes status assumptions in older plans
 when they conflict with the current working tree.
 
-Last reviewed: 2026-07-01.
+Last reviewed: 2026-07-03.
 
 ## Current Baseline
 
@@ -24,8 +24,11 @@ materialization, aggregate source-table quality profiling, aggregate EDA
 briefing synthesis, report-gated source extraction CLIs, full local
 cohort-filtered MIMIC/eICU extraction runs, and Milestone 5 harmonization for
 cohort stays, demographics, conditions, medications, labs, vitals, allergies,
-interventions, and temporal events with synthetic tests. Feature construction,
-labels, graph artifacts, and models are not yet implemented. The ignored
+interventions, and temporal events with synthetic tests. Milestone 6 temporal
+feature construction, patient splitting, train-only candidate catalogs, and
+observed-label ranking-table builders are implemented with synthetic tests.
+Protected-data materialization remains gated on reviewed harmonization coverage.
+Graph artifacts and models are not yet implemented. The ignored
 `DepreciatedCode/` prototype supplies historical conventions for candidate
 generation, patient-level splitting, baseline ranking, and ranking metrics.
 
@@ -160,8 +163,12 @@ are top-coded to age 90 for filtering and flagged as top-coded.
 
 ### Sepsis
 
-Approve a source-specific sepsis definition, terminology version, time window,
-and comparability strategy before coding.
+Approved 2026-07-04: coded sepsis definition (A1) now with Sepsis-3 (A2)
+deferred until the `chartevents`/`inputevents` refresh, and an index-condition
+policy of B1 (all CCS/CCSR categories) for the first Milestone 6 run then B3
+(sepsis project-group deep dive) for Milestone 7. See
+`Documentation/SepsisCohortAndIndexConditionPolicy.md` for the code set and
+implementation steps.
 
 Deliverables:
 
@@ -337,9 +344,11 @@ MIMIC domains:
   `inputevents.csv.gz` now passes the 2026-06-30 integrity audit; re-profile and
   re-extract to materialize);
 - prescriptions, extracted;
-- pharmacy, eMAR, POE, and charted ICU vitals (`chartevents`), extraction specs
-  not yet added to the CLI; local `chartevents.csv.gz` now passes the
-  2026-06-30 integrity audit;
+- charted ICU vitals (`chartevents`), implemented as a gated spec restricted to
+  curated core-vital itemids (`MIMIC_CHARTEVENTS_VITAL_ITEMIDS`); gated on a
+  refreshed quality/integrity profile like `inputevents`, so it materializes
+  after re-profiling;
+- pharmacy, eMAR, and POE extraction specs not yet added to the CLI;
 - optional discharge and radiology notes remain deferred.
 
 eICU domains:
@@ -481,7 +490,9 @@ Exit gate:
 
 ## Milestone 6: Temporal Features and Labels
 
-Status: not started.
+Status: implemented for the initial temporal feature and observed-label artifact
+builders, with protected-data materialization pending reviewed Milestone 5
+coverage gates.
 
 Define:
 
@@ -507,7 +518,43 @@ Deliverables:
 
 - `pipeline/features.py`;
 - `pipeline/build_training_table.py`;
-- data dictionary and artifact manifest.
+- `Documentation/Milestone6FeatureLabelDictionary.md`;
+- ignored feature artifacts under `Dataset/processed/features/`;
+- ignored training artifacts under `Dataset/processed/training/`;
+- aggregate-only manifests:
+  `reports/milestone6_feature_manifest.json` and
+  `reports/training_table_manifest.json`.
+
+Implemented commands:
+
+```bash
+uv run python -m pipeline.features
+uv run python -m pipeline.build_training_table
+```
+
+Current implementation notes:
+
+- `pipeline.features` writes `cohort_decision_times.parquet`,
+  `patient_stay_features.parquet`, and `event_sequences.parquet`.
+- `pipeline.build_training_table` writes `split_manifest.parquet`,
+  `candidate_catalog.parquet`, and `patient_condition_medication.parquet`.
+- Default temporal contract: `t_pred = t0 + 24h`; label window is medication
+  starts in `(24h, 48h]`.
+- MIMIC uses deterministic patient-level train/validation/test splits from the
+  configured seed; eICU is assigned to `external`.
+- Candidate catalogs are condition-specific and learned from MIMIC train
+  positives only.
+- Untimed condition rows define ranking groups but are excluded from default
+  event-sequence features.
+- Pre-decision medication events are excluded from default event sequences to
+  reduce target-proxy leakage risk; a CLI flag allows reviewed experiments to
+  include them.
+- Reports are aggregate-only; patient-level feature/training artifacts remain
+  local and ignored.
+- Protected-data materialization runs via OAR wrappers
+  `scripts/calculco/features.sh`, `scripts/calculco/build_training_table.sh`,
+  and the `scripts/calculco/milestone6.sh` chain; re-profiling before an
+  `inputevents` re-extract uses `scripts/calculco/profile_tables.sh`.
 
 Exit gate:
 
@@ -632,14 +679,20 @@ Extraction and initial harmonization have run locally. The next tasks are:
 1. Re-run `pipeline.profile_tables` and `pipeline.eda_summary` so MIMIC
    `chartevents` and `inputevents` quality gates reflect the corrected local
    files verified on 2026-06-30.
-2. Re-run `pipeline.mimic_extract` to materialize `inputevents` and add or run
-   `chartevents` extraction once quality profiles complete.
+2. Re-run `pipeline.mimic_extract` to materialize `inputevents` and the newly
+   added itemid-filtered `chartevents` charted-vital extract once quality
+   profiles complete.
 3. Re-run `pipeline.harmonize` after any refreshed MIMIC extracts and review
    aggregate coverage, unmapped counts, and condition-normalization reports.
 4. Build `notebooks/03_harmonization_and_overlap.ipynb` from aggregate CLI
    reports only.
-5. Approve a reproducible sepsis sub-cohort definition before sepsis-focused
-   work.
+5. Approve a reproducible sepsis sub-cohort definition and index-condition
+   policy (see `Documentation/SepsisCohortAndIndexConditionPolicy.md`) before
+   sepsis-focused work.
 6. Keep pooled training disabled until reviewed coverage thresholds pass.
-7. Begin Milestone 6 temporal feature and label contracts after harmonization
-   coverage is reviewed.
+7. Run the Milestone 6 feature and training CLIs on Calculco only after the
+   refreshed harmonized artifacts and coverage reports are reviewed; inspect
+   aggregate manifests for censoring, split integrity, candidate coverage, and
+   out-of-catalog positives.
+8. Begin Milestone 7 transparent baselines only after Milestone 6 aggregate
+   manifests pass review.

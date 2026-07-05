@@ -47,6 +47,11 @@ class ExtractionTableSpec:
     requires_integrity_gate: bool = False
     lookup_table: bool = False
     notes: tuple[str, ...] = ()
+    # Optional raw-source WHERE predicate applied before the cohort join, e.g. an
+    # itemid allow-list for very large event tables. Referenced source columns
+    # must be listed in ``required_columns``/``selected_columns`` so header
+    # validation still covers them.
+    source_row_filter: str | None = None
 
 
 @dataclass(frozen=True)
@@ -253,6 +258,9 @@ def extraction_query(
         f"s.{quote_identifier(column)} AS {quote_identifier(column)}"
         for column in spec.selected_columns
     )
+    source_where = (
+        f"\n    WHERE {spec.source_row_filter}" if spec.source_row_filter else ""
+    )
     constant_columns = f"""
         {sql_string(spec.source)} AS source,
         {sql_string(spec.source_version)} AS source_version,
@@ -263,7 +271,7 @@ def extraction_query(
         return f"""
 WITH source_rows AS (
     SELECT {source_select}
-    FROM {csv_scan(source_path)}
+    FROM {csv_scan(source_path)}{source_where}
 )
 SELECT
 {constant_columns},
@@ -287,7 +295,7 @@ WITH cohort AS (
 ),
 source_rows AS (
     SELECT {source_select}
-    FROM {csv_scan(source_path)}
+    FROM {csv_scan(source_path)}{source_where}
 )
 SELECT
         c.source,

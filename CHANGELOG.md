@@ -6,6 +6,35 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ### Added
 
+- Milestone 6 temporal feature and observed-label builders:
+  `pipeline.features` writes `cohort_decision_times.parquet`,
+  `patient_stay_features.parquet`, and `event_sequences.parquet`, and
+  `pipeline.build_training_table` writes `split_manifest.parquet`,
+  `candidate_catalog.parquet`, and `patient_condition_medication.parquet` under
+  ignored `Dataset/processed/` subdirectories with aggregate-only manifests.
+- `FEATURES_ROOT`, `TRAINING_ROOT`, `FEATURE_VERSION`, `LABEL_VERSION`, and
+  `SPLIT_VERSION` in `pipeline/config.py`.
+- `Documentation/Milestone6FeatureLabelDictionary.md` documenting the temporal
+  contract, schemas, train-only candidate rules, censoring, and
+  observational-label caveats.
+- OAR wrappers `scripts/calculco/profile_tables.sh` (full source-table
+  re-profile), `scripts/calculco/features.sh`, `scripts/calculco/build_training_table.sh`,
+  and `scripts/calculco/milestone6.sh` (features + training-table chain) for
+  protected-data Milestone 6 materialization on Calculco.
+- `Documentation/SepsisCohortAndIndexConditionPolicy.md` recording the approved
+  coded sepsis sub-cohort definition (A1; Sepsis-3 deferred) and the B1 -> B3
+  index-condition/ranking-group policy, with follow-up implementation steps.
+- MIMIC `chartevents` charted-vital extraction: a gated `mimic_chartevents`
+  spec in `pipeline.mimic_extract` restricted to curated core-vital itemids
+  (`MIMIC_CHARTEVENTS_VITAL_ITEMIDS` in `pipeline/config.py`) via a new optional
+  `ExtractionTableSpec.source_row_filter`, plus a MIMIC chartevents branch in
+  `pipeline.harmonize` `vital_queries` that maps those itemids to the shared
+  `normalized_vital_token` vocabulary. Adds synthetic coverage in
+  `tests/test_extraction_harmonize.py`.
+- `tests/test_features.py` and `tests/test_build_training_table.py` covering
+  MIMIC timestamps, eICU offsets, 24h/48h boundaries, censoring, deterministic
+  splits, train-only candidates, repeated medications, out-of-catalog positives,
+  and aggregate-only manifests.
 - Semantic condition normalization layer in `pipeline/harmonize.py`: optional,
   gracefully degrading shared roll-up tokens (CCSR, CCS, ICD-9→ICD-10 GEM
   crosswalk, ICD chapter, structural ICD category), a conservative eICU

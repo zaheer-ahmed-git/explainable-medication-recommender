@@ -26,6 +26,7 @@ from pipeline.config import (
     MAPPING_ROOT,
     MEDICATION_MAPPING_SPECS,
     MEDICATION_MAPPING_VERSION,
+    MIMIC_CHARTEVENTS_VITAL_ITEMIDS,
     REPORTS_ROOT,
     MappingFileSpec,
 )
@@ -1484,10 +1485,92 @@ WHERE NULLIF(TRIM(CAST({value_column} AS VARCHAR)), '') IS NOT NULL
 """
 
 
+def mimic_chartevents_vital_query(
+    config: HarmonizationBuildConfig,
+    *,
+    chartevents_path: Path,
+    items_path: Path,
+    generated_at: str,
+) -> str:
+    """Build the MIMIC chartevents charted-vital projection.
+
+    Maps the curated MIMIC-IV chartevents vital itemids to the shared
+    ``normalized_vital_token`` vocabulary (see ``MIMIC_CHARTEVENTS_VITAL_ITEMIDS``),
+    preserving the source itemid, label, value, and unit. Defensively restricts
+    to the mapped itemids even though the extract is already itemid-filtered.
+    """
+
+    token_branches = "\n".join(
+        f"        WHEN {sql_string(itemid)} THEN {sql_string(token)}"
+        for itemid, token in sorted(MIMIC_CHARTEVENTS_VITAL_ITEMIDS.items())
+    )
+    token_case = (
+        "CASE NULLIF(TRIM(CAST(c.itemid AS VARCHAR)), '')\n"
+        f"{token_branches}\n        ELSE NULL\n    END"
+    )
+    itemid_list = ", ".join(
+        sql_string(itemid) for itemid in sorted(MIMIC_CHARTEVENTS_VITAL_ITEMIDS)
+    )
+    if items_path.exists():
+        item_label = "d.label"
+        item_join = f"""
+LEFT JOIN {parquet_scan(items_path)} AS d
+    ON NULLIF(TRIM(CAST(c.itemid AS VARCHAR)), '') = NULLIF(TRIM(CAST(d.itemid AS VARCHAR)), '')
+"""
+    else:
+        item_label = "CAST(NULL AS VARCHAR)"
+        item_join = ""
+    normalized_unit = normalized_unit_sql("c.valueuom")
+    return f"""
+SELECT
+    c.source,
+    c.source_version,
+    c.patient_uid,
+    c.encounter_uid,
+    c.stay_uid,
+    c.source_patient_id,
+    c.source_encounter_id,
+    c.source_stay_id,
+    'mimic_chartevents' AS source_table,
+    CAST(NULL AS VARCHAR) AS source_event_id,
+    c.charttime AS event_time,
+    CAST(NULL AS VARCHAR) AS event_time_offset,
+    c.itemid AS source_vital_code,
+    COALESCE({item_label}, c.itemid) AS source_vital_name,
+    {token_case} AS normalized_vital_token,
+    TRY_CAST(c.valuenum AS DOUBLE) AS value_numeric,
+    c.valueuom AS unit,
+    {normalized_unit} AS normalized_unit,
+    'mapped_vital_itemid' AS mapping_status,
+{
+        provenance_sql(
+            config,
+            generated_at=generated_at,
+            extraction_version="c.extraction_version",
+            mapping_version=sql_string(SOURCE_NATIVE_MAPPING_VERSION),
+        )
+    }
+FROM {parquet_scan(chartevents_path)} AS c
+{item_join}
+WHERE NULLIF(TRIM(CAST(c.itemid AS VARCHAR)), '') IN ({itemid_list})
+"""
+
+
 def vital_queries(config: HarmonizationBuildConfig, *, generated_at: str) -> list[str]:
     """Build source-native vital harmonization queries for available extracts."""
 
     queries: list[str] = []
+    mimic_chartevents = source_extract_path(config, "mimiciv", "chartevents.parquet")
+    mimic_items = source_extract_path(config, "mimiciv", "d_items.parquet")
+    if mimic_chartevents.exists():
+        queries.append(
+            mimic_chartevents_vital_query(
+                config,
+                chartevents_path=mimic_chartevents,
+                items_path=mimic_items,
+                generated_at=generated_at,
+            )
+        )
     periodic = source_extract_path(config, "eicu_crd", "vital_periodic.parquet")
     if periodic.exists():
         for value_column, normalized_token in (

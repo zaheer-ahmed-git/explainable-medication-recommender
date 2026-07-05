@@ -1,0 +1,896 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Sequence
+
+import duckdb
+
+from pipeline.features import split_case_sql
+
+
+def sql_literal(value: object) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, int | float):
+        return str(value)
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def sql_string(value: str | Path) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def write_parquet_rows(
+    path: Path,
+    columns: Sequence[str],
+    rows: Sequence[Sequence[object]],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    column_sql = ", ".join(columns)
+    with duckdb.connect(database=":memory:") as connection:
+        if rows:
+            values = ", ".join(
+                "(" + ", ".join(sql_literal(value) for value in row) + ")"
+                for row in rows
+            )
+            connection.execute(
+                f"CREATE TABLE rows AS SELECT * FROM (VALUES {values}) AS t({column_sql})"
+            )
+        else:
+            empty_columns = ", ".join(
+                f"CAST(NULL AS VARCHAR) AS {column}" for column in columns
+            )
+            connection.execute(
+                f"CREATE TABLE rows AS SELECT {empty_columns} WHERE FALSE"
+            )
+        connection.execute(f"COPY rows TO {sql_string(path)} (FORMAT PARQUET)")
+
+
+def read_parquet_rows(path: Path) -> list[dict[str, Any]]:
+    with duckdb.connect(database=":memory:") as connection:
+        cursor = connection.execute(f"SELECT * FROM read_parquet({sql_string(path)})")
+        columns = [description[0] for description in cursor.description]
+        return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
+
+
+def split_for_patient(patient_uid: str, *, source: str = "mimiciv") -> str:
+    query = f"""
+SELECT {split_case_sql(seed=20260617)} AS split
+FROM (
+    SELECT {sql_string(source)} AS source, {sql_string(patient_uid)} AS patient_uid
+)
+"""
+    with duckdb.connect(database=":memory:") as connection:
+        row = connection.execute(query).fetchone()
+    assert row is not None
+    return str(row[0])
+
+
+def pick_mimic_patients() -> tuple[str, str]:
+    train_uid: str | None = None
+    heldout_uid: str | None = None
+    for index in range(200):
+        patient_uid = f"mimiciv:synthetic-p{index}"
+        split = split_for_patient(patient_uid)
+        if split == "train" and train_uid is None:
+            train_uid = patient_uid
+        if split in {"validation", "test"} and heldout_uid is None:
+            heldout_uid = patient_uid
+        if train_uid is not None and heldout_uid is not None:
+            return train_uid, heldout_uid
+    raise AssertionError("could not find deterministic train and held-out patients")
+
+
+def write_milestone6_harmonized_fixture(tmp_path: Path) -> dict[str, str | Path]:
+    harmonized_root = tmp_path / "Dataset" / "processed" / "harmonized"
+    train_patient_uid, heldout_patient_uid = pick_mimic_patients()
+    censored_patient_uid = "mimiciv:synthetic-censored"
+    external_patient_uid = "eicu_crd:synthetic-external"
+
+    train_stay = "mimiciv:stay-train"
+    heldout_stay = "mimiciv:stay-heldout"
+    censored_stay = "mimiciv:stay-censored"
+    external_stay = "eicu_crd:stay-external"
+
+    cohort_columns = (
+        "source",
+        "source_version",
+        "patient_uid",
+        "encounter_uid",
+        "stay_uid",
+        "source_patient_id",
+        "source_encounter_id",
+        "source_stay_id",
+        "stay_start_time",
+        "stay_end_time",
+        "stay_start_offset_minutes",
+        "stay_end_offset_minutes",
+        "los_hours",
+        "cohort_version",
+        "harmonization_version",
+    )
+    write_parquet_rows(
+        harmonized_root / "cohort_stays.parquet",
+        cohort_columns,
+        (
+            (
+                "mimiciv",
+                "3.1",
+                train_patient_uid,
+                "mimiciv:enc-train",
+                train_stay,
+                "p-train",
+                "enc-train",
+                "stay-train",
+                "2026-01-01 00:00:00",
+                "2026-01-03 12:00:00",
+                None,
+                None,
+                60.0,
+                "cohort-manifest-v1",
+                "harmonization-v1",
+            ),
+            (
+                "mimiciv",
+                "3.1",
+                heldout_patient_uid,
+                "mimiciv:enc-heldout",
+                heldout_stay,
+                "p-heldout",
+                "enc-heldout",
+                "stay-heldout",
+                "2026-02-01 00:00:00",
+                "2026-02-03 12:00:00",
+                None,
+                None,
+                60.0,
+                "cohort-manifest-v1",
+                "harmonization-v1",
+            ),
+            (
+                "mimiciv",
+                "3.1",
+                censored_patient_uid,
+                "mimiciv:enc-censored",
+                censored_stay,
+                "p-censored",
+                "enc-censored",
+                "stay-censored",
+                "2026-03-01 00:00:00",
+                "2026-03-02 06:00:00",
+                None,
+                None,
+                30.0,
+                "cohort-manifest-v1",
+                "harmonization-v1",
+            ),
+            (
+                "eicu_crd",
+                "2.0",
+                external_patient_uid,
+                "eicu_crd:enc-external",
+                external_stay,
+                "p-external",
+                "enc-external",
+                "stay-external",
+                None,
+                None,
+                0.0,
+                3000.0,
+                50.0,
+                "cohort-manifest-v1",
+                "harmonization-v1",
+            ),
+        ),
+    )
+
+    demographics_columns = (
+        "source",
+        "source_version",
+        "patient_uid",
+        "encounter_uid",
+        "stay_uid",
+        "age_years",
+        "age_topcoded",
+        "sex",
+        "race_or_ethnicity",
+        "hospital_id",
+        "ward_id",
+        "admission_type",
+        "admission_source",
+        "unit_type",
+        "last_unit_type",
+        "stay_type",
+        "stay_sequence",
+    )
+    write_parquet_rows(
+        harmonized_root / "demographics.parquet",
+        demographics_columns,
+        (
+            (
+                "mimiciv",
+                "3.1",
+                train_patient_uid,
+                "mimiciv:enc-train",
+                train_stay,
+                66.0,
+                False,
+                "F",
+                "synthetic",
+                None,
+                None,
+                "urgent",
+                "transfer",
+                "MICU",
+                "MICU",
+                "first",
+                1,
+            ),
+            (
+                "mimiciv",
+                "3.1",
+                heldout_patient_uid,
+                "mimiciv:enc-heldout",
+                heldout_stay,
+                71.0,
+                False,
+                "M",
+                "synthetic",
+                None,
+                None,
+                "urgent",
+                "transfer",
+                "MICU",
+                "MICU",
+                "first",
+                1,
+            ),
+            (
+                "mimiciv",
+                "3.1",
+                censored_patient_uid,
+                "mimiciv:enc-censored",
+                censored_stay,
+                52.0,
+                False,
+                "F",
+                "synthetic",
+                None,
+                None,
+                "urgent",
+                "transfer",
+                "SICU",
+                "SICU",
+                "first",
+                1,
+            ),
+            (
+                "eicu_crd",
+                "2.0",
+                external_patient_uid,
+                "eicu_crd:enc-external",
+                external_stay,
+                74.0,
+                False,
+                "M",
+                "synthetic",
+                "h1",
+                "w1",
+                "unit admit",
+                "emergency",
+                "Med-Surg ICU",
+                None,
+                "admit",
+                1,
+            ),
+        ),
+    )
+
+    condition_columns = (
+        "source",
+        "source_version",
+        "patient_uid",
+        "encounter_uid",
+        "stay_uid",
+        "project_condition_token",
+        "project_condition_group",
+        "normalized_condition_token",
+        "normalized_condition_name",
+        "condition_text",
+        "condition_rollup_level",
+        "mapping_status",
+    )
+    write_parquet_rows(
+        harmonized_root / "conditions.parquet",
+        condition_columns,
+        (
+            (
+                "mimiciv",
+                "3.1",
+                train_patient_uid,
+                "mimiciv:enc-train",
+                train_stay,
+                "project:sepsis",
+                "sepsis",
+                "ccsr:INF002",
+                "Sepsis",
+                None,
+                "project",
+                "mapped_ccsr",
+            ),
+            (
+                "mimiciv",
+                "3.1",
+                heldout_patient_uid,
+                "mimiciv:enc-heldout",
+                heldout_stay,
+                "project:sepsis",
+                "sepsis",
+                "ccsr:INF002",
+                "Sepsis",
+                None,
+                "project",
+                "mapped_ccsr",
+            ),
+            (
+                "mimiciv",
+                "3.1",
+                censored_patient_uid,
+                "mimiciv:enc-censored",
+                censored_stay,
+                "project:sepsis",
+                "sepsis",
+                "ccsr:INF002",
+                "Sepsis",
+                None,
+                "project",
+                "mapped_ccsr",
+            ),
+            (
+                "eicu_crd",
+                "2.0",
+                external_patient_uid,
+                "eicu_crd:enc-external",
+                external_stay,
+                "project:sepsis",
+                "sepsis",
+                "ccsr:INF002",
+                "Sepsis",
+                None,
+                "project",
+                "mapped_text_to_condition",
+            ),
+        ),
+    )
+
+    medication_columns = (
+        "source",
+        "source_version",
+        "patient_uid",
+        "encounter_uid",
+        "stay_uid",
+        "source_event_id",
+        "event_start_time",
+        "event_end_time",
+        "rxcui",
+        "ingredient_name",
+        "rxnorm_name",
+        "atc_code",
+        "mapping_status",
+    )
+    write_parquet_rows(
+        harmonized_root / "medications.parquet",
+        medication_columns,
+        (
+            (
+                "mimiciv",
+                "3.1",
+                train_patient_uid,
+                "mimiciv:enc-train",
+                train_stay,
+                "train-med-pre",
+                "2026-01-02 00:00:00",
+                None,
+                "222",
+                "heldout-only-med",
+                "heldout med",
+                None,
+                "mapped_rxnorm_or_atc",
+            ),
+            (
+                "mimiciv",
+                "3.1",
+                train_patient_uid,
+                "mimiciv:enc-train",
+                train_stay,
+                "train-med-a1",
+                "2026-01-02 01:00:00",
+                None,
+                "111",
+                "candidate-a",
+                "candidate A",
+                None,
+                "mapped_rxnorm_or_atc",
+            ),
+            (
+                "mimiciv",
+                "3.1",
+                train_patient_uid,
+                "mimiciv:enc-train",
+                train_stay,
+                "train-med-a2",
+                "2026-01-02 02:00:00",
+                None,
+                "111",
+                "candidate-a",
+                "candidate A",
+                None,
+                "mapped_rxnorm_or_atc",
+            ),
+            (
+                "mimiciv",
+                "3.1",
+                train_patient_uid,
+                "mimiciv:enc-train",
+                train_stay,
+                "train-med-missing-time",
+                None,
+                None,
+                "444",
+                "missing-time-med",
+                "missing time med",
+                None,
+                "mapped_rxnorm_or_atc",
+            ),
+            (
+                "mimiciv",
+                "3.1",
+                heldout_patient_uid,
+                "mimiciv:enc-heldout",
+                heldout_stay,
+                "heldout-med-a",
+                "2026-02-03 00:00:00",
+                None,
+                "111",
+                "candidate-a",
+                "candidate A",
+                None,
+                "mapped_rxnorm_or_atc",
+            ),
+            (
+                "mimiciv",
+                "3.1",
+                heldout_patient_uid,
+                "mimiciv:enc-heldout",
+                heldout_stay,
+                "heldout-med-b",
+                "2026-02-02 01:00:00",
+                None,
+                "333",
+                "heldout-only-med",
+                "heldout med",
+                None,
+                "mapped_rxnorm_or_atc",
+            ),
+            (
+                "mimiciv",
+                "3.1",
+                censored_patient_uid,
+                "mimiciv:enc-censored",
+                censored_stay,
+                "censored-med-a",
+                "2026-03-02 01:00:00",
+                None,
+                "111",
+                "candidate-a",
+                "candidate A",
+                None,
+                "mapped_rxnorm_or_atc",
+            ),
+            (
+                "eicu_crd",
+                "2.0",
+                external_patient_uid,
+                "eicu_crd:enc-external",
+                external_stay,
+                "external-med-a",
+                "1500",
+                None,
+                "111",
+                "candidate-a",
+                "candidate A",
+                None,
+                "mapped_rxnorm_or_atc",
+            ),
+        ),
+    )
+
+    lab_columns = (
+        "source",
+        "source_version",
+        "patient_uid",
+        "encounter_uid",
+        "stay_uid",
+        "source_event_id",
+        "event_time",
+        "event_time_offset",
+        "normalized_lab_token",
+        "lab_value_numeric",
+        "abnormal_flag",
+    )
+    write_parquet_rows(
+        harmonized_root / "labs.parquet",
+        lab_columns,
+        (
+            (
+                "mimiciv",
+                "3.1",
+                train_patient_uid,
+                "mimiciv:enc-train",
+                train_stay,
+                "lab-early",
+                "2026-01-01 05:00:00",
+                None,
+                "lactate",
+                1.5,
+                None,
+            ),
+            (
+                "mimiciv",
+                "3.1",
+                train_patient_uid,
+                "mimiciv:enc-train",
+                train_stay,
+                "lab-boundary",
+                "2026-01-02 00:00:00",
+                None,
+                "lactate",
+                2.0,
+                "abnormal",
+            ),
+            (
+                "mimiciv",
+                "3.1",
+                train_patient_uid,
+                "mimiciv:enc-train",
+                train_stay,
+                "lab-future",
+                "2026-01-02 01:00:00",
+                None,
+                "lactate",
+                9.9,
+                "abnormal",
+            ),
+            (
+                "eicu_crd",
+                "2.0",
+                external_patient_uid,
+                "eicu_crd:enc-external",
+                external_stay,
+                "lab-external",
+                None,
+                "1440",
+                "creatinine",
+                1.2,
+                None,
+            ),
+        ),
+    )
+
+    vital_columns = (
+        "source",
+        "source_version",
+        "patient_uid",
+        "encounter_uid",
+        "stay_uid",
+        "source_event_id",
+        "event_time",
+        "event_time_offset",
+        "normalized_vital_token",
+        "value_numeric",
+    )
+    write_parquet_rows(
+        harmonized_root / "vitals.parquet",
+        vital_columns,
+        (
+            (
+                "mimiciv",
+                "3.1",
+                train_patient_uid,
+                "mimiciv:enc-train",
+                train_stay,
+                "vital-hr",
+                "2026-01-01 23:00:00",
+                None,
+                "heart_rate",
+                88.0,
+            ),
+            (
+                "eicu_crd",
+                "2.0",
+                external_patient_uid,
+                "eicu_crd:enc-external",
+                external_stay,
+                "vital-map",
+                None,
+                "1440",
+                "mean_arterial_pressure",
+                72.0,
+            ),
+        ),
+    )
+
+    allergy_columns = (
+        "source",
+        "source_version",
+        "patient_uid",
+        "encounter_uid",
+        "stay_uid",
+        "source_event_id",
+        "event_time",
+        "event_entered_time",
+        "normalized_allergen_token",
+    )
+    write_parquet_rows(
+        harmonized_root / "allergies.parquet",
+        allergy_columns,
+        (
+            (
+                "eicu_crd",
+                "2.0",
+                external_patient_uid,
+                "eicu_crd:enc-external",
+                external_stay,
+                "allergy-1",
+                "60",
+                "60",
+                "synthetic_allergen",
+            ),
+        ),
+    )
+
+    intervention_columns = (
+        "source",
+        "source_version",
+        "patient_uid",
+        "encounter_uid",
+        "stay_uid",
+        "source_event_id",
+        "event_start_time",
+        "event_start_offset",
+        "normalized_intervention_token",
+    )
+    write_parquet_rows(
+        harmonized_root / "interventions.parquet",
+        intervention_columns,
+        (
+            (
+                "mimiciv",
+                "3.1",
+                train_patient_uid,
+                "mimiciv:enc-train",
+                train_stay,
+                "int-1",
+                "2026-01-01 10:00:00",
+                None,
+                "synthetic_intervention",
+            ),
+            (
+                "eicu_crd",
+                "2.0",
+                external_patient_uid,
+                "eicu_crd:enc-external",
+                external_stay,
+                "int-2",
+                None,
+                "120",
+                "synthetic_support",
+            ),
+        ),
+    )
+
+    temporal_columns = (
+        "source",
+        "source_version",
+        "patient_uid",
+        "encounter_uid",
+        "stay_uid",
+        "source_patient_id",
+        "source_encounter_id",
+        "source_stay_id",
+        "event_type",
+        "source_domain",
+        "source_table",
+        "source_event_id",
+        "event_start_time",
+        "event_end_time",
+        "event_start_offset",
+        "event_end_offset",
+        "event_token",
+        "source_code",
+        "source_text",
+        "value_numeric",
+        "value_text",
+        "unit",
+        "normalized_unit",
+        "mapping_status",
+        "cohort_version",
+        "extraction_version",
+        "mapping_version",
+        "harmonization_version",
+        "generated_at",
+    )
+    write_parquet_rows(
+        harmonized_root / "temporal_events.parquet",
+        temporal_columns,
+        (
+            (
+                "mimiciv",
+                "3.1",
+                train_patient_uid,
+                "mimiciv:enc-train",
+                train_stay,
+                "p-train",
+                "enc-train",
+                "stay-train",
+                "lab",
+                "labs",
+                "synthetic_labs",
+                "lab-boundary",
+                "2026-01-02 00:00:00",
+                None,
+                None,
+                None,
+                "lactate",
+                "lab-code",
+                "lactate",
+                2.0,
+                None,
+                "mmol/L",
+                "mmol/l",
+                "source_native_token",
+                "cohort-manifest-v1",
+                "source-extraction-v1",
+                "source_native",
+                "harmonization-v1",
+                "2026-01-01T00:00:00Z",
+            ),
+            (
+                "mimiciv",
+                "3.1",
+                train_patient_uid,
+                "mimiciv:enc-train",
+                train_stay,
+                "p-train",
+                "enc-train",
+                "stay-train",
+                "lab",
+                "labs",
+                "synthetic_labs",
+                "lab-future",
+                "2026-01-02 01:00:00",
+                None,
+                None,
+                None,
+                "lactate",
+                "lab-code",
+                "lactate",
+                9.9,
+                None,
+                "mmol/L",
+                "mmol/l",
+                "source_native_token",
+                "cohort-manifest-v1",
+                "source-extraction-v1",
+                "source_native",
+                "harmonization-v1",
+                "2026-01-01T00:00:00Z",
+            ),
+            (
+                "mimiciv",
+                "3.1",
+                train_patient_uid,
+                "mimiciv:enc-train",
+                train_stay,
+                "p-train",
+                "enc-train",
+                "stay-train",
+                "medication",
+                "medications",
+                "synthetic_meds",
+                "train-med-pre",
+                "2026-01-01 01:00:00",
+                None,
+                None,
+                None,
+                "candidate-a",
+                "111",
+                "candidate A",
+                None,
+                None,
+                None,
+                None,
+                "mapped_rxnorm_or_atc",
+                "cohort-manifest-v1",
+                "source-extraction-v1",
+                "medication-rxnorm-atc-v1",
+                "harmonization-v1",
+                "2026-01-01T00:00:00Z",
+            ),
+            (
+                "mimiciv",
+                "3.1",
+                train_patient_uid,
+                "mimiciv:enc-train",
+                train_stay,
+                "p-train",
+                "enc-train",
+                "stay-train",
+                "condition",
+                "conditions",
+                "synthetic_conditions",
+                "condition-1",
+                None,
+                None,
+                None,
+                None,
+                "project:sepsis",
+                "A419",
+                "sepsis",
+                None,
+                None,
+                None,
+                None,
+                "mapped_ccsr",
+                "cohort-manifest-v1",
+                "source-extraction-v1",
+                "condition-rollup-v1",
+                "harmonization-v1",
+                "2026-01-01T00:00:00Z",
+            ),
+            (
+                "eicu_crd",
+                "2.0",
+                external_patient_uid,
+                "eicu_crd:enc-external",
+                external_stay,
+                "p-external",
+                "enc-external",
+                "stay-external",
+                "vital",
+                "vitals",
+                "synthetic_vitals",
+                "vital-map",
+                None,
+                None,
+                "1440",
+                None,
+                "mean_arterial_pressure",
+                "map",
+                "MAP",
+                72.0,
+                None,
+                None,
+                None,
+                "source_native_column",
+                "cohort-manifest-v1",
+                "source-extraction-v1",
+                "source_native",
+                "harmonization-v1",
+                "2026-01-01T00:00:00Z",
+            ),
+        ),
+    )
+
+    return {
+        "harmonized_root": harmonized_root,
+        "train_patient_uid": train_patient_uid,
+        "heldout_patient_uid": heldout_patient_uid,
+        "external_patient_uid": external_patient_uid,
+        "train_stay": train_stay,
+        "heldout_stay": heldout_stay,
+        "censored_stay": censored_stay,
+        "external_stay": external_stay,
+    }
