@@ -30,13 +30,29 @@ The repository is currently in the data-foundation and architecture stage.
   report-gated source extraction CLIs, and Milestone 5 harmonization for
   cohort stays, demographics, conditions, medications, labs, vitals,
   allergies, interventions, and temporal events. Milestone 6 temporal feature,
-  split, candidate-catalog, and observed-label artifact builders are also
-  implemented.
+  split, candidate-catalog, observed-label, and train-fitted preprocessing
+  artifact builders are also implemented. Phase 8 P0 feature families are
+  available as an isolated `--feature-set phase8_p0` ablation path, pending
+  protected-data reruns and promotion review. Milestone 7 baseline evaluation is implemented for aggregate
+  coverage, deterministic random, global-popularity, condition-popularity,
+  linear, and XGBoost baselines; validation winner frozen as `xgboost` and
+  final-mode held-out MIMIC test metrics are recorded in
+  `reports/milestone7_baseline_evaluation.json`. Milestone 8 graph-readiness
+  tooling is implemented and the protected-data graph gate passed for
+  graph-ablation readiness. Milestone 8B graph-aware ablation tooling is
+  implemented for graph-only XGBoost, graph-augmented XGBoost, late fusion, and
+  simple ensemble comparisons against the frozen XGBoost reference; protected
+  Milestone 8B ablation runs are still pending.
 - Focused synthetic tests cover the current source-inventory, cohort,
   profiling, EDA-summary, extraction, and Milestone 5 harmonization contracts.
   Additional synthetic tests cover Milestone 6 temporal cutoffs, censoring,
-  split integrity, train-only candidates, and weak observational labels. Graph
-  artifacts and models are still planned.
+  split integrity, train-only candidates, weak observational labels, and the
+  initial Milestone 7 baseline metrics/reporting scaffold, including learned
+  linear and XGBoost baselines. Milestone 8 synthetic tests cover train-only
+  graph fitting, cold-start reporting, sparse graphs, and report safety.
+  Milestone 8B synthetic tests cover graph-feature joins, final-mode gating,
+  cold-start flags, fusion, eICU coverage-only behavior, and report safety. The
+  full Transformer-GNN model remains planned.
 
 Do not interpret the poster's illustrative medication table or planned system
 diagram as a clinically validated implementation.
@@ -99,6 +115,12 @@ a medication is clinically optimal.
 - `Documentation/PosterPresentationGuide.md`: poster explanation and Q&A.
 - `Documentation/Milestone6FeatureLabelDictionary.md`: feature and label
   artifact schemas, temporal contract, and observational-label caveats.
+- `Documentation/Milestone8.md`: graph-readiness contract, reports, and gates.
+- `Documentation/Milestone8B.md`: graph-aware ablation contract, reports, and
+  final-mode gate.
+- `Documentation/HybridModelFeatureStrategy.md`: planned Transformer/GNN
+  feature boundaries and selection gates (post-8B; not neural training yet).
+- `visualization/`: aggregate-only Phase 4-9 meeting figure-pack generator.
 - `Documentation/SimilarPapers.md`: related-work notes.
 - `FinalPosterCDS.pdf`: research poster.
 - `ARCHITECTURE.md`: system and data architecture.
@@ -182,6 +204,17 @@ Build the aggregate EDA summary, stakeholder brief, and figure pack with:
 uv run python -m pipeline.eda_summary
 ```
 
+Build the aggregate Phase 4-9 meeting visualization pack with:
+
+```bash
+uv run python -m visualization.phase4_to_9
+```
+
+The generated meeting pack is written under ignored `visualization/figures/`
+plus `visualization/meeting_figure_pack.md` and
+`visualization/meeting_figure_pack.json`. It reads aggregate report manifests
+only and does not inspect raw clinical rows.
+
 Check source-file integrity for profiling-blocked files with:
 
 ```bash
@@ -220,6 +253,11 @@ then run:
 uv run python -m pipeline.harmonize
 ```
 
+Large lab/vital harmonization is split into smaller source-query/hash batches
+before final combination. On Calculco, tune this with
+`--domain-materialization-batches` or the OAR `HARMONIZE_DOMAIN_BATCHES`
+environment variable when DuckDB reports out-of-memory errors.
+
 The harmonization reports are aggregate-only:
 `reports/harmonization_manifest.json`,
 `reports/harmonization_coverage.json`, `reports/unmapped_concepts.json`,
@@ -233,16 +271,84 @@ table after harmonization coverage and mapping gates are reviewed:
 ```bash
 uv run python -m pipeline.features
 uv run python -m pipeline.build_training_table
+uv run python -m pipeline.preprocessing
 ```
 
 These write patient-level local artifacts under
 `Dataset/processed/features/` and `Dataset/processed/training/`; aggregate-only
 manifests are `reports/milestone6_feature_manifest.json` and
-`reports/training_table_manifest.json`. See
+`reports/training_table_manifest.json`, plus
+`reports/preprocessing_manifest.json` for train-fitted imputation, scaling,
+encoding, and categorical vocabulary metadata. See
 `Documentation/Milestone6FeatureLabelDictionary.md`. For large protected-data
-runs, `event_sequences` is staged and stay-hash-batched; tune with
-`--event-sequence-batches` or the OAR `EVENT_SEQUENCE_BATCHES` environment
-variable.
+runs, `patient_stay_features` and `event_sequences` are stay-hash-batched; tune
+with `--stay-feature-batches` / `STAY_FEATURE_BATCHES` and
+`--event-sequence-batches` / `EVENT_SEQUENCE_BATCHES`.
+
+To build the optional Phase 8 P0 feature-ablation stack without touching the
+default roots:
+
+```bash
+uv run python -m pipeline.features --feature-set phase8_p0 \
+  --features-root "$DATASET_ROOT/processed/phase8_p0/features" \
+  --manifest "$PROJECT_HOME/reports/phase8_p0_milestone6_feature_manifest.json"
+```
+
+The full isolated sequence is documented in `WORKFLOWS.md`.
+
+Evaluate Milestone 7 coverage and transparent baselines after the Milestone 6
+manifests are reviewed:
+
+```bash
+uv run python -m pipeline.evaluate_baselines
+uv run python -m pipeline.evaluate_baselines --baseline linear --baseline xgboost
+```
+
+Development mode writes aggregate-only reports
+`reports/milestone7_coverage_report.json` and
+`reports/milestone7_baseline_evaluation.json`, with local row-level scores and
+learned model artifacts under ignored
+`Dataset/processed/evaluation/milestone7/`. Held-out test metrics are blocked unless final mode is explicit:
+
+```bash
+scripts/calculco/submit_evaluate_baselines.sh final
+```
+
+Build Milestone 8 graph-readiness artifacts after Milestone 6 artifacts and
+Milestone 7 frozen selection are available:
+
+```bash
+uv run python -m pipeline.graph_suitability
+```
+
+This writes concept-level local graph artifacts under ignored
+`Dataset/processed/graph/milestone8/` and aggregate-only reports
+`reports/milestone8_graph_schema.json`,
+`reports/milestone8_graph_suitability.json`, and
+`reports/milestone8_ablation_plan.json`. It does not train the Transformer-GNN
+model or make clinical recommendation claims.
+
+Run Milestone 8B graph-aware ablations only after Milestone 7 final evaluation
+and the Milestone 8 graph gate have passed:
+
+```bash
+uv run python -m pipeline.graph_ablation
+```
+
+For protected-data scale, submit the development run through OAR, then run final
+mode only after `reports/milestone8b_frozen_selection.json` exists:
+
+```bash
+scripts/calculco/submit_graph_ablation.sh development
+scripts/calculco/submit_graph_ablation.sh final
+```
+
+Milestone 8B writes local row-level scores and model artifacts under ignored
+`Dataset/processed/evaluation/milestone8b/` and aggregate-only reports
+`reports/milestone8b_graph_feature_manifest.json`,
+`reports/milestone8b_ablation_evaluation.json`, and
+`reports/milestone8b_frozen_selection.json`. It is a graph-aware ablation gate,
+not validated clinical recommendation behavior or full Transformer-GNN training.
 
 Do not use `pip`, Poetry, Conda, global Python, or system site-packages.
 

@@ -1,10 +1,13 @@
 """Bootstrap aggregate condition mapping templates for harmonization.
 
 Unlike ``build_medication_mappings.py`` (a hard gate), condition semantic
-mapping is optional. This script does not fabricate ICD/CCS/CCSR/SNOMED or
-project-condition mappings. It only inventories the distinct diagnosis concepts
-present in the cohort-filtered extracts and writes empty, review-ready template
-CSVs plus an aggregate build report under ``$DATASET_ROOT/mappings/conditions``.
+mapping is optional. By default, this script does not fabricate ICD/CCS/CCSR,
+SNOMED, diagnosis-text, or project-condition mappings. It inventories the
+distinct diagnosis concepts present in the cohort-filtered extracts and writes
+empty, review-ready template CSVs plus an aggregate build report under
+``$DATASET_ROOT/mappings/conditions``. With ``--write-curated-sepsis``, it also
+merges the approved A1/B3 sepsis index-condition policy into the active local
+mapping files consumed by ``pipeline.harmonize``.
 
 Curators then either drop authoritative CCS/CCSR/GEM/chapter reference files into
 that folder (see ``fetch_condition_reference_files.py``) or fill the templates by
@@ -17,11 +20,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import duckdb
 
@@ -38,6 +42,12 @@ from pipeline.config import (  # noqa: E402
 )
 
 SCHEMA_VERSION = "condition-mapping-build-report-v1"
+SEPSIS_PROJECT_GROUP = "sepsis"
+SEPSIS_PROJECT_TOKEN = "condition:sepsis"
+SEPSIS_CONDITION_NAME = "Sepsis"
+SEPSIS_EXACT_ICD_CODES = ("995.91", "995.92", "785.52", "R65.20", "R65.21")
+SEPSIS_ICD_PREFIXES = ("A40", "A41")
+SEPSIS_BASE_TEXT_TOKENS = ("sepsis", "severe_sepsis", "septic_shock")
 
 # Normalization mirrors pipeline.harmonize so template keys match harmonization
 # join keys exactly.
@@ -59,6 +69,30 @@ def text_key(expr: str) -> str:
     return _TEXT_KEY.format(expr=expr)
 
 
+def normalize_text_value(value: str) -> str:
+    """Normalize text using the same token shape as SQL ``text_key``."""
+
+    return re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower()).strip("_")
+
+
+def normalize_code_value(value: str) -> str:
+    """Normalize codes using the same token shape as SQL ``code_key``."""
+
+    return re.sub(r"[^a-z0-9]+", "", str(value).strip().lower())
+
+
+def is_sepsis_text_token(token: str) -> bool:
+    """Return whether a normalized eICU diagnosis text token matches A1 sepsis."""
+
+    normalized = normalize_text_value(token)
+    if not normalized:
+        return False
+    parts = {part for part in normalized.split("_") if part}
+    if "sepsis" in parts or "septicemia" in parts:
+        return True
+    return "septic" in parts and "shock" in parts
+
+
 def sql_string(value: str | Path) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
@@ -73,6 +107,7 @@ class ConditionMappingBuildConfig:
     report_path: Path = REPORTS_ROOT / "condition_mapping_build_report.json"
     mimic_diagnoses_path: Path | None = None
     eicu_diagnosis_path: Path | None = None
+    write_curated_sepsis: bool = False
 
     @property
     def condition_mapping_root(self) -> Path:
@@ -106,6 +141,34 @@ def write_csv(
         writer.writerow(columns)
         for row in rows:
             writer.writerow(["" if value is None else value for value in row])
+
+
+def read_csv_dicts(path: Path) -> list[dict[str, str]]:
+    """Read a small mapping CSV if present."""
+
+    import csv
+
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8", newline="") as handle:
+        return [dict(row) for row in csv.DictReader(handle)]
+
+
+def write_dict_csv(
+    path: Path,
+    columns: Sequence[str],
+    rows: Sequence[Mapping[str, Any]],
+) -> None:
+    """Write mapping dictionaries with a stable column order."""
+
+    import csv
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(columns), extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({column: row.get(column, "") for column in columns})
 
 
 def _fetch(connection: duckdb.DuckDBPyConnection, query: str) -> list[tuple[Any, ...]]:
@@ -284,6 +347,168 @@ def write_project_group_template(config: ConditionMappingBuildConfig) -> Path:
     return path
 
 
+def curated_sepsis_text_tokens(config: ConditionMappingBuildConfig) -> list[str]:
+    """Return discovered and policy-default eICU text tokens for sepsis mapping."""
+
+    tokens = {normalize_text_value(token) for token in SEPSIS_BASE_TEXT_TOKENS}
+    distinct_path = (
+        config.condition_mapping_root / "eicu_distinct_diagnosis_text_for_mapping.csv"
+    )
+    for row in read_csv_dicts(distinct_path):
+        token = normalize_text_value(row.get("diagnosisstring_normalized", ""))
+        if is_sepsis_text_token(token):
+            tokens.add(token)
+    return sorted(token for token in tokens if token)
+
+
+def mapping_row_key(
+    row: Mapping[str, Any],
+    key_columns: Sequence[str],
+) -> tuple[str, ...]:
+    """Return a normalized key for merging small curator mapping CSVs."""
+
+    if tuple(key_columns) == ("match_type", "match_value"):
+        match_type = normalize_text_value(str(row.get("match_type", "")))
+        match_value = str(row.get("match_value", ""))
+        if match_type in {"icd_code", "icd_prefix", "icd_code_prefix"}:
+            normalized_value = normalize_code_value(match_value)
+        else:
+            normalized_value = normalize_text_value(match_value)
+        return (match_type, normalized_value)
+    return tuple(
+        normalize_text_value(str(row.get(column, ""))) for column in key_columns
+    )
+
+
+def merge_rows_by_key(
+    *,
+    existing_rows: Sequence[dict[str, str]],
+    new_rows: Sequence[Mapping[str, Any]],
+    key_columns: Sequence[str],
+) -> tuple[list[dict[str, str]], int]:
+    """Append rows not already present, preserving existing curator edits."""
+
+    merged = [dict(row) for row in existing_rows]
+    seen = {mapping_row_key(row, key_columns) for row in merged}
+    added = 0
+    for row in new_rows:
+        key = mapping_row_key(row, key_columns)
+        if key in seen:
+            continue
+        merged.append(
+            {
+                str(column): "" if value is None else str(value)
+                for column, value in row.items()
+            }
+        )
+        seen.add(key)
+        added += 1
+    return merged, added
+
+
+def write_curated_sepsis_mappings(
+    config: ConditionMappingBuildConfig,
+) -> dict[str, Any]:
+    """Write active A1/B3 sepsis mapping CSVs from the approved policy."""
+
+    condition_root = config.condition_mapping_root
+    text_tokens = curated_sepsis_text_tokens(config)
+
+    text_path = condition_root / "eicu_diagnosis_text_condition_map.csv"
+    text_columns = (
+        "diagnosisstring_normalized",
+        "condition_rollup_token",
+        "condition_name",
+        "mapping_basis",
+        "review_status",
+        "mapping_version",
+    )
+    text_rows = [
+        {
+            "diagnosisstring_normalized": token,
+            "condition_rollup_token": SEPSIS_PROJECT_TOKEN,
+            "condition_name": SEPSIS_CONDITION_NAME,
+            "mapping_basis": "approved_a1_b3_sepsis_text",
+            "review_status": "approved_policy_2026-07-04",
+            "mapping_version": CONDITION_MAPPING_VERSION,
+        }
+        for token in text_tokens
+    ]
+    merged_text, added_text = merge_rows_by_key(
+        existing_rows=read_csv_dicts(text_path),
+        new_rows=text_rows,
+        key_columns=("diagnosisstring_normalized",),
+    )
+    write_dict_csv(text_path, text_columns, merged_text)
+
+    project_path = condition_root / "project_condition_groups.csv"
+    project_columns = (
+        "match_type",
+        "match_value",
+        "project_condition_group",
+        "project_condition_token",
+        "mapping_basis",
+        "review_status",
+        "mapping_version",
+    )
+    project_rows: list[dict[str, str]] = []
+    project_rows.extend(
+        {
+            "match_type": "icd_code",
+            "match_value": code,
+            "project_condition_group": SEPSIS_PROJECT_GROUP,
+            "project_condition_token": SEPSIS_PROJECT_TOKEN,
+            "mapping_basis": "approved_a1_exact_icd_code",
+            "review_status": "approved_policy_2026-07-04",
+            "mapping_version": CONDITION_MAPPING_VERSION,
+        }
+        for code in SEPSIS_EXACT_ICD_CODES
+    )
+    project_rows.extend(
+        {
+            "match_type": "icd_prefix",
+            "match_value": prefix,
+            "project_condition_group": SEPSIS_PROJECT_GROUP,
+            "project_condition_token": SEPSIS_PROJECT_TOKEN,
+            "mapping_basis": "approved_a1_icd_prefix",
+            "review_status": "approved_policy_2026-07-04",
+            "mapping_version": CONDITION_MAPPING_VERSION,
+        }
+        for prefix in SEPSIS_ICD_PREFIXES
+    )
+    project_rows.extend(
+        {
+            "match_type": "text_token",
+            "match_value": token,
+            "project_condition_group": SEPSIS_PROJECT_GROUP,
+            "project_condition_token": SEPSIS_PROJECT_TOKEN,
+            "mapping_basis": "approved_a1_b3_sepsis_text",
+            "review_status": "approved_policy_2026-07-04",
+            "mapping_version": CONDITION_MAPPING_VERSION,
+        }
+        for token in text_tokens
+    )
+
+    merged_project, added_project = merge_rows_by_key(
+        existing_rows=read_csv_dicts(project_path),
+        new_rows=project_rows,
+        key_columns=("match_type", "match_value"),
+    )
+    write_dict_csv(project_path, project_columns, merged_project)
+
+    return {
+        "status": "written",
+        "policy": "A1 coded sepsis + B3 project group",
+        "eicu_text_tokens_considered": len(text_tokens),
+        "eicu_text_rows_added": added_text,
+        "project_group_rows_added": added_project,
+        "active_files": [
+            "eicu_diagnosis_text_condition_map.csv",
+            "project_condition_groups.csv",
+        ],
+    }
+
+
 def build_condition_mappings(
     config: ConditionMappingBuildConfig = ConditionMappingBuildConfig(),
 ) -> dict[str, Any]:
@@ -295,6 +520,15 @@ def build_condition_mappings(
         mimic = build_mimic_templates(config, connection)
         eicu = build_eicu_templates(config, connection)
     project_template_path = write_project_group_template(config)
+    curated_sepsis = (
+        write_curated_sepsis_mappings(config)
+        if config.write_curated_sepsis
+        else {
+            "status": "not_requested",
+            "policy": "A1 coded sepsis + B3 project group",
+            "active_files": [],
+        }
+    )
 
     report = {
         "schema_version": SCHEMA_VERSION,
@@ -321,6 +555,7 @@ def build_condition_mappings(
             "eicu_diagnosis_text_condition_map_template.csv",
             project_template_path.name,
         ],
+        "curated_sepsis": curated_sepsis,
         "authoritative_reference_files_expected": [
             "icd10_ccsr.csv",
             "icd9_ccs.csv",
@@ -363,6 +598,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--mimic-diagnoses", type=Path, default=None)
     parser.add_argument("--eicu-diagnosis", type=Path, default=None)
+    parser.add_argument(
+        "--write-curated-sepsis",
+        action="store_true",
+        help=(
+            "Merge the approved A1/B3 sepsis code/text mappings into the active "
+            "condition mapping CSVs consumed by harmonization."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -377,6 +620,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             report_path=args.report,
             mimic_diagnoses_path=args.mimic_diagnoses,
             eicu_diagnosis_path=args.eicu_diagnosis,
+            write_curated_sepsis=args.write_curated_sepsis,
         )
     )
     print(

@@ -416,6 +416,7 @@ def test_harmonize_builds_conditions_and_mapped_medications(tmp_path: Path) -> N
             "medicationid",
             "drugstartoffset",
             "drugstopoffset",
+            "drugordercancelled",
             "drugname",
             "drughiclseqno",
             "gtc",
@@ -436,6 +437,7 @@ def test_harmonize_builds_conditions_and_mapped_medications(tmp_path: Path) -> N
                 "700",
                 "20",
                 "60",
+                "No",
                 "synthetic med",
                 "123",
                 "GTC1",
@@ -468,6 +470,7 @@ def test_harmonize_builds_conditions_and_mapped_medications(tmp_path: Path) -> N
             manifest_path=reports_root / "harmonization_manifest.json",
             coverage_path=reports_root / "harmonization_coverage.json",
             unmapped_path=reports_root / "unmapped_concepts.json",
+            domain_materialization_batches=2,
         )
     )
 
@@ -482,6 +485,148 @@ def test_harmonize_builds_conditions_and_mapped_medications(tmp_path: Path) -> N
     assert medications[0]["mapping_status"] == "mapped_rxnorm_or_atc"
     assert medications[0]["rxcui"] == "RX1"
     assert coverage["data_safety"]["contains_patient_rows"] is False
+
+
+def test_harmonize_filters_cancelled_eicu_orders_and_deduplicates_events(
+    tmp_path: Path,
+) -> None:
+    cohort_path = tmp_path / "cohorts" / "cohort_stays.parquet"
+    extracts_root = tmp_path / "Dataset" / "processed" / "extracts"
+    mapping_root = tmp_path / "Dataset" / "mappings"
+    harmonized_root = tmp_path / "Dataset" / "processed" / "harmonized"
+    reports_root = tmp_path / "reports"
+    write_unified_cohort(cohort_path)
+    write_parquet_rows(
+        extracts_root / "eicu_crd" / "medication.parquet",
+        (
+            "source",
+            "source_version",
+            "patient_uid",
+            "encounter_uid",
+            "stay_uid",
+            "source_patient_id",
+            "source_encounter_id",
+            "source_stay_id",
+            "extraction_version",
+            "medicationid",
+            "drugstartoffset",
+            "drugstopoffset",
+            "drugordercancelled",
+            "drugname",
+            "drughiclseqno",
+            "gtc",
+            "routeadmin",
+            "dosage",
+        ),
+        (
+            (
+                "eicu_crd",
+                "2.0",
+                "eicu_crd:patient-a",
+                "eicu_crd:500",
+                "eicu_crd:400",
+                "patient-a",
+                "500",
+                "400",
+                "test",
+                "700",
+                "20",
+                "60",
+                "No",
+                "exact med",
+                "123",
+                "GTC1",
+                "IV",
+                "5 mg",
+            ),
+            (
+                "eicu_crd",
+                "2.0",
+                "eicu_crd:patient-a",
+                "eicu_crd:500",
+                "eicu_crd:400",
+                "patient-a",
+                "500",
+                "400",
+                "test",
+                "700",
+                "20",
+                "60",
+                "No",
+                "exact med",
+                "123",
+                "GTC1",
+                "IV",
+                "5 mg",
+            ),
+            (
+                "eicu_crd",
+                "2.0",
+                "eicu_crd:patient-a",
+                "eicu_crd:500",
+                "eicu_crd:400",
+                "patient-a",
+                "500",
+                "400",
+                "test",
+                "701",
+                "25",
+                "70",
+                "Yes",
+                "cancelled med",
+                "123",
+                "GTC1",
+                "IV",
+                "5 mg",
+            ),
+        ),
+    )
+    write_text(
+        mapping_root / "medications" / "mimic_ndc_rxnorm_atc.csv",
+        "ndc,rxcui,ingredient_name,rxnorm_name,atc_code,atc_level\n",
+    )
+    write_text(
+        mapping_root / "medications" / "eicu_drug_rxnorm_atc.csv",
+        "\n".join(
+            [
+                "drughiclseqno,gtc,drug_name,rxcui,ingredient_name,rxnorm_name,atc_code,atc_level",
+                "123,GTC1,exact med,RX_EXACT,exact ingredient,exact rx,ATC_EXACT,3",
+                "123,GTC1,cancelled med,RX_CANCEL,cancel ingredient,cancel rx,ATC_CANCEL,3",
+            ]
+        )
+        + "\n",
+    )
+
+    manifest = build_harmonized_artifacts(
+        HarmonizationBuildConfig(
+            cohort_path=cohort_path,
+            extracts_root=extracts_root,
+            harmonized_root=harmonized_root,
+            mapping_root=mapping_root,
+            manifest_path=reports_root / "harmonization_manifest.json",
+            coverage_path=reports_root / "harmonization_coverage.json",
+            unmapped_path=reports_root / "unmapped_concepts.json",
+            domain_materialization_batches=2,
+        )
+    )
+
+    medications = read_parquet_rows(harmonized_root / "medications.parquet")
+    medication_dedup = [
+        row
+        for row in manifest["cleanup"]["deduplication"]
+        if row["domain"] == "medications" and row["source"] == "eicu_crd"
+    ][0]
+    cancellation = manifest["cleanup"]["cancelled_medication_orders"][0]
+
+    assert manifest["status"] == "completed"
+    assert len(medications) == 1
+    assert medications[0]["source_event_id"] == "700"
+    assert medications[0]["rxcui"] == "RX_EXACT"
+    assert cancellation["medication_extract_row_count"] == 3
+    assert cancellation["cancelled_order_row_count"] == 1
+    assert medication_dedup["input_row_count"] == 2
+    assert medication_dedup["deduplicated_row_count"] == 1
+    assert medication_dedup["duplicate_excess_rows"] == 1
 
 
 def test_harmonize_writes_all_milestone5_artifacts_and_reports(
@@ -1011,12 +1156,18 @@ def test_harmonize_writes_all_milestone5_artifacts_and_reports(
             manifest_path=reports_root / "harmonization_manifest.json",
             coverage_path=reports_root / "harmonization_coverage.json",
             unmapped_path=reports_root / "unmapped_concepts.json",
+            domain_materialization_batches=2,
         )
     )
 
     required = set(REQUIRED_HARMONIZED_TABLES)
     assert manifest["status"] == "completed"
     assert required == set(manifest["artifacts"])
+    table_records = {row["table_name"]: row for row in manifest["tables"]}
+    assert table_records["labs"]["build_strategy"] == "split_query_hash_batches"
+    assert table_records["labs"]["batch_count"] == 2
+    assert table_records["vitals"]["build_strategy"] == "split_query_hash_batches"
+    assert table_records["vitals"]["batch_count"] == 2
     assert manifest["coverage_path"] == str(
         reports_root / "harmonization_coverage.json"
     )
@@ -1166,6 +1317,7 @@ def test_harmonize_prefers_exact_eicu_mapping_concept(tmp_path: Path) -> None:
             "medicationid",
             "drugstartoffset",
             "drugstopoffset",
+            "drugordercancelled",
             "drugname",
             "drughiclseqno",
             "gtc",
@@ -1186,6 +1338,7 @@ def test_harmonize_prefers_exact_eicu_mapping_concept(tmp_path: Path) -> None:
                 "700",
                 "20",
                 "60",
+                "No",
                 "exact med",
                 "123",
                 "GTC1",

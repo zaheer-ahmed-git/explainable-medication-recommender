@@ -5,8 +5,26 @@
 The active working tree contains the source-inventory, adult cohort, aggregate
 table-profiling, EDA-summary, source-extraction, and Milestone 5 harmonization
 pipeline with focused synthetic tests. Milestone 6 feature and observed-label
-builders also have focused synthetic tests. Graph and model modules still need
-their own tests as they are added.
+builders also have focused synthetic tests. The first Milestone 7
+baseline-evaluation scaffold has synthetic tests for coverage, non-learned and
+learned baselines, ranking metrics, row-level null metrics, Milestone 6
+integration, and final-mode gating. Milestone 8 graph-readiness tooling has
+synthetic tests for train-only graph fitting, cold-start reporting, sparse
+graphs, and report safety. Milestone 8B graph-aware ablation tooling has
+synthetic tests for train-fit graph features, cold-start flags, fusion,
+final-mode gating, eICU coverage-only behavior, and report safety. Graph neural
+models are still planned and still need their own tests as they are added.
+Condition mapping tests also cover active A1/B3 sepsis mapping generation and
+`icd_prefix` project-group matching. Training-table tests cover the default
+RxNorm-first candidate token strategy and the ATC-3-first coverage-sensitivity
+strategy. Preprocessing tests cover train-only imputation/scaling/encoding
+artifact fitting and aggregate-only preprocessing manifests.
+Phase 8 P0 tests cover train-only condition vocabulary fitting, lab/vital trend
+boundaries, explicit missingness columns, aggregate-only feature manifests,
+downstream learned-baseline/graph-ablation feature pickup, and the promotion
+gate review writer.
+The Phase 4-9 visualization generator has a focused synthetic test that verifies
+aggregate-only meeting-pack generation without raw clinical rows.
 
 Every new active module should arrive with focused tests.
 
@@ -42,6 +60,13 @@ uv run pytest tests/test_eda_summary.py
 uv run pytest tests/test_source_integrity.py
 uv run pytest tests/test_extraction_harmonize.py
 uv run pytest tests/test_config.py tests/test_features.py tests/test_build_training_table.py
+uv run pytest tests/test_preprocessing.py
+uv run pytest tests/test_config.py tests/test_milestone7_baselines.py
+uv run pytest tests/test_config.py tests/test_graph_suitability.py
+uv run pytest tests/test_config.py tests/test_graph_ablation.py
+uv run pytest tests/test_feature_gate_review.py tests/test_features.py \
+  tests/test_milestone7_baselines.py tests/test_graph_ablation.py
+uv run pytest tests/test_phase4_to_9_visualization.py
 uv run pytest tests/test_condition_normalization.py
 uv run pytest tests/test_condition_mapping_builder.py
 uv run pytest tests/test_cohort.py -k patient_split
@@ -113,4 +138,31 @@ and unmapped reports.
 
 Milestone 6 completion additionally requires temporal cutoff tests, censoring
 tests, patient split-integrity tests, train-only candidate-catalog tests,
-out-of-catalog positive reporting, and aggregate-only manifest checks.
+out-of-catalog positive reporting, join-integrity gates, train-only
+preprocessing artifact fitting, and aggregate-only manifest checks.
+
+Milestone 7 baseline completion additionally requires coverage and evaluability
+review on protected data, learned-baseline manifest metadata when linear or
+XGBoost baselines are selected, train-only popularity tests, deterministic
+random-score tests, ranking metric tests, report-safety checks, explicit
+final/test gating, and Calculco submission via
+`scripts/calculco/submit_evaluate_baselines.sh`.
+
+Milestone 8 graph-readiness completion additionally requires train-only graph
+fitting tests, no future-event graph edges, no validation/test/eICU graph
+fitting, cold-start reporting, sparse-graph handling, aggregate-only report
+checks, and Calculco submission via
+`scripts/calculco/graph_suitability.sh` when full artifacts are needed.
+
+Milestone 8B graph-ablation completion additionally requires train-fit graph
+feature tests, validation-only fusion/selection tests, final/test blocking until
+the frozen 8B selection exists, eICU coverage-only checks when positives are
+absent, aggregate-only report checks, and Calculco submission via
+`scripts/calculco/submit_graph_ablation.sh` when protected-data ablation metrics
+are needed.
+
+Phase 8 P0 completion additionally requires synthetic tests for train-only
+condition vocabularies, temporal trend cutoffs, report safety, downstream model
+feature selection, and gate-review behavior. Protected-data completion requires
+isolated `phase8_p0_*` aggregate reports and no promotion until
+`reports/phase8_p0_feature_gate_review.json` passes.

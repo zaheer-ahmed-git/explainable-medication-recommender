@@ -49,6 +49,7 @@ DEFAULT_COVERAGE_PATH = REPORTS_ROOT / "harmonization_coverage.json"
 DEFAULT_UNMAPPED_PATH = REPORTS_ROOT / "unmapped_concepts.json"
 DEFAULT_CONDITION_COVERAGE_PATH = REPORTS_ROOT / "condition_normalization_coverage.json"
 DEFAULT_TEXT_REVIEW_PATH = REPORTS_ROOT / "eicu_diagnosis_text_mapping_review.csv"
+DEFAULT_DOMAIN_MATERIALIZATION_BATCHES = 1
 
 CONDITION_COVERAGE_SCHEMA_VERSION = "condition-normalization-coverage-v1"
 
@@ -74,6 +75,76 @@ PROVENANCE_COLUMNS = (
     "harmonization_version",
     "generated_at",
 )
+CANCELLED_ORDER_TRUE_VALUES = ("yes", "y", "true", "1")
+DOMAIN_DEDUPLICATION_KEYS: dict[str, tuple[str, ...]] = {
+    "conditions": (
+        "source",
+        "source_table",
+        "stay_uid",
+        "source_sequence",
+        "condition_system",
+        "condition_code",
+        "condition_text",
+        "condition_token",
+    ),
+    "medications": (
+        "source",
+        "source_table",
+        "stay_uid",
+        "source_event_id",
+        "event_start_time",
+        "event_end_time",
+        "medication_source_name",
+        "source_code",
+        "route",
+        "dose_value",
+    ),
+    "labs": (
+        "source",
+        "source_table",
+        "stay_uid",
+        "source_event_id",
+        "event_time",
+        "event_time_offset",
+        "source_lab_code",
+        "normalized_lab_token",
+        "lab_value_numeric",
+        "lab_value_text",
+        "unit",
+    ),
+    "vitals": (
+        "source",
+        "source_table",
+        "stay_uid",
+        "source_event_id",
+        "event_time",
+        "event_time_offset",
+        "source_vital_code",
+        "normalized_vital_token",
+        "value_numeric",
+        "unit",
+    ),
+    "allergies": (
+        "source",
+        "source_table",
+        "stay_uid",
+        "source_event_id",
+        "event_time",
+        "event_entered_time",
+        "normalized_allergen_token",
+    ),
+    "interventions": (
+        "source",
+        "source_table",
+        "stay_uid",
+        "source_event_id",
+        "event_start_time",
+        "event_end_time",
+        "event_start_offset",
+        "event_end_offset",
+        "normalized_intervention_token",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -94,6 +165,7 @@ class HarmonizationBuildConfig:
     duckdb_temp_directory: Path | None = DUCKDB_TEMP_DIR
     duckdb_memory_limit: str | None = DUCKDB_MEMORY_LIMIT
     duckdb_threads: int | None = DUCKDB_THREADS
+    domain_materialization_batches: int = DEFAULT_DOMAIN_MATERIALIZATION_BATCHES
 
 
 def mapping_resource_status(
@@ -221,6 +293,13 @@ def normalized_unit_sql(expression: str) -> str:
     )
 
 
+def cancelled_order_sql(expression: str) -> str:
+    """Return SQL identifying source rows marked as cancelled orders."""
+
+    values = ", ".join(sql_string(value) for value in CANCELLED_ORDER_TRUE_VALUES)
+    return f"LOWER(TRIM(CAST({expression} AS VARCHAR))) IN ({values})"
+
+
 def provenance_sql(
     config: HarmonizationBuildConfig,
     *,
@@ -251,6 +330,13 @@ def configure_connection(
     )
 
 
+def temporary_parquet_path(path: Path) -> Path:
+    """Return a hidden same-directory temp path for atomic Parquet replacement."""
+
+    timestamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
+    return path.with_name(f".{path.stem}.tmp-{timestamp}{path.suffix}")
+
+
 def copy_query_to_parquet(
     connection: duckdb.DuckDBPyConnection,
     query: str,
@@ -259,17 +345,103 @@ def copy_query_to_parquet(
     """Materialize a harmonization query and return its row count."""
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    connection.execute(f"COPY ({query}) TO {sql_string(output_path)} (FORMAT PARQUET)")
+    temporary_path = temporary_parquet_path(output_path)
+    try:
+        connection.execute(
+            f"COPY ({query}) TO {sql_string(temporary_path)} (FORMAT PARQUET)"
+        )
+        temporary_path.replace(output_path)
+    except Exception:
+        if temporary_path.exists():
+            temporary_path.unlink()
+        raise
     row = connection.execute(
         f"SELECT COUNT(*) FROM {parquet_scan(output_path)}"
     ).fetchone()
     return int(row[0]) if row is not None else 0
 
 
+def parquet_scan_paths(paths: Sequence[Path]) -> str:
+    """Return a DuckDB Parquet scan expression for multiple paths."""
+
+    path_list = ", ".join(sql_string(path) for path in paths)
+    return f"read_parquet([{path_list}])"
+
+
 def union_queries(queries: Sequence[str]) -> str:
     """Union one or more SELECT queries by name."""
 
     return "\nUNION ALL BY NAME\n".join(f"SELECT * FROM ({query})" for query in queries)
+
+
+def deduplicated_query(query: str, key_columns: Sequence[str]) -> str:
+    """Return a deterministic event-level deduplicated wrapper query."""
+
+    key_sql = ", ".join(key_columns)
+    return f"""
+SELECT * EXCLUDE (_dedup_row_number)
+FROM (
+    SELECT
+        *,
+        ROW_NUMBER() OVER (
+            PARTITION BY {key_sql}
+            ORDER BY {key_sql}
+        ) AS _dedup_row_number
+    FROM ({query})
+)
+WHERE _dedup_row_number = 1
+"""
+
+
+def hash_batched_query(
+    query: str,
+    *,
+    batch_index: int,
+    batch_count: int,
+    key_column: str = "stay_uid",
+) -> str:
+    """Return a query restricted to one deterministic key-hash batch."""
+
+    return f"""
+SELECT *
+FROM ({query})
+WHERE HASH(COALESCE(CAST({key_column} AS VARCHAR), '')) % {batch_count}
+    = {batch_index}
+"""
+
+
+def deduplication_summary_query(
+    query: str,
+    *,
+    domain: str,
+    key_columns: Sequence[str],
+) -> str:
+    """Return aggregate duplicate counts for a domain query before deduping."""
+
+    non_source_keys = [column for column in key_columns if column != "source"]
+    key_sql = ", ".join(non_source_keys)
+    return f"""
+WITH source_rows AS (
+    {query}
+),
+keyed AS (
+    SELECT
+        source,
+        {key_sql},
+        COUNT(*) AS row_count
+    FROM source_rows
+    GROUP BY source, {key_sql}
+)
+SELECT
+    {sql_string(domain)} AS domain,
+    source,
+    SUM(row_count) AS input_row_count,
+    COUNT(*) AS deduplicated_row_count,
+    SUM(row_count - 1) AS duplicate_excess_rows
+FROM keyed
+GROUP BY source
+ORDER BY source
+"""
 
 
 def empty_select(schema: Sequence[tuple[str, str]]) -> str:
@@ -500,6 +672,9 @@ def base_manifest(
             "mapping_root": str(config.mapping_root),
             "harmonization_version": config.harmonization_version,
             "cohort_version": config.cohort_version,
+            "domain_materialization_batches": domain_materialization_batch_count(
+                config
+            ),
         },
         "versions": {
             "cohort_version": config.cohort_version,
@@ -621,6 +796,7 @@ def _condition_mapping_ctes_and_joins(
         "chapter": "FALSE",
         "text": "FALSE",
         "project": False,  # type: ignore[dict-item]
+        "project_prefix": False,  # type: ignore[dict-item]
     }
 
     if "icd10_ccsr" in available:
@@ -809,6 +985,29 @@ def _condition_mapping_ctes_and_joins(
     WHERE rn = 1
 )"""
         )
+        ctes.append(
+            f"""project_prefix AS (
+    SELECT match_key, project_condition_group, project_condition_token
+    FROM (
+        SELECT
+            {code_key("match_value")} AS match_key,
+            CAST(project_condition_group AS VARCHAR) AS project_condition_group,
+            CAST(project_condition_token AS VARCHAR) AS project_condition_token,
+            ROW_NUMBER() OVER (
+                PARTITION BY {code_key("match_value")}
+                ORDER BY LENGTH({code_key("match_value")}) DESC,
+                    CAST(project_condition_token AS VARCHAR)
+            ) AS rn
+        FROM {_read_csv_all_varchar(path)}
+        WHERE LOWER(TRIM(CAST(match_type AS VARCHAR))) IN (
+                'icd_prefix',
+                'icd_code_prefix'
+            )
+            AND {code_key("match_value")} IS NOT NULL
+    )
+    WHERE rn = 1
+)"""
+        )
         joins.append(
             "LEFT JOIN project_code AS m_pcode\n"
             "    ON m_pcode.match_key = b.icd_code_key"
@@ -818,6 +1017,7 @@ def _condition_mapping_ctes_and_joins(
             "    ON m_ptext.match_key = b.diag_text_key"
         )
         has["project"] = True  # type: ignore[assignment]
+        has["project_prefix"] = True  # type: ignore[assignment]
 
     return ctes, joins, has
 
@@ -962,11 +1162,37 @@ def condition_normalized_query(
     mapping_status_case = _case_expr(status_branches, "'unmapped_condition'")
 
     if has["project"]:
+        if has["project_prefix"]:
+            project_prefix_group = """(
+                SELECT pp.project_condition_group
+                FROM project_prefix AS pp
+                WHERE b.icd_code_key IS NOT NULL
+                    AND STARTS_WITH(b.icd_code_key, pp.match_key)
+                ORDER BY LENGTH(pp.match_key) DESC, pp.project_condition_token
+                LIMIT 1
+            )"""
+            project_prefix_token = """(
+                SELECT pp.project_condition_token
+                FROM project_prefix AS pp
+                WHERE b.icd_code_key IS NOT NULL
+                    AND STARTS_WITH(b.icd_code_key, pp.match_key)
+                ORDER BY LENGTH(pp.match_key) DESC, pp.project_condition_token
+                LIMIT 1
+            )"""
+        else:
+            project_prefix_group = "CAST(NULL AS VARCHAR)"
+            project_prefix_token = "CAST(NULL AS VARCHAR)"
         project_group = (
-            "COALESCE(m_pcode.project_condition_group, m_ptext.project_condition_group)"
+            "COALESCE("
+            "m_pcode.project_condition_group, "
+            f"{project_prefix_group}, "
+            "m_ptext.project_condition_group)"
         )
         project_token = (
-            "COALESCE(m_pcode.project_condition_token, m_ptext.project_condition_token)"
+            "COALESCE("
+            "m_pcode.project_condition_token, "
+            f"{project_prefix_token}, "
+            "m_ptext.project_condition_token)"
         )
     else:
         project_group = "CAST(NULL AS VARCHAR)"
@@ -1187,6 +1413,7 @@ LEFT JOIN mapping AS m
 WITH source_rows AS (
     SELECT ROW_NUMBER() OVER () AS extraction_row_id, *
     FROM {parquet_scan(eicu_medication)}
+    WHERE NOT COALESCE({cancelled_order_sql("drugordercancelled")}, FALSE)
 ),
 mapping AS (
     SELECT *
@@ -1942,30 +2169,211 @@ def materialize_table(
     }
 
 
+def domain_materialization_batch_count(config: HarmonizationBuildConfig) -> int:
+    """Return a positive hash-batch count for large domain materialization."""
+
+    return max(1, int(config.domain_materialization_batches))
+
+
+def domain_part_path(
+    output_path: Path,
+    *,
+    query_index: int,
+    batch_index: int,
+) -> Path:
+    """Return the generated part path for split domain materialization."""
+
+    return (
+        output_path.parent
+        / "_harmonize_domain_parts"
+        / output_path.stem
+        / f"{output_path.stem}_query_{query_index:04d}_batch_{batch_index:04d}.parquet"
+    )
+
+
+def finalize_part_paths_query(part_paths: Sequence[Path]) -> str:
+    """Return a query that combines generated domain parts."""
+
+    return f"SELECT * FROM {parquet_scan_paths(part_paths)}"
+
+
+def aggregate_deduplication_rows(
+    rows: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Aggregate per-part deduplication summaries by domain and source."""
+
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = (str(row["domain"]), str(row["source"]))
+        current = grouped.setdefault(
+            key,
+            {
+                "domain": row["domain"],
+                "source": row["source"],
+                "input_row_count": 0,
+                "deduplicated_row_count": 0,
+                "duplicate_excess_rows": 0,
+            },
+        )
+        current["input_row_count"] += int(row.get("input_row_count") or 0)
+        current["deduplicated_row_count"] += int(row.get("deduplicated_row_count") or 0)
+        current["duplicate_excess_rows"] += int(row.get("duplicate_excess_rows") or 0)
+    return sorted(grouped.values(), key=lambda row: (row["domain"], row["source"]))
+
+
+def materialize_split_domain_table(
+    connection: duckdb.DuckDBPyConnection,
+    config: HarmonizationBuildConfig,
+    *,
+    table_name: str,
+    queries: Sequence[str],
+    output_path: Path,
+    deduplicate_keys: Sequence[str],
+) -> dict[str, Any]:
+    """Materialize large domain tables from smaller source-query/hash parts."""
+
+    batch_count = domain_materialization_batch_count(config)
+    part_paths = [
+        domain_part_path(
+            output_path,
+            query_index=query_index,
+            batch_index=batch_index,
+        )
+        for query_index, _query in enumerate(queries)
+        for batch_index in range(batch_count)
+    ]
+    part_counts: list[int] = []
+    dedup_rows: list[dict[str, Any]] = []
+    try:
+        for path in part_paths:
+            if path.exists():
+                path.unlink()
+        for query_index, query in enumerate(queries):
+            for batch_index in range(batch_count):
+                batched_query = (
+                    hash_batched_query(
+                        query,
+                        batch_index=batch_index,
+                        batch_count=batch_count,
+                    )
+                    if batch_count > 1
+                    else query
+                )
+                deduped = deduplicated_query(batched_query, deduplicate_keys)
+                part_path = domain_part_path(
+                    output_path,
+                    query_index=query_index,
+                    batch_index=batch_index,
+                )
+                part_counts.append(
+                    copy_query_to_parquet(connection, deduped, part_path)
+                )
+                dedup_rows.extend(
+                    fetch_dict_rows(
+                        connection,
+                        deduplication_summary_query(
+                            batched_query,
+                            domain=table_name,
+                            key_columns=deduplicate_keys,
+                        ),
+                    )
+                )
+        row_count = copy_query_to_parquet(
+            connection,
+            finalize_part_paths_query(part_paths),
+            output_path,
+        )
+    except Exception as error:
+        return {
+            "table_name": table_name,
+            "output_path": str(output_path),
+            "status": "failed",
+            "row_count": None,
+            "reason": safe_error_message(error),
+            "build_strategy": "split_query_hash_batches",
+            "batch_count": batch_count,
+            "part_count": len(part_paths),
+            "stale_output_exists": output_path.exists(),
+        }
+
+    return {
+        "table_name": table_name,
+        "output_path": str(output_path),
+        "status": "completed",
+        "row_count": row_count,
+        "reason": None,
+        "build_strategy": "split_query_hash_batches",
+        "batch_count": batch_count,
+        "part_count": len(part_paths),
+        "part_row_counts": part_counts,
+        "deduplication": aggregate_deduplication_rows(dedup_rows),
+    }
+
+
 def materialize_domain_table(
     connection: duckdb.DuckDBPyConnection,
+    config: HarmonizationBuildConfig,
     *,
     table_name: str,
     queries: Sequence[str],
     output_path: Path,
     empty_schema: Sequence[tuple[str, str]],
+    deduplicate_keys: Sequence[str] | None = None,
+    split_materialization: bool = False,
 ) -> dict[str, Any]:
     """Materialize a domain table, writing an empty schema if extracts are absent."""
 
     if queries:
-        return materialize_table(
+        if split_materialization and deduplicate_keys:
+            return materialize_split_domain_table(
+                connection,
+                config,
+                table_name=table_name,
+                queries=queries,
+                output_path=output_path,
+                deduplicate_keys=deduplicate_keys,
+            )
+        base_query = union_queries(queries)
+        query = (
+            deduplicated_query(base_query, deduplicate_keys)
+            if deduplicate_keys
+            else base_query
+        )
+        record = materialize_table(
             connection,
             table_name=table_name,
-            query=union_queries(queries),
+            query=query,
             output_path=output_path,
         )
-    return materialize_table(
+        if deduplicate_keys and record["status"] == "completed":
+            try:
+                record["deduplication"] = fetch_dict_rows(
+                    connection,
+                    deduplication_summary_query(
+                        base_query,
+                        domain=table_name,
+                        key_columns=deduplicate_keys,
+                    ),
+                )
+            except Exception as error:
+                record["deduplication"] = [
+                    {
+                        "domain": table_name,
+                        "status": "failed",
+                        "reason": safe_error_message(error),
+                    }
+                ]
+        return record
+    record = materialize_table(
         connection,
         table_name=table_name,
         query=empty_select(empty_schema),
         output_path=output_path,
         reason="no source extracts found for this domain",
     )
+    if deduplicate_keys and record["status"] == "completed":
+        record["deduplication"] = []
+    return record
 
 
 def table_has_column(
@@ -2200,6 +2608,127 @@ def source_availability(config: HarmonizationBuildConfig) -> list[dict[str, Any]
     return rows
 
 
+def deduplication_summaries(
+    table_records: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return aggregate deduplication summaries from materialized table records."""
+
+    rows: list[dict[str, Any]] = []
+    for record in table_records:
+        for row in record.get("deduplication", []):
+            rows.append(dict(row))
+    return rows
+
+
+def cancelled_medication_order_summary_query(config: HarmonizationBuildConfig) -> str:
+    """Return aggregate eICU medication cancellation counts."""
+
+    eicu_medication = source_extract_path(config, "eicu_crd", "medication.parquet")
+    return f"""
+SELECT
+    source,
+    COUNT(*) AS medication_extract_row_count,
+    SUM(CASE WHEN COALESCE({cancelled_order_sql("drugordercancelled")}, FALSE)
+        THEN 1 ELSE 0 END) AS cancelled_order_row_count,
+    SUM(CASE WHEN NOT COALESCE({cancelled_order_sql("drugordercancelled")}, FALSE)
+        THEN 1 ELSE 0 END) AS retained_order_row_count
+FROM {parquet_scan(eicu_medication)}
+GROUP BY source
+ORDER BY source
+"""
+
+
+def cancelled_medication_order_summary(
+    config: HarmonizationBuildConfig,
+) -> list[dict[str, Any]]:
+    """Return aggregate cancellation counts for available medication extracts."""
+
+    eicu_medication = source_extract_path(config, "eicu_crd", "medication.parquet")
+    if not eicu_medication.exists():
+        return []
+    with duckdb.connect(database=":memory:") as connection:
+        configure_connection(config, connection)
+        return fetch_dict_rows(
+            connection,
+            cancelled_medication_order_summary_query(config),
+        )
+
+
+def join_integrity_query(*, domain: str, table_path: Path, cohort_path: Path) -> str:
+    """Return aggregate source/stay join-integrity counts against cohort stays."""
+
+    return f"""
+SELECT
+    {sql_string(domain)} AS domain,
+    COUNT(*) AS row_count,
+    SUM(CASE
+        WHEN t.source IS NULL OR t.stay_uid IS NULL THEN 1 ELSE 0
+    END) AS invalid_join_key_row_count,
+    SUM(CASE
+        WHEN t.source IS NOT NULL
+            AND t.stay_uid IS NOT NULL
+            AND c.stay_uid IS NULL
+        THEN 1 ELSE 0
+    END) AS orphan_row_count
+FROM {parquet_scan(table_path)} AS t
+LEFT JOIN {parquet_scan(cohort_path)} AS c
+    ON t.source = c.source
+    AND t.stay_uid = c.stay_uid
+"""
+
+
+def harmonized_join_integrity_summary(
+    config: HarmonizationBuildConfig,
+    table_records: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return aggregate join-integrity counts for completed harmonized tables."""
+
+    cohort_path: Path | None = None
+    artifact_by_domain: dict[str, Path] = {}
+    for record in table_records:
+        if record.get("status") != "completed":
+            continue
+        domain = str(record["table_name"])
+        path = Path(str(record["output_path"]))
+        artifact_by_domain[domain] = path
+        if domain == "cohort_stays":
+            cohort_path = path
+    if cohort_path is None:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    with duckdb.connect(database=":memory:") as connection:
+        configure_connection(config, connection)
+        for domain, path in sorted(artifact_by_domain.items()):
+            if domain == "cohort_stays" or not path.exists():
+                continue
+            if not table_has_column(connection, path, "source"):
+                continue
+            if not table_has_column(connection, path, "stay_uid"):
+                continue
+            rows.extend(
+                fetch_dict_rows(
+                    connection,
+                    join_integrity_query(
+                        domain=domain,
+                        table_path=path,
+                        cohort_path=cohort_path,
+                    ),
+                )
+            )
+    return rows
+
+
+def join_integrity_has_failures(rows: Sequence[dict[str, Any]]) -> bool:
+    """Return whether aggregate join-integrity rows contain any failures."""
+
+    return any(
+        int(row.get("invalid_join_key_row_count") or 0) > 0
+        or int(row.get("orphan_row_count") or 0) > 0
+        for row in rows
+    )
+
+
 def write_coverage_reports(
     config: HarmonizationBuildConfig,
     *,
@@ -2328,6 +2857,11 @@ def write_coverage_reports(
         "condition_rollup_coverage": condition_rollup_rows,
         "unit_compatibility": unit_rows,
         "source_availability": source_availability(config),
+        "cleanup": {
+            "cancelled_medication_orders": cancelled_medication_order_summary(config),
+            "deduplication": deduplication_summaries(table_records),
+        },
+        "join_integrity": harmonized_join_integrity_summary(config, table_records),
     }
     write_json(config.coverage_path, coverage)
 
@@ -2801,10 +3335,13 @@ def build_harmonized_artifacts(
             output = harmonized_path(config, f"{table_name}.parquet")
             record = materialize_domain_table(
                 connection,
+                config,
                 table_name=table_name,
                 queries=queries,
                 output_path=output,
                 empty_schema=schema,
+                deduplicate_keys=DOMAIN_DEDUPLICATION_KEYS.get(table_name),
+                split_materialization=table_name in {"labs", "vitals"},
             )
             tables.append(record)
             if record["status"] == "completed":
@@ -2813,6 +3350,7 @@ def build_harmonized_artifacts(
         temporal_output = harmonized_path(config, "temporal_events.parquet")
         temporal_record = materialize_domain_table(
             connection,
+            config,
             table_name="temporal_events",
             queries=temporal_event_queries(config),
             output_path=temporal_output,
@@ -2824,6 +3362,16 @@ def build_harmonized_artifacts(
 
     if any(table["status"] == "failed" for table in tables):
         manifest["status"] = "failed"
+
+    manifest["cleanup"] = {
+        "cancelled_medication_orders": cancelled_medication_order_summary(config),
+        "deduplication": deduplication_summaries(tables),
+    }
+    manifest["join_integrity"] = harmonized_join_integrity_summary(config, tables)
+    if manifest["status"] == "completed" and join_integrity_has_failures(
+        manifest["join_integrity"]
+    ):
+        manifest["status"] = "failed_join_integrity"
 
     manifest["tables"] = tables
     manifest["coverage_path"] = str(config.coverage_path)
@@ -2925,6 +3473,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default=DUCKDB_THREADS,
         help="Optional DuckDB thread cap; fewer threads lower peak COPY memory.",
     )
+    parser.add_argument(
+        "--domain-materialization-batches",
+        type=int,
+        default=DEFAULT_DOMAIN_MATERIALIZATION_BATCHES,
+        help=(
+            "Stay-hash batches per source query for large labs/vitals "
+            "materialization. Increase this to lower peak memory after OOMs."
+        ),
+    )
     return parser.parse_args(argv)
 
 
@@ -2944,6 +3501,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             duckdb_temp_directory=args.duckdb_temp_dir,
             duckdb_memory_limit=args.duckdb_memory_limit,
             duckdb_threads=args.duckdb_threads,
+            domain_materialization_batches=args.domain_materialization_batches,
         )
     )
     print(
@@ -2953,7 +3511,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if manifest["status"] == "failed_missing_mapping_resources":
         return 2
-    return 1 if manifest["status"] == "failed" else 0
+    return 0 if manifest["status"] == "completed" else 1
 
 
 if __name__ == "__main__":

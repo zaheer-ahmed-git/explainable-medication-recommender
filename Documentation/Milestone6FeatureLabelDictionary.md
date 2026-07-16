@@ -94,6 +94,40 @@ Default core vital tokens:
 Medication-history features are excluded by default to reduce target-proxy
 leakage risk.
 
+Missingness handling:
+
+- core lab/vital observation flags and count columns are emitted directly in
+  `patient_stay_features.parquet`;
+- imputation and scaling are not baked into this raw feature table; they are
+  fit from MIMIC train rows only by `pipeline.preprocessing` and saved as a
+  local ignored artifact.
+
+### Optional Phase 8 P0 feature set
+
+`pipeline.features --feature-set phase8_p0` writes `temporal-features-v2` into
+caller-selected roots, usually
+`$DATASET_ROOT/processed/phase8_p0/features/`. The baseline default remains
+`temporal-features-v1`.
+
+Additional `patient_stay_features.parquet` columns:
+
+- condition presence columns named `condition_{safe_token}_present_24h`, fit
+  from the top MIMIC train condition tokens by distinct stay frequency. Token
+  precedence is `normalized_condition_token`, then `project_condition_token`;
+  validation/test/eICU-only tokens do not create columns.
+- for each default core lab and vital token:
+  `*_first_24h`, `*_last_24h`, `*_delta_24h`, `*_slope_24h`, and
+  `*_hours_since_last_24h`, using only events with
+  `0h <= event_time_hours_from_admit <= 24h`;
+- explicit complementary `*_missing_24h` indicators for the same core lab and
+  vital tokens.
+
+Phase 8 P0 manifests add aggregate-only `condition_vocabulary_size`,
+`condition_columns_added`, `trend_columns_added`,
+`missingness_columns_added`, `feature_column_counts_by_family`, and
+`condition_oov_counts`. They must not list patient rows or out-of-vocabulary
+condition token values.
+
 ### `event_sequences.parquet`
 
 Local path: `$DATASET_ROOT/processed/features/event_sequences.parquet`
@@ -137,7 +171,11 @@ Condition-specific candidates learned only from MIMIC train positives.
 Candidate rules:
 
 - condition token: `COALESCE(project_condition_token, normalized_condition_token)`;
-- medication token: `rxnorm:{rxcui}` when available, else `atc:{atc_code}`;
+- default medication token strategy: `rxnorm_or_atc`
+  (`rxnorm:{rxcui}` when available, else `atc:{ATC3}`);
+- coverage-sensitivity medication token strategy: `atc3_or_rxnorm`
+  (`atc:{ATC3}` when available, else `rxnorm:{rxcui}`), intended for
+  out-of-catalog positive and cross-source overlap analysis;
 - unmapped conditions and medications are excluded from candidate construction
   and counted in aggregate reports;
 - default cap: top 50 candidates per condition by train positive stay count.
@@ -165,24 +203,70 @@ Key columns:
 observed in the label window. `false` means the candidate was not observed in
 that window and is only a weak observational negative.
 
+## Preprocessing Artifacts
+
+### `train_preprocessing_sample.parquet`
+
+Local path:
+`$DATASET_ROOT/processed/training/preprocessing/train_preprocessing_sample.parquet`
+
+Deterministic MIMIC train-only sample used to fit tabular preprocessing. The
+sample includes all train positives and a deterministic weak-negative sample
+using the configured seed.
+
+### `train_fitted_preprocessor.joblib`
+
+Local path:
+`$DATASET_ROOT/processed/training/preprocessing/train_fitted_preprocessor.joblib`
+
+Contains the fitted sklearn preprocessing object:
+
+- numeric median imputation and scaling;
+- categorical constant imputation and one-hot encoding;
+- categorical vocabularies learned from MIMIC train rows only;
+- feature-column metadata and fit-scope metadata.
+
+The fitted object is a local derived artifact and may contain source concept or
+site vocabulary values. It is ignored and must not be committed. The public JSON
+manifest reports category counts only, not vocabulary values.
+
 ## Reports
 
 Aggregate-only reports:
 
 - `reports/milestone6_feature_manifest.json`
 - `reports/training_table_manifest.json`
+- `reports/preprocessing_manifest.json`
+- Phase 8 P0 isolated reports, when that ablation is run:
+  `reports/phase8_p0_milestone6_feature_manifest.json`,
+  `reports/phase8_p0_training_table_manifest.json`, and
+  `reports/phase8_p0_preprocessing_manifest.json`
 
 These reports include artifact paths, versions, parameter values, row counts,
 split counts, censoring counts, event-exclusion counts, candidate counts,
-out-of-catalog positive counts, and coverage-loss counts. They must not include
-patient identifiers or row samples.
+out-of-catalog positive counts, coverage-loss counts, train-fit preprocessing
+counts, and category cardinalities. They must not include patient identifiers
+or row samples.
 
 ## Commands
 
 ```bash
 uv run python -m pipeline.features
 uv run python -m pipeline.build_training_table
+uv run python -m pipeline.preprocessing
+# Optional coverage sensitivity:
+uv run python -m pipeline.build_training_table --candidate-token-strategy atc3_or_rxnorm
+# Optional Phase 8 P0 isolated feature build:
+uv run python -m pipeline.features --feature-set phase8_p0 \
+  --features-root "$DATASET_ROOT/processed/phase8_p0/features" \
+  --manifest "$PROJECT_HOME/reports/phase8_p0_milestone6_feature_manifest.json"
 ```
 
 Run full protected-data materialization only after Milestone 5 coverage and
 mapping gates are reviewed. Use OAR for heavy Calculco runs.
+
+## Related planning
+
+Phase 8 P0 extensions and hybrid branch boundaries are recorded in
+`Documentation/HybridModelFeatureStrategy.md`. They are ablation features until
+the isolated protected-data reruns and feature-gate review justify promotion.

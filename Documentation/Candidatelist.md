@@ -120,7 +120,7 @@ flowchart TB
    Use the other only in an **ablation**, not both as co-rankers in v1.
 
 3. **Transformer**  
-   Encode temporal + heterogeneous patient events and notes; **cross-attend** to each candidate’s graph embedding (and optionally molecular features later, SafeDrug-style). Output **compatibility scores**, not a second independent candidate list.
+   Encode temporal + heterogeneous patient events and notes; **cross-attend** to each candidate’s graph embedding. Output **compatibility scores**, not a second independent candidate list.
 
 4. **Single fusion ranker**  
    One head: `score(patient, drug) = f(h_transformer, h_graph, h_drug)`. This matches your documented “fusion ranker” in `ARCHITECTURE.md` and avoids three competing orderings.

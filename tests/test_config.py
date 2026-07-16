@@ -149,6 +149,28 @@ def test_milestone6_output_roots_and_versions_are_configured() -> None:
     assert config.SPLIT_VERSION == "patient-split-v1"
 
 
+def test_milestone7_output_roots_and_versions_are_configured() -> None:
+    assert config.EVALUATION_ROOT == config.PROCESSED_DATA_ROOT / "evaluation"
+    assert config.MILESTONE7_EVALUATION_ROOT == config.EVALUATION_ROOT / "milestone7"
+    assert config.BASELINE_VERSION == "baseline-ranking-v1"
+    assert config.EVALUATION_VERSION == "milestone7-evaluation-v1"
+
+
+def test_milestone8_graph_roots_and_versions_are_configured() -> None:
+    assert config.GRAPH_ROOT == config.PROCESSED_DATA_ROOT / "graph"
+    assert config.MILESTONE8_GRAPH_ROOT == config.GRAPH_ROOT / "milestone8"
+    assert config.GRAPH_VERSION == "graph-suitability-v1"
+    assert config.MILESTONE8_REPORT_VERSION == "milestone8-graph-suitability-v1"
+
+
+def test_milestone8b_graph_ablation_roots_and_versions_are_configured() -> None:
+    assert config.MILESTONE8B_EVALUATION_ROOT == (
+        config.EVALUATION_ROOT / "milestone8b"
+    )
+    assert config.GRAPH_ABLATION_VERSION == "milestone8b-graph-ablation-v1"
+    assert config.MILESTONE8B_REPORT_VERSION == ("milestone8b-ablation-evaluation-v1")
+
+
 def test_medication_mapping_specs_define_required_rxnorm_atc_columns() -> None:
     specs = {spec.name: spec for spec in config.MEDICATION_MAPPING_SPECS}
 

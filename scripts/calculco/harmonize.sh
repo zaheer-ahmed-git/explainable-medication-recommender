@@ -65,28 +65,32 @@ echo "extracts_root=$extracts_root"
 echo "harmonized_root=$harmonized_root"
 echo "mapping_root=$mapping_root"
 
-# Bound DuckDB threads/memory to the OAR allocation so the large eICU vital
-# fan-out (COPY over a 7-column UNION of vital_periodic) spills to DUCKDB_TEMP_DIR
-# instead of being SIGKILLed by the cgroup. Override by exporting before submit.
+# Bound DuckDB threads/memory to the OAR allocation so large labs/vitals COPY
+# work spills to DUCKDB_TEMP_DIR instead of exhausting the cgroup. Override by
+# exporting before submit.
 if [[ -z "${DUCKDB_THREADS:-}" ]]; then
   if [[ -n "${OAR_NODE_FILE:-}" && -f "${OAR_NODE_FILE}" ]]; then
     DUCKDB_THREADS="$(wc -l < "$OAR_NODE_FILE" | tr -d '[:space:]')"
+    (( DUCKDB_THREADS > 4 )) && DUCKDB_THREADS=4
   fi
   : "${DUCKDB_THREADS:=4}"
   export DUCKDB_THREADS
 fi
 if [[ -z "${DUCKDB_MEMORY_LIMIT:-}" ]]; then
-  # ~3 GB per allocated core, leaving headroom for Python/OS inside the cgroup.
-  mem_gb=$(( DUCKDB_THREADS * 3 ))
-  (( mem_gb < 6 )) && mem_gb=6
-  export DUCKDB_MEMORY_LIMIT="${mem_gb}GB"
+  # Keep below the observed per-core OAR cgroup ceiling so DuckDB spills before
+  # allocator overhead reaches the hard limit.
+  export DUCKDB_MEMORY_LIMIT="10GB"
 fi
+: "${HARMONIZE_DOMAIN_BATCHES:=4}"
+export HARMONIZE_DOMAIN_BATCHES
 echo "DUCKDB_TEMP_DIR=${DUCKDB_TEMP_DIR:-}"
 echo "DUCKDB_THREADS=${DUCKDB_THREADS:-}"
 echo "DUCKDB_MEMORY_LIMIT=${DUCKDB_MEMORY_LIMIT:-}"
+echo "HARMONIZE_DOMAIN_BATCHES=${HARMONIZE_DOMAIN_BATCHES:-}"
 
 echo "=== harmonize start ==="
-if uv run python -m pipeline.harmonize; then
+if uv run python -m pipeline.harmonize \
+  --domain-materialization-batches "$HARMONIZE_DOMAIN_BATCHES"; then
   harmonize_rc=0
 else
   harmonize_rc=$?

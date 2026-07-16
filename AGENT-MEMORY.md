@@ -68,17 +68,55 @@ task context, source-code inspection, or local agent memory.
 - `pipeline/features.py` and `pipeline/build_training_table.py` implement the
   initial Milestone 6 temporal feature, patient split, train-only candidate
   catalog, and observed-label ranking-table artifacts with aggregate-only
-  manifests and synthetic tests.
+  manifests and synthetic tests. Protected-data materialization completed on
+  Calculco 2026-07-05/06 (OAR jobs 830/1055); see
+  `Documentation/Milestone6MaterializationReview.md`.
+- `pipeline/evaluate_baselines.py` and `pipeline/learned_baselines.py`
+  implement the Milestone 7 P0-P3 scaffold: aggregate coverage/evaluability
+  reporting, deterministic random, global-popularity, condition-popularity,
+  linear, and XGBoost baselines, aggregate ranking/calibration metrics, and
+  final/test gating. Learned baselines sample positives and deterministic weak
+  negatives on narrow `patient_condition_medication` rows before joining wide
+  stay features to avoid DuckDB window-sort OOMs. Metric aggregation in
+  `append_metric_summaries` runs one `(baseline_name, source, split)` slice at a
+  time (via `metric_slices` / `metric_slice_predicate`) so window sorts stay
+  bounded on the large final-mode score table; per-slice results are identical
+  to the old whole-table query. Local row-level scores and
+  model artifacts are ignored under
+  `Dataset/processed/evaluation/milestone7/`; aggregate reports are
+  `reports/milestone7_coverage_report.json`,
+  `reports/milestone7_baseline_evaluation.json`,
+  `reports/milestone7_validation_summary.json`, and
+  `reports/milestone7_frozen_selection.json`. Use
+  `scripts/calculco/submit_evaluate_baselines.sh` so `milestone7_job.env` is
+  written before `oarsub`.
+- `pipeline/graph_suitability.py` implements Milestone 8 graph-readiness:
+  train-only concept-level graph edges under
+  `Dataset/processed/graph/milestone8/`, aggregate schema/suitability/ablation
+  reports under `reports/milestone8_*.json`, and synthetic tests in
+  `tests/test_graph_suitability.py`. This is not Transformer-GNN training.
+- `pipeline/graph_ablation.py` implements Milestone 8B graph-aware ablations:
+  graph-derived candidate features, graph-only XGBoost, graph-augmented
+  XGBoost, validation-weighted late fusion, and a simple ensemble against the
+  frozen XGBoost reference. Local artifacts are ignored under
+  `Dataset/processed/evaluation/milestone8b/`; aggregate reports are
+  `reports/milestone8b_graph_feature_manifest.json`,
+  `reports/milestone8b_ablation_evaluation.json`, and
+  `reports/milestone8b_frozen_selection.json`. This is still not full neural
+  Transformer-GNN training or a clinical recommendation system.
 - Calculco OAR submission scripts for protected-data work live in
   `scripts/calculco/`; submit with `oarsub -S` from the login node, not
   interactively on the login node. These include extraction (`extract_*.sh`),
   `harmonize.sh`, `profile_tables.sh` (full source-table re-profile),
-  `features.sh`, `build_training_table.sh`, and the `milestone6.sh` chain.
+  `features.sh`, `build_training_table.sh`, `evaluate_baselines.sh`,
+  `submit_evaluate_baselines.sh`, `graph_suitability.sh`,
+  `graph_ablation.sh`, `submit_graph_ablation.sh`, and the `milestone6.sh`
+  chain.
 - `pipeline.profile_tables` rewrites the entire `reports/quality_profile.json`;
   re-profile all tables (not a `--table` subset) so extraction gate entries are
   preserved.
-- Sepsis sub-cohort extraction, detailed EDA notebooks, graph artifacts, and
-  models are not yet implemented. A reproducible sepsis definition and
+- Sepsis sub-cohort extraction, detailed EDA notebooks, graph neural models, and
+  hybrid Transformer-GNN training are not yet implemented. A reproducible sepsis definition and
   index-condition policy are proposed for approval in
   `Documentation/SepsisCohortAndIndexConditionPolicy.md`.
 - `DepreciatedCode/` contains the ignored synthetic prototype.
@@ -87,6 +125,8 @@ task context, source-code inspection, or local agent memory.
 - `Documentation/ResearchDetail.md` is the current research framing.
 - `Documentation/OldResearchDetail.md` is historical.
 - `Documentation/DataFoundationRoadmap.md` is the implementation roadmap.
+- `Documentation/HybridModelFeatureStrategy.md` records planned hybrid
+  feature boundaries and selection gates; it does not implement neural models.
 - `FinalPosterCDS.pdf` is an architectural research poster, not proof of a
   completed clinical system.
 

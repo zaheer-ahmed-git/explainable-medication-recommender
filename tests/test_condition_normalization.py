@@ -518,6 +518,32 @@ def test_project_condition_group_applied_as_separate_layer(tmp_path: Path) -> No
         )
     )
     assert coverage["data_safety"]["contains_patient_rows"] is False
+
+
+def test_project_condition_group_supports_icd_prefix(tmp_path: Path) -> None:
+    _, harmonized_root, reports_root = _run(
+        tmp_path,
+        mimic_dx=[_mimic_dx_row("1", "A419", "10")],
+        condition_files={
+            "icd10_ccsr.csv": (
+                "icd_code,ccsr_category,ccsr_category_description\nA41.9,SEP,Sepsis\n"
+            ),
+            "project_condition_groups.csv": (
+                "match_type,match_value,project_condition_group,project_condition_token\n"
+                "icd_prefix,A41,sepsis,condition:sepsis\n"
+            ),
+        },
+    )
+
+    row = _conditions_by_token(harmonized_root)["icd10:a419"]
+    assert row["normalized_condition_token"] == "ccsr:SEP"
+    assert row["project_condition_group"] == "sepsis"
+    assert row["project_condition_token"] == "condition:sepsis"
+    coverage = json.loads(
+        (reports_root / "condition_normalization_coverage.json").read_text(
+            encoding="utf-8"
+        )
+    )
     summary = {row["source"]: row for row in coverage["per_source_summary"]}
     assert summary["mimiciv"]["project_group_rows"] == 1
 

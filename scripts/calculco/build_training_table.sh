@@ -78,9 +78,13 @@ fi
 echo "DUCKDB_TEMP_DIR=${DUCKDB_TEMP_DIR:-}"
 echo "DUCKDB_THREADS=${DUCKDB_THREADS:-}"
 echo "DUCKDB_MEMORY_LIMIT=${DUCKDB_MEMORY_LIMIT:-}"
+: "${CANDIDATE_TOKEN_STRATEGY:=rxnorm_or_atc}"
+export CANDIDATE_TOKEN_STRATEGY
+echo "CANDIDATE_TOKEN_STRATEGY=${CANDIDATE_TOKEN_STRATEGY:-}"
 
 echo "=== build_training_table start ==="
-if uv run python -m pipeline.build_training_table; then
+if uv run python -m pipeline.build_training_table \
+  --candidate-token-strategy "$CANDIDATE_TOKEN_STRATEGY"; then
   training_rc=0
 else
   training_rc=$?
@@ -91,6 +95,7 @@ if (( training_rc == 0 )); then
   echo "Review aggregate report under $PROJECT_HOME/reports/:"
   echo "  training_table_manifest.json (split_integrity, candidate_catalog_counts,"
   echo "  training_rows_by_source_split, out_of_catalog_positives, coverage losses)"
+  echo "Run uv run python -m pipeline.preprocessing to fit train-only preprocessing artifacts."
 fi
 
 exit "$training_rc"

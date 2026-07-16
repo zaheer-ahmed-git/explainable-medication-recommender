@@ -144,6 +144,78 @@ def test_build_condition_mappings_writes_aggregate_templates(tmp_path: Path) -> 
     assert "patient-a" not in text_template
 
 
+def test_build_condition_mappings_can_write_curated_sepsis_policy(
+    tmp_path: Path,
+) -> None:
+    extracts_root = tmp_path / "Dataset" / "processed" / "extracts"
+    mapping_root = tmp_path / "Dataset" / "mappings"
+    report_path = tmp_path / "reports" / "condition_mapping_build_report.json"
+
+    write_parquet_rows(
+        extracts_root / "eicu_crd" / "diagnosis.parquet",
+        (
+            "source",
+            "source_version",
+            "patient_uid",
+            "stay_uid",
+            "extraction_version",
+            "diagnosisid",
+            "diagnosisstring",
+            "icd9code",
+            "diagnosispriority",
+        ),
+        (
+            (
+                "eicu_crd",
+                "2.0",
+                "eicu_crd:patient-a",
+                "eicu_crd:400",
+                "test",
+                "d1",
+                "infectious diseases|sepsis|severe",
+                "",
+                "1",
+            ),
+            (
+                "eicu_crd",
+                "2.0",
+                "eicu_crd:patient-a",
+                "eicu_crd:400",
+                "test",
+                "d2",
+                "pulmonary|edema",
+                "",
+                "2",
+            ),
+        ),
+    )
+
+    report = builder.build_condition_mappings(
+        builder.ConditionMappingBuildConfig(
+            dataset_root=tmp_path / "Dataset",
+            extracts_root=extracts_root,
+            mapping_root=mapping_root,
+            report_path=report_path,
+            write_curated_sepsis=True,
+        )
+    )
+
+    conditions_dir = mapping_root / "conditions"
+    text_map = read_csv_text(conditions_dir / "eicu_diagnosis_text_condition_map.csv")
+    project_groups = read_csv_text(conditions_dir / "project_condition_groups.csv")
+
+    assert report["curated_sepsis"]["status"] == "written"
+    assert report["curated_sepsis"]["eicu_text_tokens_considered"] >= 4
+    assert "infectious_diseases_sepsis_severe,condition:sepsis,Sepsis" in text_map
+    assert "icd_prefix,A40,sepsis,condition:sepsis" in project_groups
+    assert "icd_prefix,A41,sepsis,condition:sepsis" in project_groups
+    assert "text_token,infectious_diseases_sepsis_severe,sepsis" in project_groups
+
+    report_text = json.dumps(report)
+    assert "infectious_diseases_sepsis_severe" not in report_text
+    assert "patient-a" not in report_text
+
+
 def test_build_condition_mappings_degrades_without_extracts(tmp_path: Path) -> None:
     mapping_root = tmp_path / "Dataset" / "mappings"
     report = builder.build_condition_mappings(
