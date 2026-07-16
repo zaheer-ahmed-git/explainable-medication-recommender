@@ -6,7 +6,7 @@ This roadmap turns the research architecture into a sequence of verifiable
 data and modeling milestones. It supersedes status assumptions in older plans
 when they conflict with the current working tree.
 
-Last reviewed: 2026-07-03.
+Last reviewed: 2026-07-11.
 
 ## Current Baseline
 
@@ -26,9 +26,12 @@ cohort-filtered MIMIC/eICU extraction runs, and Milestone 5 harmonization for
 cohort stays, demographics, conditions, medications, labs, vitals, allergies,
 interventions, and temporal events with synthetic tests. Milestone 6 temporal
 feature construction, patient splitting, train-only candidate catalogs, and
-observed-label ranking-table builders are implemented with synthetic tests.
-Protected-data materialization remains gated on reviewed harmonization coverage.
-Graph artifacts and models are not yet implemented. The ignored
+observed-label ranking-table builders are implemented with synthetic tests and
+protected-data materialization. Milestone 7 baseline evaluation is implemented
+through learned linear and XGBoost baselines with frozen validation selection.
+Milestone 8 graph-readiness tooling is implemented for train-only concept-level
+graph artifacts and aggregate suitability reports; protected-data graph
+materialization and graph neural models remain pending. The ignored
 `DepreciatedCode/` prototype supplies historical conventions for candidate
 generation, patient-level splitting, baseline ranking, and ranking metrics.
 
@@ -412,6 +415,9 @@ codes; missing condition mapping files degrade gracefully rather than failing.
 Reviewed coverage thresholds remain a gate before any pooled MIMIC/eICU
 training. Shared condition vocabulary and roll-up level are resolved for this
 stage in `Documentation/ConditionNormalization.md`.
+Harmonization also filters eICU medication rows marked `drugordercancelled`,
+deduplicates repeated domain events, and records aggregate cleanup and
+source/stay join-integrity counts.
 
 Create a source-tagged common schema for:
 
@@ -472,6 +478,14 @@ Current implementation notes:
 - Aggregate coverage and unmapped reports are written to
   `reports/harmonization_coverage.json` and
   `reports/unmapped_concepts.json` when harmonization runs.
+- Aggregate cleanup counts include cancelled eICU medication orders,
+  event-level deduplication summaries, and join-integrity checks against the
+  harmonized cohort. Join-integrity failures set the manifest status to
+  `failed_join_integrity`.
+- Large lab and vital harmonization uses split source-query/hash-batched
+  materialization (`--domain-materialization-batches`) before combining the
+  canonical `labs.parquet` and `vitals.parquet` files, reducing peak DuckDB
+  memory during OAR runs.
 - Harmonized artifacts are written under `Dataset/processed/harmonized/`:
   `cohort_stays.parquet`, `demographics.parquet`, `conditions.parquet`,
   `medications.parquet`, `labs.parquet`, `vitals.parquet`,
@@ -490,9 +504,11 @@ Exit gate:
 
 ## Milestone 6: Temporal Features and Labels
 
-Status: implemented for the initial temporal feature and observed-label artifact
-builders, with protected-data materialization pending reviewed Milestone 5
-coverage gates.
+Status: **completed** for code, synthetic tests, and protected-data
+materialization (OAR jobs 830 and 1055 on ritchie/chimay, 2026-07-05/06). See
+`Documentation/Milestone6MaterializationReview.md` and
+`reports/milestone6_materialization_review.json`. Review catalog coverage and
+out-of-catalog positives before Milestone 7 baselines.
 
 Define:
 
@@ -518,18 +534,21 @@ Deliverables:
 
 - `pipeline/features.py`;
 - `pipeline/build_training_table.py`;
+- `pipeline/preprocessing.py`;
 - `Documentation/Milestone6FeatureLabelDictionary.md`;
 - ignored feature artifacts under `Dataset/processed/features/`;
 - ignored training artifacts under `Dataset/processed/training/`;
 - aggregate-only manifests:
-  `reports/milestone6_feature_manifest.json` and
-  `reports/training_table_manifest.json`.
+  `reports/milestone6_feature_manifest.json`,
+  `reports/training_table_manifest.json`, and
+  `reports/preprocessing_manifest.json`.
 
 Implemented commands:
 
 ```bash
 uv run python -m pipeline.features
 uv run python -m pipeline.build_training_table
+uv run python -m pipeline.preprocessing
 ```
 
 Current implementation notes:
@@ -538,6 +557,9 @@ Current implementation notes:
   `patient_stay_features.parquet`, and `event_sequences.parquet`.
 - `pipeline.build_training_table` writes `split_manifest.parquet`,
   `candidate_catalog.parquet`, and `patient_condition_medication.parquet`.
+- `pipeline.preprocessing` fits imputation, scaling, encoding, and categorical
+  vocabularies on MIMIC train rows only, then saves local ignored preprocessing
+  artifacts and an aggregate manifest.
 - Default temporal contract: `t_pred = t0 + 24h`; label window is medication
   starts in `(24h, 48h]`.
 - MIMIC uses deterministic patient-level train/validation/test splits from the
@@ -549,14 +571,24 @@ Current implementation notes:
 - Pre-decision medication events are excluded from default event sequences to
   reduce target-proxy leakage risk; a CLI flag allows reviewed experiments to
   include them.
+- `patient_stay_features` is materialized with configurable stay-hash batches
+  to bound DuckDB memory on large lab/vital aggregates.
 - `event_sequences` is materialized with a staged pre-decision event file and
   configurable stay-hash batches before final single-file combination to bound
   DuckDB window-function memory on large `temporal_events` inputs.
-- Reports are aggregate-only; patient-level feature/training artifacts remain
-  local and ignored.
+- Phase 8 P0 feature engineering is implemented as an isolated optional
+  `pipeline.features --feature-set phase8_p0` path that writes
+  `temporal-features-v2` with train-fit condition presence columns, lab/vital
+  trend summaries, explicit missingness indicators, and aggregate-only OOV
+  counts. Default roots and `temporal-features-v1` remain unchanged until the
+  protected-data promotion gate passes.
+- Reports are aggregate-only; patient-level feature/training/preprocessing
+  artifacts remain local and ignored.
 - Protected-data materialization runs via OAR wrappers
   `scripts/calculco/features.sh`, `scripts/calculco/build_training_table.sh`,
-  and the `scripts/calculco/milestone6.sh` chain; re-profiling before an
+  and the `scripts/calculco/milestone6.sh` chain. Phase 8 P0 isolated feature
+  and model-ready builds use `scripts/calculco/phase8_p0_features.sh` and
+  `scripts/calculco/phase8_p0_model_ready.sh`; re-profiling before an
   `inputevents` re-extract uses `scripts/calculco/profile_tables.sh`.
 
 Exit gate:
@@ -568,15 +600,21 @@ Exit gate:
 
 ## Milestone 7: Baselines and Evaluation
 
-Status: not started.
+Status: core baseline evaluation complete on protected data. Development
+selection completed on Calculco job 2084; validation winner `xgboost` is frozen
+in `reports/milestone7_frozen_selection.json`, and final-mode held-out MIMIC
+test metrics are recorded in `reports/milestone7_baseline_evaluation.json`.
+Sepsis/B3 headline reporting remains pending.
 
 Implement:
 
-- random baseline;
-- global and condition popularity baselines;
-- linear baseline;
-- XGBoost baseline;
-- calibration and candidate-coverage analysis.
+- random baseline, implemented in `pipeline.evaluate_baselines`;
+- global and condition popularity baselines, implemented with MIMIC train-only
+  fitting in `pipeline.evaluate_baselines`;
+- linear baseline, implemented in `pipeline.learned_baselines`;
+- XGBoost baseline, implemented in `pipeline.learned_baselines`;
+- calibration and candidate-coverage analysis, implemented for non-learned and
+  learned baselines.
 
 Report:
 
@@ -593,11 +631,15 @@ Exit gate:
 - the held-out test set is used only after model choices are frozen;
 - claims do not exceed observational-label validity.
 
-## Milestone 8: Graph Suitability and Hybrid Model
+## Milestone 8: Graph Suitability
 
-Status: not started.
+Status: complete for the graph-readiness gate. The code, synthetic tests,
+aggregate report schemas, OAR wrapper, aggregate-only review notebook, and
+protected-data materialization are available. The protected-data graph gate
+passed for graph ablation readiness; hybrid GNN/Transformer training remains
+separate from this milestone.
 
-Before building a GNN, quantify:
+Before building a GNN, `pipeline.graph_suitability` quantifies:
 
 - node and edge counts;
 - degree distributions;
@@ -607,25 +649,123 @@ Before building a GNN, quantify:
 - patient and medication cold-start rates; and
 - leakage risk from graph construction.
 
-Then compare:
+Implemented command:
 
-- tabular/sequence Transformer only;
-- GNN only;
-- late fusion;
-- cross-attention or learned fusion; and
+```bash
+uv run python -m pipeline.graph_suitability
+```
+
+Current implementation notes:
+
+- graph edges are concept-level local artifacts under
+  `Dataset/processed/graph/milestone8/`;
+- learned graph statistics are fit from MIMIC train rows only;
+- validation/test/eICU rows are used only for aggregate coverage and cold-start
+  reporting;
+- reports are aggregate-only:
+  `reports/milestone8_graph_schema.json`,
+  `reports/milestone8_graph_suitability.json`, and
+  `reports/milestone8_ablation_plan.json`;
+- external DDI, ontology, note, and rule edges remain deferred until
+  curated sources and leakage policies are reviewed.
+
+After the graph gate passes, compare in Milestone 8B:
+
+- frozen XGBoost reference;
+- graph-only relation-feature XGBoost;
+- XGBoost augmented with graph-derived features;
+- validation-weighted late fusion; and
 - simple ensemble baselines.
 
 Deliverables:
 
+- `pipeline/graph_suitability.py`;
+- `scripts/calculco/graph_suitability.sh`;
 - `notebooks/04_graph_suitability.ipynb`;
-- reviewed graph schema;
-- ablation plan;
-- hybrid model only after baseline and graph gates pass.
+- `Documentation/Milestone8.md`;
+- reviewed graph schema and ablation-plan reports;
+- hybrid model only after baseline, graph, and ablation gates pass.
 
 Exit gate:
 
 - graph edges are training-safe and temporally valid;
-- hybrid complexity is justified by held-out evidence.
+- reports contain no patient-level rows or raw clinical examples;
+- hybrid complexity is justified by held-out evidence in a later modeling
+  milestone.
+
+## Milestone 8B: Graph-Aware Ablation Gate
+
+Status: implemented for code and synthetic tests; protected-data ablation runs
+are pending. This milestone uses the passed Milestone 8 graph gate and the
+frozen Milestone 7 XGBoost reference to evaluate whether graph-derived features
+or fusion provide enough held-out validation lift to justify deeper neural
+GNN/Transformer work.
+
+Implemented command:
+
+```bash
+uv run python -m pipeline.graph_ablation
+```
+
+Current implementation notes:
+
+- local graph-feature, score, and model artifacts are written under ignored
+  `Dataset/processed/evaluation/milestone8b/`;
+- aggregate-only reports are
+  `reports/milestone8b_graph_feature_manifest.json`,
+  `reports/milestone8b_ablation_evaluation.json`, and
+  `reports/milestone8b_frozen_selection.json`;
+- graph-derived statistics come only from train-fit Milestone 8 graph edges;
+- model selection uses MIMIC validation only, with MIMIC test blocked until
+  final mode and a frozen 8B selection are explicit;
+- eICU remains coverage-only until in-catalog positive groups exist;
+- no new neural framework, external DDI, ontology, note, or rule
+  edges are introduced in this milestone.
+
+Exit gate:
+
+- graph-aware candidates must clear the validation lift gate over the frozen
+  XGBoost reference before deeper hybrid work is justified;
+- final/test evaluation must use the frozen 8B selection;
+- no clinical recommendation or full Transformer-GNN claim is made from this
+  ablation output alone.
+
+## Pre-Hybrid Feature Strategy (Planning)
+
+Status: documented. Phase 8 P0 structured feature families are implemented as
+an isolated ablation path, but not promoted to canonical defaults.
+
+After Milestone 8B, use `Documentation/HybridModelFeatureStrategy.md` as the
+canonical planning reference for:
+
+- Transformer versus GNN branch boundaries;
+- implemented versus planned feature families aligned with Milestone 6 and 8;
+- validation NDCG@10 and Milestone 8B lift gates for feature ablation;
+- Phase 2+ deferrals (notes, external DDI/ontology).
+
+This section does not add a new milestone number or authorize neural training
+before the 8B exit gate is reviewed.
+
+## Phase 8 P0 Feature Ablation and CodexPLAN Step 9 Rebuild
+
+Status: code and synthetic tests implemented; protected-data materialization,
+Milestone 7/8/8B reruns, and promotion review are pending.
+
+Execution order:
+
+1. Build isolated `phase8_p0` features with `temporal-features-v2`.
+2. Rebuild CodexPLAN Step 9 model-ready tabular artifacts into
+   `$DATASET_ROOT/processed/phase8_p0/training/`.
+3. Rerun Roadmap Milestone 7 development evaluation on the isolated roots.
+4. Rerun Roadmap Milestone 8 graph suitability and Milestone 8B development
+   graph ablation on the isolated roots.
+5. Write `reports/phase8_p0_feature_gate_review.json` with
+   `pipeline.feature_gate_review`.
+6. Promote only if the reviewed validation NDCG@10 lift and secondary-metric
+   guardrails pass; otherwise keep current canonical roots and reports.
+
+CodexPLAN Step 9 here means the model-ready artifact rebuild. It is unrelated
+to Roadmap Milestone 9 grounded explanation.
 
 ## Milestone 9: Grounded Explanation
 
@@ -677,25 +817,19 @@ Exit gate:
 
 ## Immediate Next Plan
 
-Extraction and initial harmonization have run locally. The next tasks are:
+Milestone 6 artifacts, Milestone 7 final baseline evaluation, Milestone 8
+graph-readiness outputs, and the current Milestone 8B canonical reference are
+available. The next tasks are:
 
-1. Re-run `pipeline.profile_tables` and `pipeline.eda_summary` so MIMIC
-   `chartevents` and `inputevents` quality gates reflect the corrected local
-   files verified on 2026-06-30.
-2. Re-run `pipeline.mimic_extract` to materialize `inputevents` and the newly
-   added itemid-filtered `chartevents` charted-vital extract once quality
-   profiles complete.
-3. Re-run `pipeline.harmonize` after any refreshed MIMIC extracts and review
-   aggregate coverage, unmapped counts, and condition-normalization reports.
-4. Build `notebooks/03_harmonization_and_overlap.ipynb` from aggregate CLI
-   reports only.
-5. Approve a reproducible sepsis sub-cohort definition and index-condition
-   policy (see `Documentation/SepsisCohortAndIndexConditionPolicy.md`) before
-   sepsis-focused work.
-6. Keep pooled training disabled until reviewed coverage thresholds pass.
-7. Run the Milestone 6 feature and training CLIs on Calculco only after the
-   refreshed harmonized artifacts and coverage reports are reviewed; inspect
-   aggregate manifests for censoring, split integrity, candidate coverage, and
-   out-of-catalog positives.
-8. Begin Milestone 7 transparent baselines only after Milestone 6 aggregate
-   manifests pass review.
+1. Run `scripts/calculco/phase8_p0_features.sh` or
+   `scripts/calculco/phase8_p0_model_ready.sh` to materialize isolated Phase 8
+   P0 features and model-ready artifacts.
+2. Review Phase 8 P0 aggregate manifests for feature counts, train-only
+   vocabulary scope, OOV condition counts, split integrity, and preprocessing
+   fit scope.
+3. Rerun Milestone 7, Milestone 8, and Milestone 8B development evaluations on
+   the isolated roots and write the `phase8_p0_*` reports.
+4. Run `uv run python -m pipeline.feature_gate_review` to decide promote versus
+   reject/inconclusive against the current canonical 8B reference.
+5. Keep pooled MIMIC/eICU training, full Transformer-GNN claims, and clinical
+   recommendation claims disabled until reviewed evidence justifies them.

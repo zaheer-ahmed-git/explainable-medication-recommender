@@ -6,6 +6,96 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ### Added
 
+- Aggregate-only Phase 4-9 meeting visualization pack:
+  `visualization.phase4_to_9` reads completed report manifests, writes ignored
+  charts under `visualization/figures/`, and creates
+  `visualization/meeting_figure_pack.md` / `.json` for briefing current feature,
+  preprocessing, baseline, graph-readiness, and graph-ablation status without
+  patient-level rows or clinical recommendation claims.
+- Phase 8 P0 feature-ablation path:
+  `pipeline.features --feature-set phase8_p0` now writes isolated
+  `temporal-features-v2` artifacts with train-only condition presence columns,
+  core lab/vital trend summaries, explicit missingness indicators, and
+  aggregate-only feature-family/OOV manifest fields. Added
+  `scripts/calculco/phase8_p0_features.sh`,
+  `scripts/calculco/phase8_p0_model_ready.sh`,
+  `pipeline.feature_gate_review`, and synthetic coverage for train-only
+  vocabularies, trend boundaries, downstream feature pickup, and gate-review
+  reject behavior.
+- CodexPLAN §7 preprocessing completion bridge: `pipeline.preprocessing` now
+  fits train-only imputation, scaling, encoding, and categorical vocabulary
+  artifacts from MIMIC train rows, writes ignored preprocessing artifacts under
+  `Dataset/processed/training/preprocessing/`, and emits aggregate-only
+  `reports/preprocessing_manifest.json`.
+- Harmonization/training integrity coverage for preprocessing: eICU cancelled
+  medication orders are filtered before labels, repeated domain events are
+  deduplicated deterministically, aggregate cleanup counts are reported, and
+  modeling input join-integrity failures stop training-table construction.
+- `Documentation/HybridModelFeatureStrategy.md`: canonical planning reference
+  for post-8B Transformer/GNN feature families, branch boundaries, selection
+  gates aligned with Milestone 7/8B metrics, and explicit implemented-vs-planned
+  status without changing current pipeline scope. Molecular drug graphs are
+  out of scope for this project direction.
+- Milestone 8B graph-aware ablation tooling:
+  `pipeline.graph_ablation` builds graph-derived candidate features from the
+  train-fit Milestone 8 graph, compares graph-only XGBoost,
+  graph-augmented XGBoost, validation-weighted late fusion, and a simple
+  ensemble against the frozen Milestone 7 XGBoost reference, and writes
+  aggregate-only `reports/milestone8b_graph_feature_manifest.json`,
+  `reports/milestone8b_ablation_evaluation.json`, and
+  `reports/milestone8b_frozen_selection.json`.
+- `scripts/calculco/graph_ablation.sh`,
+  `scripts/calculco/submit_graph_ablation.sh`,
+  `Documentation/Milestone8B.md`, and `tests/test_graph_ablation.py` for
+  CPU-only OAR execution, graph-ablation workflow documentation, and synthetic
+  train-fit graph feature/fusion/final-gating/report-safety coverage.
+- Milestone 8 graph-readiness tooling:
+  `pipeline.graph_suitability` builds train-only concept-level graph edges under
+  ignored `Dataset/processed/graph/milestone8/`, writes aggregate-only
+  `reports/milestone8_graph_schema.json`,
+  `reports/milestone8_graph_suitability.json`, and
+  `reports/milestone8_ablation_plan.json`, and records graph gate status
+  without training the Transformer-GNN model.
+- `scripts/calculco/graph_suitability.sh`,
+  `Documentation/Milestone8.md`, `notebooks/04_graph_suitability.ipynb`, and
+  `tests/test_graph_suitability.py` for OAR execution, aggregate-only review,
+  and synthetic train-only/leakage/cold-start coverage.
+- Coverage-bottleneck implementation support:
+  `scripts/build_condition_mappings.py --write-curated-sepsis` now merges the
+  approved A1/B3 sepsis ICD/text policy into active local condition mapping
+  CSVs, `pipeline.harmonize` supports `project_condition_groups.csv`
+  `match_type=icd_prefix`, and `pipeline.build_training_table` adds
+  `--candidate-token-strategy atc3_or_rxnorm` for ATC-3-first
+  coverage-sensitivity candidate catalogs. Added synthetic tests for each path.
+- Protected-data Milestone 7 validation summary and frozen-selection records:
+  `reports/milestone7_validation_summary.json` (job 2084 development metrics)
+  and `reports/milestone7_frozen_selection.json` (headline baseline `xgboost`).
+- `scripts/calculco/submit_evaluate_baselines.sh` and
+  `scripts/calculco/milestone7_job.env.example` so OAR jobs source durable
+  Milestone 7 env controls via gitignored `milestone7_job.env`.
+  (`SGDClassifier`) and XGBoost models trained on MIMIC train positives plus a
+  deterministic 5:1 weak-negative sample, with local ignored model artifacts and
+  batched scoring integrated into `pipeline.evaluate_baselines`.
+- Extended `tests/test_milestone7_baselines.py` with learned-baseline,
+  row-level null-metric, and Milestone 6 integration coverage.
+- Initial Milestone 7 baseline evaluation scaffold:
+  `pipeline.evaluate_baselines` writes aggregate-only
+  `reports/milestone7_coverage_report.json` and
+  `reports/milestone7_baseline_evaluation.json`, with local row-level scores
+  under ignored `Dataset/processed/evaluation/milestone7/`. The first slice
+  implements coverage/evaluability checks, deterministic random, global
+  popularity, and condition-popularity baselines, ranking/calibration metrics,
+  and final/test blocking unless `--mode final --frozen-selection` is explicit.
+- `EVALUATION_ROOT`, `MILESTONE7_EVALUATION_ROOT`, `BASELINE_VERSION`, and
+  `EVALUATION_VERSION` in `pipeline/config.py`, plus the Calculco OAR wrapper
+  `scripts/calculco/evaluate_baselines.sh`.
+- `tests/test_milestone7_baselines.py` covering synthetic metric behavior,
+  train-only popularity fitting, deterministic random scores, report safety,
+  and final-mode gating.
+- `Documentation/Milestone6MaterializationReview.md` and aggregate
+  `reports/milestone6_materialization_review.json` documenting protected-data
+  Milestone 6 completion (OAR jobs 830/1055), exit gates, and open items before
+  Milestone 7.
 - Milestone 6 temporal feature and observed-label builders:
   `pipeline.features` writes `cohort_decision_times.parquet`,
   `patient_stay_features.parquet`, and `event_sequences.parquet`, and
@@ -74,6 +164,16 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ### Changed
 
+- Milestone 7 metric aggregation now runs one `(baseline_name, source, split)`
+  slice at a time. Each row-level and ranking query sorts a single window
+  partition instead of the whole combined score table, keeping final-mode DuckDB
+  memory and temp spill bounded; per-slice results are unioned in Python and are
+  numerically identical to the previous whole-table query.
+- Learned Milestone 7 training now samples weak negatives on narrow
+  `patient_condition_medication` rows with a deterministic per-condition hash
+  threshold before joining the wide `patient_stay_features` table. XGBoost
+  matrix assembly now uses sparse batch stacking instead of concatenating all
+  training pandas frames.
 - Replaced hard-coded Calculco paths in committed docs with detection workflow and
   gitignored `*.local.md` / `.env.calculco` / `common.local.sh` patterns.
 - Slimmed `Documentation/CalculcoSetup.md` to generic platform notes; preserved
@@ -88,6 +188,23 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ### Fixed
 
+- Harmonization lab/vital OOMs now have a bounded materialization path:
+  `pipeline.harmonize` writes large lab and vital domains as smaller
+  source-query/hash-batched parts, combines them into the canonical Parquet
+  artifacts only after successful part writes, records batch metadata in the
+  manifest, and exposes `--domain-materialization-batches`.
+- Milestone 6 `patient_stay_features` now has the same bounded-memory pattern:
+  `pipeline.features` writes stay-hash-batched feature parts before combining
+  the canonical Parquet artifact, records batch metadata in the manifest, and
+  exposes `--stay-feature-batches`.
+- `scripts/calculco/features.sh` and `scripts/calculco/milestone6.sh` now use
+  safer default DuckDB settings for the observed Calculco cgroup
+  (`DUCKDB_THREADS=4`, `DUCKDB_MEMORY_LIMIT=10GB`) and pass
+  `STAY_FEATURE_BATCHES` to the feature CLI.
+- `scripts/calculco/harmonize.sh` now uses safer default DuckDB settings for
+  the observed Calculco cgroup (`DUCKDB_THREADS=4`,
+  `DUCKDB_MEMORY_LIMIT=10GB`) and passes `HARMONIZE_DOMAIN_BATCHES` to the
+  harmonization CLI.
 - Milestone 6 `event_sequences` now avoids one global `ROW_NUMBER()` over the
   full pre-decision temporal-event set. `pipeline.features` stages the reduced
   pre-decision events once, windows them in configurable stay-hash batches

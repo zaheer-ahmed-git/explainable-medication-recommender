@@ -42,6 +42,7 @@ from pipeline.features import (
 
 SCHEMA_VERSION = "milestone6-training-table-manifest-v1"
 DEFAULT_MANIFEST_PATH = REPORTS_ROOT / "training_table_manifest.json"
+CANDIDATE_TOKEN_STRATEGIES = ("rxnorm_or_atc", "atc3_or_rxnorm")
 
 REQUIRED_HARMONIZED_TABLES = ("conditions", "medications")
 REQUIRED_FEATURE_TABLES = ("cohort_decision_times", "patient_stay_features")
@@ -69,6 +70,9 @@ class TrainingTableBuildConfig:
     feature_version: str = FEATURE_VERSION
     label_version: str = LABEL_VERSION
     split_version: str = SPLIT_VERSION
+    candidate_token_strategy: str = str(
+        DEFAULT_MODELING_PARAMETERS.get("candidate_token_strategy", "rxnorm_or_atc")
+    )
     duckdb_temp_directory: Path | None = DUCKDB_TEMP_DIR
     duckdb_memory_limit: str | None = DUCKDB_MEMORY_LIMIT
     duckdb_threads: int | None = DUCKDB_THREADS
@@ -149,6 +153,63 @@ def missing_input_tables(config: TrainingTableBuildConfig) -> list[dict[str, str
     return missing
 
 
+def validate_config(config: TrainingTableBuildConfig) -> None:
+    """Validate training-table options before materialization."""
+
+    if config.candidate_token_strategy not in CANDIDATE_TOKEN_STRATEGIES:
+        raise ValueError(
+            "candidate_token_strategy must be one of "
+            + ", ".join(CANDIDATE_TOKEN_STRATEGIES)
+        )
+
+
+def input_join_integrity_query(config: TrainingTableBuildConfig) -> str:
+    """Return aggregate join-integrity checks for modeling inputs."""
+
+    conditions = harmonized_path(config, "conditions")
+    medications = harmonized_path(config, "medications")
+    features = config.patient_stay_features_path
+    decision = config.cohort_decision_times_path
+
+    def table_check(table_name: str, table_path: Path) -> str:
+        return f"""
+SELECT
+    {sql_string(table_name)} AS table_name,
+    COUNT(*) AS row_count,
+    SUM(CASE
+        WHEN t.source IS NULL OR t.stay_uid IS NULL THEN 1 ELSE 0
+    END) AS invalid_join_key_row_count,
+    SUM(CASE
+        WHEN t.source IS NOT NULL
+            AND t.stay_uid IS NOT NULL
+            AND d.stay_uid IS NULL
+        THEN 1 ELSE 0
+    END) AS orphan_row_count
+FROM {parquet_scan(table_path)} AS t
+LEFT JOIN {parquet_scan(decision)} AS d
+    ON t.source = d.source
+    AND t.stay_uid = d.stay_uid
+"""
+
+    return "\nUNION ALL\n".join(
+        (
+            table_check("conditions", conditions),
+            table_check("medications", medications),
+            table_check("patient_stay_features", features),
+        )
+    )
+
+
+def input_join_integrity_has_failures(rows: Sequence[dict[str, Any]]) -> bool:
+    """Return whether any aggregate join-integrity check failed."""
+
+    return any(
+        int(row.get("invalid_join_key_row_count") or 0) > 0
+        or int(row.get("orphan_row_count") or 0) > 0
+        for row in rows
+    )
+
+
 def condition_token_sql(alias: str = "c") -> str:
     """Return the index condition token expression."""
 
@@ -158,16 +219,42 @@ def condition_token_sql(alias: str = "c") -> str:
     )
 
 
-def medication_token_sql(alias: str = "m") -> str:
+def atc3_key_sql(alias: str = "m") -> str:
+    """Return normalized ATC-3 key SQL from an ATC code column."""
+
+    return (
+        "NULLIF(SUBSTR(REGEXP_REPLACE(UPPER(TRIM(CAST("
+        f"{alias}.atc_code AS VARCHAR))), '[^A-Z0-9]+', '', 'g'), 1, 4), '')"
+    )
+
+
+def rxcui_key_sql(alias: str = "m") -> str:
+    """Return normalized RxCUI key SQL."""
+
+    return f"NULLIF(TRIM(CAST({alias}.rxcui AS VARCHAR)), '')"
+
+
+def medication_token_sql(alias: str = "m", *, strategy: str = "rxnorm_or_atc") -> str:
     """Return the canonical candidate medication token expression."""
 
-    return f"""CASE
-        WHEN NULLIF(TRIM(CAST({alias}.rxcui AS VARCHAR)), '') IS NOT NULL
-            THEN 'rxnorm:' || NULLIF(TRIM(CAST({alias}.rxcui AS VARCHAR)), '')
-        WHEN NULLIF(TRIM(CAST({alias}.atc_code AS VARCHAR)), '') IS NOT NULL
-            THEN 'atc:' || NULLIF(TRIM(CAST({alias}.atc_code AS VARCHAR)), '')
+    rxcui = rxcui_key_sql(alias)
+    atc3 = atc3_key_sql(alias)
+    if strategy == "rxnorm_or_atc":
+        return f"""CASE
+        WHEN {rxcui} IS NOT NULL THEN 'rxnorm:' || {rxcui}
+        WHEN {atc3} IS NOT NULL THEN 'atc:' || {atc3}
         ELSE NULL
     END"""
+    if strategy == "atc3_or_rxnorm":
+        return f"""CASE
+        WHEN {atc3} IS NOT NULL THEN 'atc:' || {atc3}
+        WHEN {rxcui} IS NOT NULL THEN 'rxnorm:' || {rxcui}
+        ELSE NULL
+    END"""
+    raise ValueError(
+        "candidate_token_strategy must be one of "
+        + ", ".join(CANDIDATE_TOKEN_STRATEGIES)
+    )
 
 
 def medication_display_name_sql(alias: str = "m") -> str:
@@ -216,7 +303,7 @@ def medication_label_events_cte(config: TrainingTableBuildConfig) -> str:
         event_offset_expr="CAST(NULL AS VARCHAR)",
         stay_start_expr="d.stay_start_timestamp",
     )
-    token = medication_token_sql("m")
+    token = medication_token_sql("m", strategy=config.candidate_token_strategy)
     display = medication_display_name_sql("m")
     prediction = config.prediction_offset_hours
     label_end = config.label_window_end_hours
@@ -437,6 +524,7 @@ def base_manifest(
         },
         "parameters": {
             "candidate_top_n_per_condition": config.candidate_top_n_per_condition,
+            "candidate_token_strategy": config.candidate_token_strategy,
             "prediction_offset_hours": config.prediction_offset_hours,
             "label_window_hours": config.label_window_hours,
             "split_seed": config.split_seed,
@@ -660,6 +748,7 @@ def build_training_artifacts(
 
     generated_at = datetime.now(UTC).isoformat()
     config.training_root.mkdir(parents=True, exist_ok=True)
+    validate_config(config)
     missing = missing_input_tables(config)
     if missing:
         manifest = base_manifest(
@@ -675,6 +764,16 @@ def build_training_artifacts(
     tables: list[dict[str, Any]] = []
     with duckdb.connect(database=":memory:") as connection:
         configure_connection(config, connection)
+        manifest["join_integrity"] = fetch_dict_rows(
+            connection,
+            input_join_integrity_query(config),
+        )
+        if input_join_integrity_has_failures(manifest["join_integrity"]):
+            manifest["status"] = "failed_join_integrity"
+            manifest["tables"] = tables
+            write_json(config.manifest_path, manifest)
+            return manifest
+
         build_specs = (
             (
                 "split_manifest",
@@ -707,6 +806,14 @@ def build_training_artifacts(
             manifest["status"] = "failed"
         else:
             append_manifest_summaries(connection, config, manifest)
+            if (
+                int(
+                    manifest["split_integrity"].get("patients_with_multiple_splits")
+                    or 0
+                )
+                > 0
+            ):
+                manifest["status"] = "failed_split_integrity"
 
     manifest["tables"] = tables
     write_json(config.manifest_path, manifest)
@@ -746,6 +853,19 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         type=int,
         default=int(DEFAULT_MODELING_PARAMETERS["candidate_top_n_per_condition"]),
         help="Maximum number of train-derived candidates per condition.",
+    )
+    parser.add_argument(
+        "--candidate-token-strategy",
+        choices=CANDIDATE_TOKEN_STRATEGIES,
+        default=str(
+            DEFAULT_MODELING_PARAMETERS.get("candidate_token_strategy", "rxnorm_or_atc")
+        ),
+        help=(
+            "Medication token granularity for labels and candidates. "
+            "rxnorm_or_atc preserves ingredient-first behavior; "
+            "atc3_or_rxnorm builds an ATC-class-first catalog for coverage "
+            "sensitivity analyses."
+        ),
     )
     parser.add_argument(
         "--prediction-offset-hours",
@@ -794,6 +914,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             training_root=args.training_root,
             manifest_path=args.manifest,
             candidate_top_n_per_condition=args.candidate_top_n_per_condition,
+            candidate_token_strategy=args.candidate_token_strategy,
             prediction_offset_hours=args.prediction_offset_hours,
             label_window_hours=args.label_window_hours,
             split_seed=args.split_seed,

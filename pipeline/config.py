@@ -134,6 +134,11 @@ EXTRACTS_ROOT = PROCESSED_DATA_ROOT / "extracts"
 HARMONIZED_ROOT = PROCESSED_DATA_ROOT / "harmonized"
 FEATURES_ROOT = PROCESSED_DATA_ROOT / "features"
 TRAINING_ROOT = PROCESSED_DATA_ROOT / "training"
+EVALUATION_ROOT = PROCESSED_DATA_ROOT / "evaluation"
+MILESTONE7_EVALUATION_ROOT = EVALUATION_ROOT / "milestone7"
+MILESTONE8B_EVALUATION_ROOT = EVALUATION_ROOT / "milestone8b"
+GRAPH_ROOT = PROCESSED_DATA_ROOT / "graph"
+MILESTONE8_GRAPH_ROOT = GRAPH_ROOT / "milestone8"
 MAPPING_ROOT = DATASET_ROOT / "mappings"
 REPORTS_ROOT = resolve_reports_root(PROJECT_ROOT)
 
@@ -150,6 +155,12 @@ CONDITION_MAPPING_VERSION = "condition-rollup-v1"
 FEATURE_VERSION = "temporal-features-v1"
 LABEL_VERSION = "observed-medication-label-v1"
 SPLIT_VERSION = "patient-split-v1"
+BASELINE_VERSION = "baseline-ranking-v1"
+EVALUATION_VERSION = "milestone7-evaluation-v1"
+GRAPH_VERSION = "graph-suitability-v1"
+MILESTONE8_REPORT_VERSION = "milestone8-graph-suitability-v1"
+GRAPH_ABLATION_VERSION = "milestone8b-graph-ablation-v1"
+MILESTONE8B_REPORT_VERSION = "milestone8b-ablation-evaluation-v1"
 DEFAULT_COHORT_PARAMETERS = {
     "unit_of_analysis": "icu_stay",
     "adult_age_minimum": 18,
@@ -158,6 +169,7 @@ DEFAULT_COHORT_PARAMETERS = {
 }
 DEFAULT_MODELING_PARAMETERS = {
     "candidate_top_n_per_condition": 50,
+    "candidate_token_strategy": "rxnorm_or_atc",
     "prediction_offset_hours": 24,
     "label_window_hours": 24,
     "split_seed": RANDOM_SEED,
@@ -395,4 +407,8 @@ def ensure_local_directories() -> None:
     HARMONIZED_ROOT.mkdir(parents=True, exist_ok=True)
     FEATURES_ROOT.mkdir(parents=True, exist_ok=True)
     TRAINING_ROOT.mkdir(parents=True, exist_ok=True)
+    EVALUATION_ROOT.mkdir(parents=True, exist_ok=True)
+    MILESTONE7_EVALUATION_ROOT.mkdir(parents=True, exist_ok=True)
+    GRAPH_ROOT.mkdir(parents=True, exist_ok=True)
+    MILESTONE8_GRAPH_ROOT.mkdir(parents=True, exist_ok=True)
     REPORTS_ROOT.mkdir(parents=True, exist_ok=True)

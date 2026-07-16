@@ -396,7 +396,7 @@ def write_milestone6_harmonized_fixture(tmp_path: Path) -> dict[str, str | Path]
                 "222",
                 "heldout-only-med",
                 "heldout med",
-                None,
+                "J01Y",
                 "mapped_rxnorm_or_atc",
             ),
             (
@@ -411,7 +411,7 @@ def write_milestone6_harmonized_fixture(tmp_path: Path) -> dict[str, str | Path]
                 "111",
                 "candidate-a",
                 "candidate A",
-                None,
+                "J01X",
                 "mapped_rxnorm_or_atc",
             ),
             (
@@ -426,7 +426,7 @@ def write_milestone6_harmonized_fixture(tmp_path: Path) -> dict[str, str | Path]
                 "111",
                 "candidate-a",
                 "candidate A",
-                None,
+                "J01X",
                 "mapped_rxnorm_or_atc",
             ),
             (
@@ -441,7 +441,7 @@ def write_milestone6_harmonized_fixture(tmp_path: Path) -> dict[str, str | Path]
                 "444",
                 "missing-time-med",
                 "missing time med",
-                None,
+                "J01Z",
                 "mapped_rxnorm_or_atc",
             ),
             (
@@ -456,7 +456,7 @@ def write_milestone6_harmonized_fixture(tmp_path: Path) -> dict[str, str | Path]
                 "111",
                 "candidate-a",
                 "candidate A",
-                None,
+                "J01X",
                 "mapped_rxnorm_or_atc",
             ),
             (
@@ -471,7 +471,7 @@ def write_milestone6_harmonized_fixture(tmp_path: Path) -> dict[str, str | Path]
                 "333",
                 "heldout-only-med",
                 "heldout med",
-                None,
+                "J01X",
                 "mapped_rxnorm_or_atc",
             ),
             (
@@ -486,7 +486,7 @@ def write_milestone6_harmonized_fixture(tmp_path: Path) -> dict[str, str | Path]
                 "111",
                 "candidate-a",
                 "candidate A",
-                None,
+                "J01X",
                 "mapped_rxnorm_or_atc",
             ),
             (
@@ -501,7 +501,7 @@ def write_milestone6_harmonized_fixture(tmp_path: Path) -> dict[str, str | Path]
                 "111",
                 "candidate-a",
                 "candidate A",
-                None,
+                "J01X",
                 "mapped_rxnorm_or_atc",
             ),
         ),

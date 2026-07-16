@@ -10,6 +10,7 @@ from pipeline.build_training_table import (
 from pipeline.features import FeatureBuildConfig, build_feature_artifacts
 from tests.milestone6_helpers import (
     read_parquet_rows,
+    write_parquet_rows,
     write_milestone6_harmonized_fixture,
 )
 
@@ -94,3 +95,108 @@ def test_training_builder_uses_train_only_candidates_and_label_window(
         row["missing_medication_start_time_events"] > 0 for row in label_loss_rows
     )
     assert parsed_manifest["data_safety"]["manifest_contains_patient_rows"] is False
+
+
+def test_training_builder_can_use_atc_class_candidate_tokens(tmp_path: Path) -> None:
+    fixture = write_milestone6_harmonized_fixture(tmp_path)
+    features_root = tmp_path / "Dataset" / "processed" / "features"
+    training_root = tmp_path / "Dataset" / "processed" / "training"
+    feature_manifest = tmp_path / "reports" / "milestone6_feature_manifest.json"
+    training_manifest = tmp_path / "reports" / "training_table_manifest.json"
+
+    feature_result = build_feature_artifacts(
+        FeatureBuildConfig(
+            harmonized_root=Path(fixture["harmonized_root"]),
+            features_root=features_root,
+            manifest_path=feature_manifest,
+        )
+    )
+    assert feature_result["status"] == "completed"
+
+    manifest = build_training_artifacts(
+        TrainingTableBuildConfig(
+            harmonized_root=Path(fixture["harmonized_root"]),
+            features_root=features_root,
+            training_root=training_root,
+            manifest_path=training_manifest,
+            candidate_token_strategy="atc3_or_rxnorm",
+        )
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["parameters"]["candidate_token_strategy"] == "atc3_or_rxnorm"
+
+    catalog_rows = read_parquet_rows(training_root / "candidate_catalog.parquet")
+    catalog_tokens = {str(row["candidate_medication_token"]) for row in catalog_rows}
+    assert "atc:J01X" in catalog_tokens
+    assert "rxnorm:111" not in catalog_tokens
+
+    table_rows = read_parquet_rows(
+        training_root / "patient_condition_medication.parquet"
+    )
+    by_stay_candidate = {
+        (str(row["stay_uid"]), str(row["candidate_medication_token"])): row
+        for row in table_rows
+    }
+    heldout_class_positive = by_stay_candidate[
+        (str(fixture["heldout_stay"]), "atc:J01X")
+    ]
+    assert heldout_class_positive["label_prescribed"] is True
+    assert heldout_class_positive["label_event_count"] == 2
+
+    external_class_positive = by_stay_candidate[
+        (str(fixture["external_stay"]), "atc:J01X")
+    ]
+    assert external_class_positive["label_prescribed"] is True
+    assert external_class_positive["split"] == "external"
+
+
+def test_training_builder_fails_on_harmonized_rows_without_decision_join(
+    tmp_path: Path,
+) -> None:
+    fixture = write_milestone6_harmonized_fixture(tmp_path)
+    harmonized_root = Path(fixture["harmonized_root"])
+    medications_path = harmonized_root / "medications.parquet"
+    features_root = tmp_path / "Dataset" / "processed" / "features"
+    training_root = tmp_path / "Dataset" / "processed" / "training"
+    feature_manifest = tmp_path / "reports" / "milestone6_feature_manifest.json"
+    training_manifest = tmp_path / "reports" / "training_table_manifest.json"
+
+    medications = read_parquet_rows(medications_path)
+    columns = tuple(medications[0])
+    orphan = dict(medications[0])
+    orphan["stay_uid"] = "mimiciv:orphan-stay"
+    orphan["source_event_id"] = "orphan-medication"
+    write_parquet_rows(
+        medications_path,
+        columns,
+        tuple(
+            tuple(row[column] for column in columns) for row in (*medications, orphan)
+        ),
+    )
+
+    feature_result = build_feature_artifacts(
+        FeatureBuildConfig(
+            harmonized_root=harmonized_root,
+            features_root=features_root,
+            manifest_path=feature_manifest,
+        )
+    )
+    assert feature_result["status"] == "completed"
+
+    manifest = build_training_artifacts(
+        TrainingTableBuildConfig(
+            harmonized_root=harmonized_root,
+            features_root=features_root,
+            training_root=training_root,
+            manifest_path=training_manifest,
+        )
+    )
+
+    medication_integrity = [
+        row for row in manifest["join_integrity"] if row["table_name"] == "medications"
+    ][0]
+    assert manifest["status"] == "failed_join_integrity"
+    assert medication_integrity["orphan_row_count"] == 1
+    assert manifest["tables"] == []
+    assert not (training_root / "candidate_catalog.parquet").exists()

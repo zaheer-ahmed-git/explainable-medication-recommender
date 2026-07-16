@@ -50,9 +50,14 @@ Default direction: analyze all ICU stays across MIMIC and eICU, use sepsis as th
    - Mandatory: clean invalid IDs, deduplicate, validate joins, preserve original source fields, normalize categorical values, parse timestamps/offsets, handle cancelled orders, and record provenance.
    - Mandatory: add missingness indicators for important labs/vitals; fit imputation, scaling, encoding, vocabularies, and candidate catalogs on training data only.
    - Mandatory: patient-level train/validation/test split for MIMIC and external split for eICU.
-   - Optional: note embeddings, molecular drug features, curated DDI/rule sources, pooled MIMIC+eICU training after coverage gates pass.
+   - Optional: note embeddings, curated DDI/rule sources, pooled MIMIC+eICU training after coverage gates pass.
 
 8. **Feature Engineering**
+   - Status: minimum-complete through Milestone 6 for leakage-controlled
+     stay-level features and event sequences. Phase 8 P0 feature families are
+     implemented behind `pipeline.features --feature-set phase8_p0` as an
+     isolated, synthetic-tested ablation surface; protected-data materialization,
+     Milestone 7/8/8B reruns, and promotion review remain separate gates.
    - Static/context: age, sex, race/ethnicity, admission type, ICU unit, source, LOS context.
    - Conditions: diagnosis flags, condition roll-ups, comorbidity counts, sepsis indicators, ICD ontology features.
    - Labs/vitals: last/min/max/mean/trend, abnormal flags, missingness rates.
@@ -68,6 +73,9 @@ Default direction: analyze all ICU stays across MIMIC and eICU, use sepsis as th
    - `graph_edges`: global heterogeneous graph edges with relation type and provenance.
    - `patient_subgraphs`: per-stay graph batches for GNN scoring.
    - Supporting artifacts: vocabularies, candidate catalog, split manifest, preprocessing report, data dictionary.
+   - CodexPLAN Step 9 means rebuilding these model-ready tabular artifacts from
+     the selected feature stack. It is separate from Roadmap Milestone 9
+     grounded explanation.
 
 10. **Graph and Hybrid-Model Readiness**
    - Quantify node counts, edge counts, degree distributions, connected components, sparsity, cold-start rates, relation coverage, and leakage risk.

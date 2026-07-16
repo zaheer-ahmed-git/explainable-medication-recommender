@@ -7,7 +7,7 @@ target research architecture.
 
 ## Current State
 
-As of 2026-07-03, the active repository contains research documents,
+As of 2026-07-10, the active repository contains research documents,
 configuration, local licensed datasets, an ignored synthetic prototype,
 metadata-only source inventory, and adult ICU/unit-stay cohort materialization.
 The active `pipeline/` provides configuration, safe path/header inspection,
@@ -19,8 +19,17 @@ condition, RxNorm/ATC-mapped medication, lab, vital, allergy, intervention, and
 temporal-event tables from local extracts. Lab, vital, allergy, and
 intervention concepts are preserved as source-native tokens unless reviewed
 mapping resources are available. Milestone 6 temporal feature, patient split,
-candidate catalog, and observed-label ranking-table builders are implemented
-with synthetic tests. Recommendation models, graph artifacts, and clinical
+candidate catalog, observed-label ranking-table, and train-fitted preprocessing
+artifact builders are implemented with synthetic tests. The initial Milestone 7
+evaluation scaffold implements
+candidate-coverage reporting plus deterministic random, global-popularity, and
+condition-popularity baselines with aggregate metrics and final/test gating.
+Learned baseline models are implemented, with final-mode MIMIC test evaluation
+gated by frozen validation selection. Milestone 8 graph-readiness tooling can
+build train-only concept-level graph edges and aggregate suitability reports.
+Milestone 8B graph-aware ablation tooling can compare graph-only XGBoost,
+graph-augmented XGBoost, late fusion, and simple ensemble scores against the
+frozen XGBoost reference. Full Transformer/GNN neural models and clinical
 recommendations are not yet implemented in the active working tree.
 
 The legacy prototype demonstrates useful conventions such as:
@@ -66,6 +75,8 @@ pipeline/
   harmonize.py
   features.py
   build_training_table.py
+  preprocessing.py
+  graph_suitability.py
 tests/
 notebooks/
 reports/
@@ -168,6 +179,9 @@ Start with transparent baselines before the hybrid model:
 
 The Transformer-GNN model is justified only if it improves held-out ranking,
 safety, calibration, and external validation over these baselines.
+The current Milestone 8B implementation is an intermediate graph-aware ablation
+gate using existing DuckDB, scikit-learn, and XGBoost dependencies. It does not
+add a neural framework or claim a full hybrid model.
 
 ## Hybrid Model
 
@@ -228,8 +242,14 @@ unsupported clinical claims or substitute narrative confidence for evidence.
   Milestone 6 contract:** `t_pred = ICU/unit admission + 24h`, with observed
   medication starts in `(24h, 48h]` as historical labels. This remains a
   reviewable default, not a validated clinical recommendation window.
-- Graph node and edge definitions.
-- Transformer input representation.
+- Graph node and edge definitions. **Partially resolved for data foundation:**
+  Milestone 8 implements five concept node types and five train-fit relation
+  types; planned extensions (DDI, ontology) are documented in
+  `Documentation/HybridModelFeatureStrategy.md` and remain unimplemented.
+- Transformer input representation. **Planning direction recorded** in
+  `Documentation/HybridModelFeatureStrategy.md`; Milestone 6 stay features and
+  event sequences are the implemented baseline; stay-level condition multi-hot
+  and neural encoders are not yet implemented.
 - Rule-source curation and versioning.
 - Human evaluation protocol for explanation usefulness.
 

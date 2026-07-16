@@ -31,6 +31,9 @@ Still enforced:
   - Read only extracted Parquet, never raw full tables.
   - Emit common source-tagged tables under `Dataset/processed/harmonized/`.
   - Preserve `source`, `source_version`, `patient_uid`, `encounter_uid`, `stay_uid`, original source IDs, original code/value/unit fields, extraction version, and mapping version.
+  - Materialize large lab/vital domains as smaller source-query/hash-batched
+    parts before combining the canonical Parquet artifact, so DuckDB does not
+    need one global wide `COPY` or deduplication window in memory.
 
 - Implement RxNorm/ATC-first medication mapping:
   - Require mapping inputs under ignored `Dataset/mappings/medications/`, with expected files documented in config and manifest.
@@ -62,7 +65,7 @@ Still enforced:
     `--integrity-report`.
   - Optional harmonization flags: `--cohort-path`, `--extracts-root`,
     `--harmonized-root`, `--mapping-root`, `--manifest`, `--coverage`,
-    `--unmapped`.
+    `--unmapped`, `--domain-materialization-batches`.
 
 - Config additions:
   - `EXTRACTS_ROOT = Dataset/processed/extracts`

@@ -32,7 +32,7 @@ Used by: **KindMed, KGDNet, KEHGCN, HypeMed, GraphCare, EGNet**
 | Per-visit graphs | Admission-wise clinical KG + medicine KG |
 | Temporal modeling | Separate clinical stream + medication stream (KindMed); or visit/sequence/token views (MGRN) |
 | Safety | DDI adjacency matrix + DDI loss term |
-| Optional extras | SMILES/molecular substructures (SafeDrug), hypergraphs (KEHGCN, HypeMed) |
+| Optional extras | Hypergraphs (KEHGCN, HypeMed), curated DDI sources |
 
 ### Family C — Your project's direction (from `README.md` + `worknotes.txt`)
 
@@ -155,7 +155,6 @@ flowchart TB
 | Multi-visit patients only | GAMENet, SafeDrug, HiRef, MGRN | Longitudinal history for personalization |
 | First 24h medications as label | GAMENet, KindMed | Early critical prescribing window |
 | Top-K frequent codes | SafeDrug: 300 meds, 2000 dx | Reduce sparsity |
-| Drugs with SMILES only | SafeDrug, HiRef | Molecular-aware models |
 | ICD-9 only on MIMIC-IV | HiRef, KindMed | Avoid ICD-9/10 mapping ambiguity |
 
 **Recommended filters for your hybrid module:**
@@ -351,11 +350,6 @@ From GraphCare / KindMed:
 - Nodes: patient, active diagnoses, active labs (abnormal), candidate meds, prior meds
 - Edges: patient–diagnosis, diagnosis–medication, patient–medication, medication–medication (DDI)
 - Used by: heterogeneous GNN, GNNExplainer for explanations
-
-#### Graph 5 — Molecular graph (optional, SafeDrug branch)
-
-- Nodes: drug substructures from SMILES (BRICS decomposition)
-- Used if you want molecular-aware candidate scoring
 
 **Training-safety rule:** Graph statistics (co-occurrence counts, candidate catalogs, vocabularies) must be fit on **training patients only**.
 
@@ -654,8 +648,7 @@ Step	What they do	Why
 7. Patient sequences	Sort admissions chronologically per patient → records_final.pkl	Longitudinal visit sequence for RNN/GNN models
 8. Vocabulary files	voc_final.pkl maps diagnosis/procedure/medication strings → integer indices	Model input encoding
 9. Graph construction	ehr_adj_final.pkl: drugs co-prescribed in same visit; ddi_A_final.pkl: drug-drug interactions from DrugBank/TWOSIDES	GNN / safety-aware models
-10. Molecular mapping	atc3toSMILES.pkl from DrugBank — SafeDrug filters drugs without SMILES	Molecular-structure-aware models
-11. Train/val/test split	Usually patient-level split (not row-level)	Prevent leakage
+10. Train/val/test split	Usually patient-level split (not row-level)	Prevent leakage
 
 ## Extraction and Harmonization Components
 

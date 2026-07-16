@@ -32,6 +32,10 @@ environment.calculco.sh
 Documentation/*.local.md
 scripts/calculco/common.local.sh
 scripts/calculco/oar.local.sh
+scripts/calculco/milestone7_job.env
+scripts/calculco/phase8_p0_milestone7_job.env
+scripts/calculco/phase8_p0_milestone8b_job.env
+scripts/calculco/milestone8b_job.env
 
 # Editor/IDE machine settings (shared .cursor/rules/ stay tracked).
 .vscode/

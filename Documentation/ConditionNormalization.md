@@ -115,7 +115,7 @@ All optional; defined in `CONDITION_MAPPING_SPECS` in `pipeline/config.py`.
 | `icd9_to_icd10_gem.csv` | `icd9_code`, `icd10_code`, `approximate_flag` | ICD-9→ICD-10 bridge (then CCSR) |
 | `icd_chapters.csv` | `icd_version`, `category_code`, `chapter_code`, `chapter_name` | Broad chapter grouping (direct category lookup) |
 | `eicu_diagnosis_text_condition_map.csv` | `diagnosisstring_normalized`, `condition_rollup_token`, `condition_name` | Curated exact eICU text → concept |
-| `project_condition_groups.csv` | `match_type`, `match_value`, `project_condition_group`, `project_condition_token` | Sepsis/other research groups (`match_type` in `icd_code`, `text_token`) |
+| `project_condition_groups.csv` | `match_type`, `match_value`, `project_condition_group`, `project_condition_token` | Sepsis/other research groups (`match_type` in `icd_code`, `icd_prefix`, `text_token`) |
 
 Join keys are normalized inside `pipeline.harmonize` (punctuation stripped,
 lowercased) so `A41.9`, `A419`, and `a419` match identically. eICU `icd9code`
@@ -128,6 +128,9 @@ is applied only if the code exists in the authoritative file).
 ```bash
 # Optional: inventory distinct diagnosis concepts and write review templates.
 uv run python scripts/build_condition_mappings.py
+
+# Optional: also merge the approved A1/B3 sepsis mappings into active local CSVs.
+uv run python scripts/build_condition_mappings.py --write-curated-sepsis
 
 # Fetch authoritative CCSR/CCS/GEM sources and derive icd_chapters.csv.
 # Requires outbound network; raw downloads cache under an ignored directory.
@@ -189,6 +192,11 @@ comparability **before** enabling pooled MIMIC+eICU training.
 - Re-run `uv run python -m pipeline.harmonize` to rebuild `conditions.parquet`
   with populated CCSR/CCS/GEM/chapter roll-ups, then review
   `reports/condition_normalization_coverage.json` against the gates above.
-- Clinically review and populate `eicu_diagnosis_text_condition_map.csv` and the
-  sepsis `project_condition_groups.csv` (templates only today).
+- Active A1/B3 sepsis mapping support is implemented in
+  `scripts/build_condition_mappings.py --write-curated-sepsis`: it merges the
+  approved exact ICD codes, `A40`/`A41` ICD prefixes, and discovered eICU sepsis
+  text tokens into local active mapping CSVs while preserving existing curator
+  rows. Re-run harmonization after writing those local files.
+- Broader non-sepsis eICU diagnosis-text mapping still requires clinical
+  curation before pooled MIMIC/eICU training or external performance claims.
 - Build the cross-source condition overlap notebook after real coverage exists.

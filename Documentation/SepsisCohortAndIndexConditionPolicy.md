@@ -1,12 +1,13 @@
 # Sepsis Sub-Cohort and Index-Condition Policy
 
-Status: **approved 2026-07-04 — implementation pending.** Approved choices:
-**A1** (coded sepsis, reproducible now), index-condition policy **B1 → B3**
-(all CCS/CCSR categories for the first Milestone 6 run, sepsis project-group
-deep dive for Milestone 7 claims), with **A2 (Sepsis-3) planned after** the
-`chartevents`/`inputevents` refresh. Code still reports
-`sepsis_subcohort_status = not_implemented_pending_definition_approval` until
-the implementation steps below land.
+Status: **approved 2026-07-04; mapping support implemented, protected-data
+refresh pending.** Approved choices: **A1** (coded sepsis, reproducible now),
+index-condition policy **B1 → B3** (all CCS/CCSR categories for the first
+Milestone 6 run, sepsis project-group deep dive for Milestone 7 claims), with
+**A2 (Sepsis-3) planned after** the `chartevents`/`inputevents` refresh.
+`scripts/build_condition_mappings.py --write-curated-sepsis` now writes the
+active local mapping CSVs for A1/B3; the harmonized/training artifacts must be
+refreshed before B3 headline evaluation.
 
 The roadmap requires approving "a source-specific sepsis definition,
 terminology version, time window, and comparability strategy before coding"
@@ -19,10 +20,11 @@ terminology version, time window, and comparability strategy before coding"
 - Condition roll-up coverage: MIMIC rows are CCS/CCSR-mapped; eICU has
   ~431k `source_native_text` rows without a roll-up (~84% rolled up, right at
   the 85% target).
-- `project_condition_groups.csv` and `eicu_diagnosis_text_condition_map.csv`
-  exist only as **templates** — there is no curated sepsis
-  `project_condition_token` yet, so the harmonizer's
-  `project_condition_token` is currently NULL for all rows.
+- `scripts/build_condition_mappings.py --write-curated-sepsis` can now merge
+  active local `project_condition_groups.csv` and
+  `eicu_diagnosis_text_condition_map.csv` rows for the approved A1/B3 policy.
+  Existing protected-data harmonized artifacts must be refreshed before
+  `project_condition_token` appears in `conditions.parquet`.
 - The candidate catalog keys ranking groups on
   `COALESCE(project_condition_token, normalized_condition_token)`. With no
   project groups, this falls back to the CCS/CCSR category token today.
@@ -125,16 +127,18 @@ evaluation claims.
 
 ## Implementation Steps (follow-up work)
 
-1. Populate `Dataset/mappings/conditions/project_condition_groups.csv` with the
-   approved A1 code/text set (ICD-9 `995.91`/`995.92`/`785.52`; ICD-10 `A40.*`,
-   `A41.*`, `R65.20`, `R65.21`; text tokens `sepsis`, `severe sepsis`,
-   `septic shock`) and the eICU diagnosis-text map, both flagged for clinical
-   review.
+1. Run `uv run python scripts/build_condition_mappings.py --write-curated-sepsis`
+   to merge the approved A1 code/text set into active local mapping files:
+   ICD-9 `995.91`/`995.92`/`785.52`; ICD-10 exact `R65.20`/`R65.21`; ICD-10
+   prefixes `A40`/`A41`; and eICU diagnosis-text tokens containing sepsis,
+   severe sepsis, or septic shock concepts.
 2. Re-run `pipeline.harmonize` so `conditions.parquet` gains a non-null
    `project_condition_token = condition:sepsis` for matching rows.
-3. Add a reproducible sepsis sub-cohort selector to `pipeline/cohort.py`,
+3. Re-run `pipeline.features` and `pipeline.build_training_table` so
+   `patient_condition_medication` contains B3 `condition:sepsis` ranking groups.
+4. Add a reproducible sepsis sub-cohort selector to `pipeline/cohort.py`,
    flipping `sepsis_subcohort_status` and recording the code set and
    terminology/mapping versions in the cohort manifest.
-4. Milestone 7 evaluation filters ranking groups to `condition:sepsis` (B3)
+5. Milestone 7 evaluation filters ranking groups to `condition:sepsis` (B3)
    for headline metrics and reports per-CCSR-category breakdowns (B1) for
    context.

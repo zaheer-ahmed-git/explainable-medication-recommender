@@ -62,24 +62,27 @@ echo "features_root=$features_root"
 if [[ -z "${DUCKDB_THREADS:-}" ]]; then
   if [[ -n "${OAR_NODE_FILE:-}" && -f "${OAR_NODE_FILE}" ]]; then
     DUCKDB_THREADS="$(wc -l < "$OAR_NODE_FILE" | tr -d '[:space:]')"
+    (( DUCKDB_THREADS > 4 )) && DUCKDB_THREADS=4
   fi
   : "${DUCKDB_THREADS:=4}"
   export DUCKDB_THREADS
 fi
 if [[ -z "${DUCKDB_MEMORY_LIMIT:-}" ]]; then
-  mem_gb=$(( DUCKDB_THREADS * 3 ))
-  (( mem_gb < 6 )) && mem_gb=6
-  export DUCKDB_MEMORY_LIMIT="${mem_gb}GB"
+  export DUCKDB_MEMORY_LIMIT="10GB"
 fi
+: "${STAY_FEATURE_BATCHES:=8}"
+export STAY_FEATURE_BATCHES
 : "${EVENT_SEQUENCE_BATCHES:=8}"
 export EVENT_SEQUENCE_BATCHES
 echo "DUCKDB_TEMP_DIR=${DUCKDB_TEMP_DIR:-}"
 echo "DUCKDB_THREADS=${DUCKDB_THREADS:-}"
 echo "DUCKDB_MEMORY_LIMIT=${DUCKDB_MEMORY_LIMIT:-}"
+echo "STAY_FEATURE_BATCHES=${STAY_FEATURE_BATCHES:-}"
 echo "EVENT_SEQUENCE_BATCHES=${EVENT_SEQUENCE_BATCHES:-}"
 
 echo "=== features start ==="
 if uv run python -m pipeline.features \
+  --stay-feature-batches "$STAY_FEATURE_BATCHES" \
   --event-sequence-batches "$EVENT_SEQUENCE_BATCHES"; then
   features_rc=0
 else
