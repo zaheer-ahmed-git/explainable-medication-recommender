@@ -6,6 +6,22 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ### Added
 
+- `scripts/calculco/submit_phase8_p0_model_ready.sh` wrapper and
+  `phase8_p0_model_ready_job.env` (gitignored, with a committed `.example`) so
+  OAR jobs receive `PHASE8_P0_START_AT` and the subgraph memory knobs. OAR `-S`
+  jobs run in a clean environment and ignore login-shell exports, which caused a
+  resume-at-subgraphs attempt to silently rerun from training. `phase8_p0_model_ready.sh`
+  now sources the job env file, matching the Milestone 7/8B submit pattern.
+
+- Complete CodexPLAN Step 9 Phase 8 P0 package implementation:
+  `pipeline.patient_subgraphs` materializes normalized per-ranking-group node,
+  edge, candidate, and index artifacts from train-fit graph edges;
+  `pipeline.model_ready_package` writes train-derived vocabularies, a
+  schema-only data dictionary, and an aggregate completion manifest with
+  explicit eICU evaluability gates. Downstream builders now infer and validate
+  feature provenance from their inputs, and the training builder writes a
+  model-ready `cohort_stays` artifact. The Calculco chain now runs both
+  RxNorm-first and ATC-3-first label builds before graph/package assembly.
 - Aggregate-only Phase 4-9 meeting visualization pack:
   `visualization.phase4_to_9` reads completed report manifests, writes ignored
   charts under `visualization/figures/`, and creates
@@ -188,6 +204,11 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ### Fixed
 
+- Phase 8 P0 patient-subgraph spill exhaustion now has bounded
+  source-qualified stay-hash node materialization plus independently sharded,
+  integer-encoded, relation-specific edge and candidate joins. The OAR chain
+  exposes `SUBGRAPH_JOIN_SHARDS`, caps edge assembly at one DuckDB thread, can
+  resume at the subgraph stage, and prefers node-local `/scratch` over `/tmp`.
 - Harmonization lab/vital OOMs now have a bounded materialization path:
   `pipeline.harmonize` writes large lab and vital domains as smaller
   source-query/hash-batched parts, combines them into the canonical Parquet

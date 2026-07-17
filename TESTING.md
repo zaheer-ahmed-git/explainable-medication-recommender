@@ -22,7 +22,12 @@ artifact fitting and aggregate-only preprocessing manifests.
 Phase 8 P0 tests cover train-only condition vocabulary fitting, lab/vital trend
 boundaries, explicit missingness columns, aggregate-only feature manifests,
 downstream learned-baseline/graph-ablation feature pickup, and the promotion
-gate review writer.
+gate review writer. CodexPLAN Step 9 package tests cover input-derived version
+stamps, model-ready cohort timing fields, train-fit patient subgraphs, cold
+candidates, future-event exclusion, bounded source-stay hash materialization,
+integer-encoded relation-specific edge joins, independent join sharding,
+temporary-part cleanup, normalized vocabulary outputs, schema-only data
+dictionaries, and eICU coverage-only claim blocking.
 The Phase 4-9 visualization generator has a focused synthetic test that verifies
 aggregate-only meeting-pack generation without raw clinical rows.
 
@@ -63,6 +68,7 @@ uv run pytest tests/test_config.py tests/test_features.py tests/test_build_train
 uv run pytest tests/test_preprocessing.py
 uv run pytest tests/test_config.py tests/test_milestone7_baselines.py
 uv run pytest tests/test_config.py tests/test_graph_suitability.py
+uv run pytest tests/test_patient_subgraphs.py tests/test_model_ready_package.py
 uv run pytest tests/test_config.py tests/test_graph_ablation.py
 uv run pytest tests/test_feature_gate_review.py tests/test_features.py \
   tests/test_milestone7_baselines.py tests/test_graph_ablation.py
@@ -163,6 +169,9 @@ are needed.
 
 Phase 8 P0 completion additionally requires synthetic tests for train-only
 condition vocabularies, temporal trend cutoffs, report safety, downstream model
-feature selection, and gate-review behavior. Protected-data completion requires
-isolated `phase8_p0_*` aggregate reports and no promotion until
+feature selection, model-ready cohort timing, version consistency, train-fit
+subgraphs, vocabulary/data-dictionary safety, eICU evaluability status, and
+gate-review behavior. Protected-data completion requires the successful
+`scripts/calculco/phase8_p0_model_ready.sh` OAR chain, an aggregate final
+package manifest with all required artifacts, and no promotion until
 `reports/phase8_p0_feature_gate_review.json` passes.

@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -18,6 +18,7 @@ import pyarrow.parquet as pq
 import xgboost as xgb
 from sklearn.compose import ColumnTransformer
 
+from pipeline.artifact_metadata import infer_consistent_version
 from pipeline.config import (
     DUCKDB_MEMORY_LIMIT,
     DUCKDB_TEMP_DIR,
@@ -144,7 +145,7 @@ class GraphAblationConfig:
     graph_ablation_version: str = GRAPH_ABLATION_VERSION
     report_version: str = MILESTONE8B_REPORT_VERSION
     graph_version: str = GRAPH_VERSION
-    feature_version: str = FEATURE_VERSION
+    feature_version: str | None = None
     label_version: str = LABEL_VERSION
     split_version: str = SPLIT_VERSION
     min_subgroup_positive_groups: int = 25
@@ -273,6 +274,22 @@ def missing_input_tables(config: GraphAblationConfig) -> list[dict[str, str]]:
         for table_name, path in required
         if not path.exists()
     ]
+
+
+def resolve_feature_version(config: GraphAblationConfig) -> GraphAblationConfig:
+    """Return config stamped from tabular and graph inputs."""
+
+    version = infer_consistent_version(
+        (
+            config.patient_stay_features_path,
+            config.patient_condition_medication_path,
+            config.graph_edges_path,
+        ),
+        column_name="feature_version",
+        declared_version=config.feature_version,
+        fallback_version=FEATURE_VERSION,
+    )
+    return replace(config, feature_version=version)
 
 
 def condition_filter_sql(config: GraphAblationConfig, alias: str = "gf") -> str:
@@ -1334,7 +1351,7 @@ def base_manifest(
             "graph_ablation_version": config.graph_ablation_version,
             "report_version": config.report_version,
             "graph_version": config.graph_version,
-            "feature_version": config.feature_version,
+            "feature_version": config.feature_version or FEATURE_VERSION,
             "label_version": config.label_version,
             "split_version": config.split_version,
         },
@@ -1440,7 +1457,7 @@ def build_graph_feature_manifest(
         "versions": {
             "graph_ablation_version": config.graph_ablation_version,
             "graph_version": config.graph_version,
-            "feature_version": config.feature_version,
+            "feature_version": config.feature_version or FEATURE_VERSION,
             "label_version": config.label_version,
             "split_version": config.split_version,
         },
@@ -1499,6 +1516,15 @@ def build_graph_ablation(
             status="failed_missing_inputs",
             reason="Required Milestone 6/7/8 graph-ablation inputs are missing.",
             missing=missing,
+        )
+    try:
+        config = resolve_feature_version(config)
+    except ValueError as error:
+        return blocked_reports(
+            config,
+            generated_at=generated_at,
+            status="failed_feature_version_mismatch",
+            reason=safe_error_message(error),
         )
     blocker = preflight_gate_status(config)
     if blocker is not None:
@@ -1797,6 +1823,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Seed used for deterministic sampling.",
     )
     parser.add_argument(
+        "--feature-version",
+        default=None,
+        help=(
+            "Optional expected feature version. By default it is inferred from "
+            "the input artifacts."
+        ),
+    )
+    parser.add_argument(
         "--duckdb-temp-dir",
         type=Path,
         default=DUCKDB_TEMP_DIR,
@@ -1841,6 +1875,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 seed=args.seed,
                 condition_tokens=parse_repeated_csv(args.condition_token),
+                feature_version=args.feature_version,
                 duckdb_temp_directory=args.duckdb_temp_dir,
                 duckdb_memory_limit=args.duckdb_memory_limit,
                 duckdb_threads=args.duckdb_threads,

@@ -38,20 +38,21 @@ else
 fi
 
 # Pick the first base that is actually writable. WORK_SCRATCH (e.g.
-# /workdir/<lab>/<user>) is unwritable on some ritchie/chimay nodes, so fall
-# back to node-local temp instead of aborting the whole job.
+# /workdir/<lab>/<user>) is unwritable on some ritchie/chimay nodes, so prefer
+# node-local /scratch before the smaller /tmp fallback.
 job_scratch=""
-for base in "${WORK_SCRATCH:-}" "${TMPDIR:-}" /tmp; do
+for base in "${WORK_SCRATCH:-}" "${TMPDIR:-}" /scratch /tmp; do
   [[ -z "$base" ]] && continue
   candidate="$base/rm-scratch/$job_tag"
   if mkdir -p "$candidate/tmp" "$candidate/uv-cache" 2>/dev/null; then
+    chmod 700 "$candidate" "$candidate/tmp" "$candidate/uv-cache"
     job_scratch="$candidate"
     break
   fi
 done
 
 if [[ -z "$job_scratch" ]]; then
-  echo "ERROR: no writable scratch base (tried WORK_SCRATCH, TMPDIR, /tmp)." >&2
+  echo "ERROR: no writable scratch base (tried WORK_SCRATCH, TMPDIR, /scratch, /tmp)." >&2
   exit 1
 fi
 
