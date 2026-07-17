@@ -748,20 +748,26 @@ before the 8B exit gate is reviewed.
 
 ## Phase 8 P0 Feature Ablation and CodexPLAN Step 9 Rebuild
 
-Status: code and synthetic tests implemented; protected-data materialization,
-Milestone 7/8/8B reruns, and promotion review are pending.
+Status: complete package code and synthetic tests implemented; protected-data
+completion-chain materialization, Milestone 7/8B reruns, and promotion review
+are pending.
 
 Execution order:
 
 1. Build isolated `phase8_p0` features with `temporal-features-v2`.
-2. Rebuild CodexPLAN Step 9 model-ready tabular artifacts into
-   `$DATASET_ROOT/processed/phase8_p0/training/`.
-3. Rerun Roadmap Milestone 7 development evaluation on the isolated roots.
-4. Rerun Roadmap Milestone 8 graph suitability and Milestone 8B development
-   graph ablation on the isolated roots.
-5. Write `reports/phase8_p0_feature_gate_review.json` with
+2. Build RxNorm-first and ATC-3-first ranking manifests, train-only
+   preprocessing, and a model-ready `cohort_stays` artifact with split and
+   decision-window fields.
+3. Build train-fit graph edges and normalized `patient_subgraphs`, then local
+   condition/medication/event/graph vocabularies.
+4. Write the schema-only model-ready data dictionary and aggregate completion
+   manifest; mark eICU externally evaluable only when a completed mapping
+   strategy has positive ranking groups.
+5. Rerun Roadmap Milestone 7 and Milestone 8B development evaluation on the
+   isolated roots.
+6. Write `reports/phase8_p0_feature_gate_review.json` with
    `pipeline.feature_gate_review`.
-6. Promote only if the reviewed validation NDCG@10 lift and secondary-metric
+7. Promote only if the reviewed validation NDCG@10 lift and secondary-metric
    guardrails pass; otherwise keep current canonical roots and reports.
 
 CodexPLAN Step 9 here means the model-ready artifact rebuild. It is unrelated
@@ -821,12 +827,15 @@ Milestone 6 artifacts, Milestone 7 final baseline evaluation, Milestone 8
 graph-readiness outputs, and the current Milestone 8B canonical reference are
 available. The next tasks are:
 
-1. Run `scripts/calculco/phase8_p0_features.sh` or
-   `scripts/calculco/phase8_p0_model_ready.sh` to materialize isolated Phase 8
-   P0 features and model-ready artifacts.
-2. Review Phase 8 P0 aggregate manifests for feature counts, train-only
-   vocabulary scope, OOV condition counts, split integrity, and preprocessing
-   fit scope.
+1. Rerun `scripts/calculco/phase8_p0_model_ready.sh` from the subgraph stage
+   after two protected-data runs completed all upstream dependencies but
+   exposed node-local DuckDB spill exhaustion in global node/edge joins. The
+   current builder uses bounded node batches plus independently sharded,
+   integer-encoded relation joins; protected-data validation remains pending.
+2. Review `reports/phase8_p0_model_ready_manifest.json` and the contributing
+   aggregate manifests for feature-version consistency, split integrity,
+   train-only graph/subgraph fit, vocabulary scope, preprocessing fit scope,
+   and eICU readiness under both token strategies.
 3. Rerun Milestone 7, Milestone 8, and Milestone 8B development evaluations on
    the isolated roots and write the `phase8_p0_*` reports.
 4. Run `uv run python -m pipeline.feature_gate_review` to decide promote versus

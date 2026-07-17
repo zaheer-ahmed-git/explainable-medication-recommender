@@ -73,6 +73,7 @@ fi
 echo "DUCKDB_TEMP_DIR=${DUCKDB_TEMP_DIR:-}"
 echo "DUCKDB_THREADS=${DUCKDB_THREADS:-}"
 echo "DUCKDB_MEMORY_LIMIT=${DUCKDB_MEMORY_LIMIT:-}"
+: "${PHASE8_P0_FEATURE_VERSION:=temporal-features-v2}"
 
 echo "=== phase8_p0_graph_suitability start ==="
 if uv run python -m pipeline.graph_suitability \
@@ -81,7 +82,8 @@ if uv run python -m pipeline.graph_suitability \
   --graph-root "$graph_root" \
   --graph-schema-report "$schema_report" \
   --suitability-report "$suitability_report" \
-  --ablation-plan "$ablation_plan"; then
+  --ablation-plan "$ablation_plan" \
+  --feature-version "$PHASE8_P0_FEATURE_VERSION"; then
   graph_rc=0
 else
   graph_rc=$?

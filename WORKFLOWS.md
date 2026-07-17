@@ -255,7 +255,61 @@ oarsub -O "$PROJECT_HOME/scripts/calculco/logs/rm_phase8_p0_features_%jobid%.out
        -S "$PROJECT_HOME/scripts/calculco/phase8_p0_features.sh"
 ```
 
-2. Rebuild CodexPLAN Step 9 model-ready tabular artifacts:
+2. Rebuild the complete CodexPLAN Step 9 model-ready package.
+
+For protected-data scale, submit the dependency-ordered OAR chain through the
+submit wrapper:
+
+```bash
+scripts/calculco/submit_phase8_p0_model_ready.sh            # full chain
+```
+
+The wrapper writes the gitignored `scripts/calculco/phase8_p0_model_ready_job.env`
+and the worker sources it. OAR `-S` jobs run in a clean environment and do not
+inherit login-shell exports, so setting `PHASE8_P0_START_AT` or the subgraph
+knobs with a bare `export` before `oarsub` has no effect on the job. Use the
+wrapper (or edit the job env file) instead.
+
+The chain builds or reuses `temporal-features-v2`, then materializes the
+RxNorm-first primary training package, the ATC-3-first eICU sensitivity
+package, train-only preprocessing, graph edges, normalized patient subgraphs,
+local vocabularies, the schema-only data dictionary, and the final aggregate
+manifest. Downstream builders infer `feature_version` from their inputs and
+fail if version stamps conflict.
+
+Patient nodes are built in eight source-qualified stay-hash batches by default,
+keeping every ranking group for one stay together. High-cardinality edge and
+candidate joins are independently split into eight shards per node batch. Edge
+assembly encodes the small train-fit concept graph and per-shard subgraphs as
+integer memberships, builds condition-source and medication-source relations
+separately, and uses one DuckDB thread. This avoids the string-key node
+self-join that exhausted node-local spill space with 12 million nodes in one
+batch. Parts are streamed into the same canonical Parquet schemas.
+
+The aggregate subgraph manifest records both partition levels, part row counts,
+and the failed part index. After an edge-stage failure, reuse the completed
+training, ATC-3, preprocessing, and graph artifacts by resuming at the subgraph
+stage:
+
+```bash
+scripts/calculco/submit_phase8_p0_model_ready.sh subgraphs
+```
+
+Override the subgraph knobs at submit time, for example:
+
+```bash
+SUBGRAPH_JOIN_SHARDS=16 \
+  scripts/calculco/submit_phase8_p0_model_ready.sh subgraphs
+```
+
+Confirm the new job's `.out` log prints `PHASE8_P0_START_AT=subgraphs` before
+trusting the run. If an encoded edge or candidate part still reports `failed to
+offload data block`, increase `SUBGRAPH_JOIN_SHARDS` to `16`; do not increase
+`SUBGRAPH_BATCHES` unless node construction itself fails. Prefer a writable
+`WORK_SCRATCH` through the gitignored local environment. When unavailable,
+`common.sh` now tries node-local `/scratch` before the smaller `/tmp` fallback.
+
+The equivalent core login-node commands for synthetic or bounded fixtures are:
 
 ```bash
 uv run python -m pipeline.build_training_table \
@@ -263,15 +317,56 @@ uv run python -m pipeline.build_training_table \
   --training-root "$DATASET_ROOT/processed/phase8_p0/training" \
   --manifest "$PROJECT_HOME/reports/phase8_p0_training_table_manifest.json"
 
+uv run python -m pipeline.build_training_table \
+  --features-root "$DATASET_ROOT/processed/phase8_p0/features" \
+  --training-root "$DATASET_ROOT/processed/phase8_p0/sensitivity/atc3_or_rxnorm/training" \
+  --candidate-token-strategy atc3_or_rxnorm \
+  --manifest "$PROJECT_HOME/reports/phase8_p0_atc3_training_table_manifest.json"
+
 uv run python -m pipeline.preprocessing \
   --features-root "$DATASET_ROOT/processed/phase8_p0/features" \
   --training-root "$DATASET_ROOT/processed/phase8_p0/training" \
   --preprocessing-root "$DATASET_ROOT/processed/phase8_p0/training/preprocessing" \
   --manifest "$PROJECT_HOME/reports/phase8_p0_preprocessing_manifest.json"
+
+uv run python -m pipeline.graph_suitability \
+  --features-root "$DATASET_ROOT/processed/phase8_p0/features" \
+  --training-root "$DATASET_ROOT/processed/phase8_p0/training" \
+  --graph-root "$DATASET_ROOT/processed/phase8_p0/graph/milestone8" \
+  --graph-schema-report "$PROJECT_HOME/reports/phase8_p0_milestone8_graph_schema.json" \
+  --suitability-report "$PROJECT_HOME/reports/phase8_p0_milestone8_graph_suitability.json" \
+  --ablation-plan "$PROJECT_HOME/reports/phase8_p0_milestone8_ablation_plan.json"
+
+uv run python -m pipeline.patient_subgraphs \
+  --features-root "$DATASET_ROOT/processed/phase8_p0/features" \
+  --training-root "$DATASET_ROOT/processed/phase8_p0/training" \
+  --graph-root "$DATASET_ROOT/processed/phase8_p0/graph/milestone8" \
+  --subgraphs-root "$DATASET_ROOT/processed/phase8_p0/graph/milestone8/patient_subgraphs" \
+  --manifest "$PROJECT_HOME/reports/phase8_p0_patient_subgraphs_manifest.json" \
+  --subgraph-batches 8 \
+  --subgraph-join-shards 8 \
+  --edge-duckdb-threads 1
+
+uv run python -m pipeline.model_ready_package \
+  --features-root "$DATASET_ROOT/processed/phase8_p0/features" \
+  --training-root "$DATASET_ROOT/processed/phase8_p0/training" \
+  --graph-root "$DATASET_ROOT/processed/phase8_p0/graph/milestone8" \
+  --subgraphs-root "$DATASET_ROOT/processed/phase8_p0/graph/milestone8/patient_subgraphs" \
+  --preprocessing-root "$DATASET_ROOT/processed/phase8_p0/training/preprocessing" \
+  --package-root "$DATASET_ROOT/processed/phase8_p0/model_ready" \
+  --data-dictionary "$PROJECT_HOME/reports/phase8_p0_model_ready_data_dictionary.json" \
+  --manifest "$PROJECT_HOME/reports/phase8_p0_model_ready_manifest.json" \
+  --primary-training-manifest "$PROJECT_HOME/reports/phase8_p0_training_table_manifest.json" \
+  --sensitivity-training-manifest "$PROJECT_HOME/reports/phase8_p0_atc3_training_table_manifest.json" \
+  --preprocessing-manifest "$PROJECT_HOME/reports/phase8_p0_preprocessing_manifest.json" \
+  --subgraphs-manifest "$PROJECT_HOME/reports/phase8_p0_patient_subgraphs_manifest.json"
 ```
 
-The OAR chain `scripts/calculco/phase8_p0_model_ready.sh` runs features when
-needed, then training-table construction and preprocessing.
+Do not run `pipeline.model_ready_package` before graph suitability and the
+ATC-3 sensitivity build; both are required by the completion manifest. If both
+candidate strategies have zero positive eICU ranking groups, the final
+manifest records `coverage_only_no_in_catalog_positive_groups` and prohibits
+external performance claims.
 
 3. Rerun Milestone 7 development evaluation on the isolated roots:
 
@@ -300,7 +395,9 @@ MILESTONE7_BASELINES=linear,xgboost \
   scripts/calculco/submit_phase8_p0_evaluate_baselines.sh development
 ```
 
-4. Rerun Milestone 8 and 8B development gates:
+4. Rerun Milestone 8B development gates. The model-ready chain already builds
+   the isolated Milestone 8 graph; rerun graph suitability only when its inputs
+   changed:
 
 ```bash
 uv run python -m pipeline.graph_suitability \

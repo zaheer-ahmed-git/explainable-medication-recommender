@@ -31,9 +31,12 @@ The repository is currently in the data-foundation and architecture stage.
   cohort stays, demographics, conditions, medications, labs, vitals,
   allergies, interventions, and temporal events. Milestone 6 temporal feature,
   split, candidate-catalog, observed-label, and train-fitted preprocessing
-  artifact builders are also implemented. Phase 8 P0 feature families are
-  available as an isolated `--feature-set phase8_p0` ablation path, pending
-  protected-data reruns and promotion review. Milestone 7 baseline evaluation is implemented for aggregate
+  artifact builders are also implemented. The Phase 8 P0 CodexPLAN Step 9
+  package now adds a model-ready cohort, consistent input-derived provenance,
+  train-fit patient subgraphs and vocabularies, a schema-only data dictionary,
+  and explicit eICU coverage/evaluability gates. Its protected-data completion
+  run and promotion review remain pending. Milestone 7 baseline evaluation is
+  implemented for aggregate
   coverage, deterministic random, global-popularity, condition-popularity,
   linear, and XGBoost baselines; validation winner frozen as `xgboost` and
   final-mode held-out MIMIC test metrics are recorded in
@@ -51,8 +54,11 @@ The repository is currently in the data-foundation and architecture stage.
   linear and XGBoost baselines. Milestone 8 synthetic tests cover train-only
   graph fitting, cold-start reporting, sparse graphs, and report safety.
   Milestone 8B synthetic tests cover graph-feature joins, final-mode gating,
-  cold-start flags, fusion, eICU coverage-only behavior, and report safety. The
-  full Transformer-GNN model remains planned.
+  cold-start flags, fusion, eICU coverage-only behavior, and report safety.
+  Phase 8 P0 package tests additionally cover model-ready cohort timing,
+  provenance inference, train-only subgraphs, cold candidates, local
+  vocabularies, and schema-only reports. The full Transformer-GNN model remains
+  planned.
 
 Do not interpret the poster's illustrative medication table or planned system
 diagram as a clinically validated implementation.

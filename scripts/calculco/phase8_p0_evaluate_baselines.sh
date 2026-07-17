@@ -93,6 +93,7 @@ echo "DUCKDB_MEMORY_LIMIT=${DUCKDB_MEMORY_LIMIT:-}"
 : "${MILESTONE7_FROZEN_SELECTION:=0}"
 : "${MILESTONE7_CONDITION_TOKENS:=}"
 : "${MILESTONE7_BASELINES:=random,global_popularity,condition_popularity,linear,xgboost}"
+: "${PHASE8_P0_FEATURE_VERSION:=temporal-features-v2}"
 
 args=(
   --features-root "$features_root"
@@ -103,6 +104,7 @@ args=(
   --training-manifest "$training_manifest"
   --mode "$MILESTONE7_MODE"
   --top-k "$MILESTONE7_TOP_K"
+  --feature-version "$PHASE8_P0_FEATURE_VERSION"
 )
 if [[ "$MILESTONE7_FROZEN_SELECTION" == "1" ]]; then
   args+=(--frozen-selection)

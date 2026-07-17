@@ -153,6 +153,12 @@ task context, source-code inspection, or local agent memory.
   (`preserve_insertion_order=false`, explicit spill `temp_directory`, bounded
   `memory_limit`/`threads`); tune with `DUCKDB_TEMP_DIR`/`DUCKDB_MEMORY_LIMIT`/
   `DUCKDB_THREADS`.
+- DuckDB `failed to offload data block (.../12.2 GiB used)` on Calculco means
+  the node-local spill allowance was exhausted. Patient-subgraph construction
+  uses stay batches for node construction and separate integer-membership join
+  shards for edges/candidates. Tune `SUBGRAPH_JOIN_SHARDS` upward for join
+  failures; tune `SUBGRAPH_BATCHES` only for node failures. OAR scratch selection
+  prefers `WORK_SCRATCH`, then `/scratch`, before `/tmp`.
 
 ## Do Not Do
 

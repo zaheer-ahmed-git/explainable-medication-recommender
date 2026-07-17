@@ -7,7 +7,7 @@ target research architecture.
 
 ## Current State
 
-As of 2026-07-10, the active repository contains research documents,
+As of 2026-07-16, the active repository contains research documents,
 configuration, local licensed datasets, an ignored synthetic prototype,
 metadata-only source inventory, and adult ICU/unit-stay cohort materialization.
 The active `pipeline/` provides configuration, safe path/header inspection,
@@ -29,8 +29,12 @@ gated by frozen validation selection. Milestone 8 graph-readiness tooling can
 build train-only concept-level graph edges and aggregate suitability reports.
 Milestone 8B graph-aware ablation tooling can compare graph-only XGBoost,
 graph-augmented XGBoost, late fusion, and simple ensemble scores against the
-frozen XGBoost reference. Full Transformer/GNN neural models and clinical
-recommendations are not yet implemented in the active working tree.
+frozen XGBoost reference. The Phase 8 P0 CodexPLAN Step 9 implementation also
+materializes a model-ready cohort, normalized patient query subgraphs from
+train-fit concept edges, train-derived vocabularies, and a schema-only package
+dictionary with consistent upstream feature-version inference. Full
+Transformer/GNN neural models and clinical recommendations are not yet
+implemented in the active working tree.
 
 The legacy prototype demonstrates useful conventions such as:
 
@@ -77,6 +81,8 @@ pipeline/
   build_training_table.py
   preprocessing.py
   graph_suitability.py
+  patient_subgraphs.py
+  model_ready_package.py
 tests/
 notebooks/
 reports/
