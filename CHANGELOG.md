@@ -6,6 +6,13 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ### Added
 
+- CodexPLAN Step 10 graph/hybrid readiness review on the Phase 8 P0 stack:
+  `Documentation/CodexPLANStep10GraphHybridReadiness.md` and aggregate
+  `reports/codexplan_step10_graph_hybrid_readiness.json`. Graph structure gate
+  passes (`pass_for_graph_ablation`); Milestone 8B hybrid lift fails, so frozen
+  tabular XGBoost remains the reference and neural Transformer-GNN training is
+  not authorized yet.
+
 - `scripts/calculco/submit_phase8_p0_model_ready.sh` wrapper and
   `phase8_p0_model_ready_job.env` (gitignored, with a committed `.example`) so
   OAR jobs receive `PHASE8_P0_START_AT` and the subgraph memory knobs. OAR `-S`
@@ -204,6 +211,28 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ### Fixed
 
+- Phase 8 P0 patient-subgraph edge join no longer exhausts DuckDB's spill
+  directory (`failed to offload data block ... (X GiB/X GiB used)`). Root cause:
+  popular concept nodes make the naive `graph_edges`-to-`dst`-membership join fan
+  out across nearly all ~916k subgraphs (e.g. a common candidate medication is a
+  member of 915k subgraphs), producing billions of intermediate rows. The
+  per-relation expansion is now forced to start from the small `src` side (one
+  query condition per subgraph; ~50 candidate medications) behind a
+  `MATERIALIZED` optimization barrier, so the `subgraph_key` correlation is
+  applied before touching popular `dst` nodes. The self-joins also carry only
+  integer keys (`subgraph_key`, `src_node_index`, `dst_node_index`, `edge_id`)
+  and attach wide string/provenance columns once at the end via an `edge_id`
+  join back to the small train-fit edge relation. Verified on the real 94.8M-node
+  data: edge shard 0/64 (which killed jobs 7563/7617/7639/7660) now completes in
+  ~46s under a 12 GiB spill cap. Also fixes the 32-shard workaround that OAR
+  killed after 3h+ from repeated full node-batch re-scans.
+- DuckDB spill capacity is now explicitly configurable via
+  `DUCKDB_MAX_TEMP_DIR_SIZE` (`pipeline.config.resolve_duckdb_max_temp_dir_size`,
+  `configure_duckdb_connection`, and `pipeline.patient_subgraphs
+  --duckdb-max-temp-dir-size`), so operators can raise the cap when
+  `DUCKDB_TEMP_DIR` points at a larger volume instead of inheriting the small
+  auto-detected default. Wired through `phase8_p0_model_ready.sh`,
+  `submit_phase8_p0_model_ready.sh`, and the job env example.
 - Phase 8 P0 patient-subgraph spill exhaustion now has bounded
   source-qualified stay-hash node materialization plus independently sharded,
   integer-encoded, relation-specific edge and candidate joins. The OAR chain

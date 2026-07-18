@@ -50,6 +50,31 @@ def test_configure_enables_spilling_and_relaxes_order(tmp_path: Path) -> None:
         assert _setting(connection, "memory_limit") != ""
 
 
+def test_configure_sets_explicit_max_temp_directory_size(tmp_path: Path) -> None:
+    """The spill cap is applied so a small temp drive does not silently limit it.
+
+    Guards the fix for the patient-subgraph edge OOM: DuckDB defaults
+    ``max_temp_directory_size`` to ~90% of free disk on the temp drive, so a
+    small node-local ``/tmp`` caps spilling and raises ``failed to offload data
+    block``. Passing an explicit value overrides that auto-detected ceiling.
+    """
+
+    with duckdb.connect(database=":memory:") as connection:
+        configure_duckdb_connection(
+            connection,
+            temp_directory=tmp_path / "spill",
+            memory_limit="256MB",
+            max_temp_directory_size="128MB",
+            threads=1,
+        )
+
+        # An explicit small cap (128 MB -> "122.0 MiB") proves the override took
+        # effect; the auto-detected default on any real drive is many GiB.
+        max_temp = _setting(connection, "max_temp_directory_size")
+        assert "MiB" in max_temp
+        assert "GiB" not in max_temp
+
+
 def test_configured_connection_copies_wide_union_to_parquet(tmp_path: Path) -> None:
     """A multi-branch UNION ``COPY`` (the vitals pattern) completes and spills."""
 

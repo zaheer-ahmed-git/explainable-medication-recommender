@@ -748,9 +748,12 @@ before the 8B exit gate is reviewed.
 
 ## Phase 8 P0 Feature Ablation and CodexPLAN Step 9 Rebuild
 
-Status: complete package code and synthetic tests implemented; protected-data
-completion-chain materialization, Milestone 7/8B reruns, and promotion review
-are pending.
+Status: protected-data package materialized (2026-07-17 model-ready manifest);
+Milestone 7/8/8B Phase 8 P0 reports exist; feature promotion gate is
+`reject_inconclusive`. CodexPLAN Step 10 graph/hybrid readiness review
+(2026-07-18) confirms structure pass and hybrid-lift fail: retain frozen
+XGBoost; do not start neural Transformer-GNN yet. See
+`Documentation/CodexPLANStep10GraphHybridReadiness.md`.
 
 Execution order:
 
@@ -823,22 +826,17 @@ Exit gate:
 
 ## Immediate Next Plan
 
-Milestone 6 artifacts, Milestone 7 final baseline evaluation, Milestone 8
-graph-readiness outputs, and the current Milestone 8B canonical reference are
-available. The next tasks are:
+Milestone 6–8B and CodexPLAN Steps 9–10 are available on the Phase 8 P0 stack.
+Graph structure readiness passed; hybrid complexity over transparent baselines
+did not. The next tasks are:
 
-1. Rerun `scripts/calculco/phase8_p0_model_ready.sh` from the subgraph stage
-   after two protected-data runs completed all upstream dependencies but
-   exposed node-local DuckDB spill exhaustion in global node/edge joins. The
-   current builder uses bounded node batches plus independently sharded,
-   integer-encoded relation joins; protected-data validation remains pending.
-2. Review `reports/phase8_p0_model_ready_manifest.json` and the contributing
-   aggregate manifests for feature-version consistency, split integrity,
-   train-only graph/subgraph fit, vocabulary scope, preprocessing fit scope,
-   and eICU readiness under both token strategies.
-3. Rerun Milestone 7, Milestone 8, and Milestone 8B development evaluations on
-   the isolated roots and write the `phase8_p0_*` reports.
-4. Run `uv run python -m pipeline.feature_gate_review` to decide promote versus
-   reject/inconclusive against the current canonical 8B reference.
-5. Keep pooled MIMIC/eICU training, full Transformer-GNN claims, and clinical
+1. Keep frozen tabular XGBoost as the development reference; do not start
+   neural Transformer-GNN training until a reviewed ablation clears the
+   +0.005 NDCG@10 lift gate (see
+   `Documentation/CodexPLANStep10GraphHybridReadiness.md`).
+2. Prioritize cheaper lifts: medication-mapping coverage (including the ATC-3
+   eICU-evaluable path), condition-feature redesign after
+   `reject_inconclusive`, and targeted feature ablations under the same metric
+   gate.
+3. Keep pooled MIMIC/eICU training, full Transformer-GNN claims, and clinical
    recommendation claims disabled until reviewed evidence justifies them.

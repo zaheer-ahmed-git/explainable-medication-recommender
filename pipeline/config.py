@@ -105,6 +105,27 @@ def resolve_duckdb_memory_limit(
     return value or None
 
 
+def resolve_duckdb_max_temp_dir_size(
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> str | None:
+    """Resolve an optional cap on DuckDB's spill (``temp_directory``) size.
+
+    DuckDB defaults ``max_temp_directory_size`` to ~90% of the free space on the
+    drive holding ``temp_directory``. When node-local scratch falls back to a
+    small ``/tmp`` (e.g. ~12 GiB on some Calculco compute nodes), larger-than-
+    memory joins fail with ``failed to offload data block ... (X GiB/X GiB
+    used)`` even though ``memory_limit`` is respected. Setting this explicitly
+    lets operators grant more spill when ``DUCKDB_TEMP_DIR`` points at a larger
+    volume. ``None`` keeps DuckDB's disk-based default.
+    """
+
+    env = os.environ if environ is None else environ
+    raw = env.get("DUCKDB_MAX_TEMP_DIR_SIZE")
+    value = raw.strip() if raw else ""
+    return value or None
+
+
 def resolve_duckdb_threads(
     *,
     environ: Mapping[str, str] | None = None,
@@ -144,6 +165,7 @@ REPORTS_ROOT = resolve_reports_root(PROJECT_ROOT)
 
 DUCKDB_TEMP_DIR = resolve_duckdb_temp_dir()
 DUCKDB_MEMORY_LIMIT = resolve_duckdb_memory_limit()
+DUCKDB_MAX_TEMP_DIR_SIZE = resolve_duckdb_max_temp_dir_size()
 DUCKDB_THREADS = resolve_duckdb_threads()
 
 RANDOM_SEED = 20260617
