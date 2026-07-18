@@ -16,6 +16,7 @@ import duckdb
 from pipeline.artifact_metadata import infer_consistent_version
 from pipeline.config import (
     DEFAULT_MODELING_PARAMETERS,
+    DUCKDB_MAX_TEMP_DIR_SIZE,
     DUCKDB_MEMORY_LIMIT,
     DUCKDB_TEMP_DIR,
     DUCKDB_THREADS,
@@ -65,6 +66,7 @@ class PatientSubgraphBuildConfig:
     split_version: str = SPLIT_VERSION
     duckdb_temp_directory: Path | None = DUCKDB_TEMP_DIR
     duckdb_memory_limit: str | None = DUCKDB_MEMORY_LIMIT
+    duckdb_max_temp_directory_size: str | None = DUCKDB_MAX_TEMP_DIR_SIZE
     duckdb_threads: int | None = DUCKDB_THREADS
     subgraph_batch_count: int = DEFAULT_SUBGRAPH_BATCH_COUNT
     subgraph_join_shards: int = DEFAULT_SUBGRAPH_JOIN_SHARDS
@@ -205,6 +207,7 @@ def configure_connection(
         connection,
         temp_directory=config.duckdb_temp_directory,
         memory_limit=config.duckdb_memory_limit,
+        max_temp_directory_size=config.duckdb_max_temp_directory_size,
         threads=config.duckdb_threads,
     )
 
@@ -434,7 +437,23 @@ def subgraph_edges_query(
     join_shard_index: int | None = None,
     join_shard_count: int = 1,
 ) -> str:
-    """Attach train-fit edges through narrow integer node memberships."""
+    """Attach train-fit edges through narrow integer node memberships.
+
+    Popular concept nodes (a common candidate medication appears in ~all ~916k
+    subgraphs) make the naive ``graph_edges``-to-``dst``-membership join fan out
+    across hundreds of thousands of subgraphs, producing billions of intermediate
+    rows that overflow DuckDB's spill directory. To bound this, the per-relation
+    expansion is forced to start from the small ``src`` side (one query condition
+    per subgraph; the ~50 candidate medications per subgraph) behind a
+    ``MATERIALIZED`` optimization barrier, so the ``subgraph_key`` correlation is
+    always applied before touching popular ``dst`` nodes.
+
+    The self-joins also carry only integer keys (``subgraph_key``,
+    ``src_node_index``, ``dst_node_index``, ``edge_id``); the wide string and
+    provenance columns (``src_id``, ``relation_type``, ``support_count``, ...)
+    are attached once at the end by joining the surviving pairs back to the small
+    ``encoded_graph_edges`` relation.
+    """
 
     nodes = nodes_path or config.subgraph_nodes_path
     shard_filter = (
@@ -500,6 +519,7 @@ memberships AS MATERIALIZED (
 ),
 encoded_graph_edges AS MATERIALIZED (
     SELECT
+        ROW_NUMBER() OVER () - 1 AS edge_id,
         src.graph_node_index AS src_graph_node_index,
         dst.graph_node_index AS dst_graph_node_index,
         graph_edges.src_id,
@@ -518,51 +538,53 @@ encoded_graph_edges AS MATERIALIZED (
     WHERE graph_edges.fit_source = 'mimiciv'
         AND graph_edges.fit_split = 'train'
 ),
-condition_edge_pairs AS (
+condition_src_edges AS MATERIALIZED (
     SELECT
         src.subgraph_key,
         src.node_index AS src_node_index,
-        dst.node_index AS dst_node_index,
-        graph_edges.src_id,
-        graph_edges.dst_id,
-        graph_edges.src_type,
-        graph_edges.dst_type,
-        graph_edges.relation_type,
-        graph_edges.support_count,
-        graph_edges.fit_source,
-        graph_edges.fit_split
+        graph_edges.dst_graph_node_index,
+        graph_edges.edge_id
     FROM memberships AS src
     INNER JOIN encoded_graph_edges AS graph_edges
         ON src.graph_node_index = graph_edges.src_graph_node_index
         AND graph_edges.src_type = 'condition'
-    INNER JOIN memberships AS dst
-        ON src.subgraph_key = dst.subgraph_key
-        AND graph_edges.dst_graph_node_index = dst.graph_node_index
     WHERE src.node_role = 'query_condition'
 ),
-medication_edge_pairs AS (
+condition_edge_pairs AS (
+    SELECT
+        src_edges.subgraph_key,
+        src_edges.src_node_index,
+        dst.node_index AS dst_node_index,
+        src_edges.edge_id
+    FROM condition_src_edges AS src_edges
+    INNER JOIN memberships AS dst
+        ON src_edges.subgraph_key = dst.subgraph_key
+        AND src_edges.dst_graph_node_index = dst.graph_node_index
+),
+medication_src_edges AS MATERIALIZED (
     SELECT
         src.subgraph_key,
         src.node_index AS src_node_index,
-        dst.node_index AS dst_node_index,
-        graph_edges.src_id,
-        graph_edges.dst_id,
-        graph_edges.src_type,
-        graph_edges.dst_type,
-        graph_edges.relation_type,
-        graph_edges.support_count,
-        graph_edges.fit_source,
-        graph_edges.fit_split
+        graph_edges.dst_graph_node_index,
+        graph_edges.edge_id
     FROM memberships AS src
     INNER JOIN encoded_graph_edges AS graph_edges
         ON src.graph_node_index = graph_edges.src_graph_node_index
         AND graph_edges.relation_type =
             'medication_medication_train_coprescribed'
-    INNER JOIN memberships AS dst
-        ON src.subgraph_key = dst.subgraph_key
-        AND graph_edges.dst_graph_node_index = dst.graph_node_index
-        AND dst.node_role = 'candidate_medication'
     WHERE src.node_role = 'candidate_medication'
+),
+medication_edge_pairs AS (
+    SELECT
+        src_edges.subgraph_key,
+        src_edges.src_node_index,
+        dst.node_index AS dst_node_index,
+        src_edges.edge_id
+    FROM medication_src_edges AS src_edges
+    INNER JOIN memberships AS dst
+        ON src_edges.subgraph_key = dst.subgraph_key
+        AND src_edges.dst_graph_node_index = dst.graph_node_index
+        AND dst.node_role = 'candidate_medication'
 ),
 edge_pairs AS (
     SELECT * FROM condition_edge_pairs
@@ -576,19 +598,22 @@ SELECT
     keys.subgraph_id,
     edge_pairs.src_node_index,
     edge_pairs.dst_node_index,
-    edge_pairs.src_id,
-    edge_pairs.dst_id,
-    edge_pairs.src_type,
-    edge_pairs.dst_type,
-    edge_pairs.relation_type,
-    edge_pairs.support_count,
-    edge_pairs.fit_source,
-    edge_pairs.fit_split,
+    graph_edges.src_id,
+    graph_edges.dst_id,
+    graph_edges.src_type,
+    graph_edges.dst_type,
+    graph_edges.relation_type,
+    graph_edges.support_count,
+    graph_edges.fit_source,
+    graph_edges.fit_split,
     {sql_string(config.feature_version or FEATURE_VERSION)} AS feature_version,
     {sql_string(config.graph_version or GRAPH_VERSION)} AS graph_version,
     {sql_string(generated_at)} AS generated_at
 FROM edge_pairs
-INNER JOIN subgraph_keys AS keys USING (subgraph_key)
+INNER JOIN subgraph_keys AS keys
+    ON edge_pairs.subgraph_key = keys.subgraph_key
+INNER JOIN encoded_graph_edges AS graph_edges
+    ON edge_pairs.edge_id = graph_edges.edge_id
 """
 
 
@@ -1134,6 +1159,15 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--graph-version", default=None)
     parser.add_argument("--duckdb-temp-dir", type=Path, default=DUCKDB_TEMP_DIR)
     parser.add_argument("--duckdb-memory-limit", default=DUCKDB_MEMORY_LIMIT)
+    parser.add_argument(
+        "--duckdb-max-temp-dir-size",
+        default=DUCKDB_MAX_TEMP_DIR_SIZE,
+        help=(
+            "Cap on DuckDB spill size (e.g. '150GB'). Defaults to ~90%% of free "
+            "space on the temp drive; set explicitly when spilling to a larger "
+            "volume than node-local /tmp."
+        ),
+    )
     parser.add_argument("--duckdb-threads", type=int, default=DUCKDB_THREADS)
     parser.add_argument(
         "--subgraph-batches",
@@ -1169,6 +1203,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             graph_version=args.graph_version,
             duckdb_temp_directory=args.duckdb_temp_dir,
             duckdb_memory_limit=args.duckdb_memory_limit,
+            duckdb_max_temp_directory_size=args.duckdb_max_temp_dir_size,
             duckdb_threads=args.duckdb_threads,
             subgraph_batch_count=args.subgraph_batches,
             subgraph_join_shards=args.subgraph_join_shards,

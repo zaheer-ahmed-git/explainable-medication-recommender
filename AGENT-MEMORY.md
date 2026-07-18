@@ -90,6 +90,12 @@ task context, source-code inspection, or local agent memory.
   `reports/milestone7_frozen_selection.json`. Use
   `scripts/calculco/submit_evaluate_baselines.sh` so `milestone7_job.env` is
   written before `oarsub`.
+- CodexPLAN Step 10 graph/hybrid readiness (2026-07-18) is reviewed on the
+  Phase 8 P0 stack in
+  `Documentation/CodexPLANStep10GraphHybridReadiness.md` and
+  `reports/codexplan_step10_graph_hybrid_readiness.json`: structure gate
+  `pass_for_graph_ablation`, Milestone 8B hybrid lift fails, frozen XGBoost
+  retained; neural Transformer-GNN training is not authorized yet.
 - `pipeline/graph_suitability.py` implements Milestone 8 graph-readiness:
   train-only concept-level graph edges under
   `Dataset/processed/graph/milestone8/`, aggregate schema/suitability/ablation

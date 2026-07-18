@@ -303,11 +303,22 @@ SUBGRAPH_JOIN_SHARDS=16 \
 ```
 
 Confirm the new job's `.out` log prints `PHASE8_P0_START_AT=subgraphs` before
-trusting the run. If an encoded edge or candidate part still reports `failed to
-offload data block`, increase `SUBGRAPH_JOIN_SHARDS` to `16`; do not increase
-`SUBGRAPH_BATCHES` unless node construction itself fails. Prefer a writable
-`WORK_SCRATCH` through the gitignored local environment. When unavailable,
-`common.sh` now tries node-local `/scratch` before the smaller `/tmp` fallback.
+trusting the run. The edge builder keeps the large relation-specific joins on
+narrow integer keys and attaches the wide string columns only at the end, so the
+default 8 shards should fit node-local scratch. `failed to offload data block ...
+(X GiB/X GiB used)` means DuckDB hit its `max_temp_directory_size` (which
+defaults to ~90% of free space on the temp drive, e.g. a small `/tmp`), not the
+`memory_limit`. To resolve it:
+
+- Point `DUCKDB_TEMP_DIR` at a larger volume and raise the ceiling with
+  `DUCKDB_MAX_TEMP_DIR_SIZE` (e.g. `150GB`), or
+- increase `SUBGRAPH_JOIN_SHARDS` to `16` to shrink each part's working set.
+
+Do not increase `SUBGRAPH_BATCHES` unless node construction itself fails, and
+avoid very high shard counts (each part re-scans its node batch, so `32` shards
+runs far longer). Prefer a writable `WORK_SCRATCH` through the gitignored local
+environment. When unavailable, `common.sh` tries node-local `/scratch` before the
+smaller `/tmp` fallback.
 
 The equivalent core login-node commands for synthetic or bounded fixtures are:
 

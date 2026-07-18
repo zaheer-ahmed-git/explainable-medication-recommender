@@ -108,6 +108,13 @@ fi
 if [[ -z "${DUCKDB_MEMORY_LIMIT:-}" ]]; then
   export DUCKDB_MEMORY_LIMIT="10GB"
 fi
+# Optional cap on DuckDB spill size. DuckDB otherwise uses ~90% of free space on
+# the temp drive, so a small node-local /tmp silently limits spilling and raises
+# "failed to offload data block". Export DUCKDB_MAX_TEMP_DIR_SIZE (e.g. 150GB)
+# when DUCKDB_TEMP_DIR points at a larger volume. pipeline.config reads it.
+if [[ -n "${DUCKDB_MAX_TEMP_DIR_SIZE:-}" ]]; then
+  export DUCKDB_MAX_TEMP_DIR_SIZE
+fi
 : "${STAY_FEATURE_BATCHES:=8}"
 : "${EVENT_SEQUENCE_BATCHES:=8}"
 : "${SUBGRAPH_BATCHES:=8}"
@@ -134,6 +141,7 @@ echo "package_root=$package_root"
 echo "DUCKDB_TEMP_DIR=${DUCKDB_TEMP_DIR:-}"
 echo "DUCKDB_THREADS=${DUCKDB_THREADS:-}"
 echo "DUCKDB_MEMORY_LIMIT=${DUCKDB_MEMORY_LIMIT:-}"
+echo "DUCKDB_MAX_TEMP_DIR_SIZE=${DUCKDB_MAX_TEMP_DIR_SIZE:-}"
 echo "SUBGRAPH_BATCHES=$SUBGRAPH_BATCHES"
 echo "SUBGRAPH_JOIN_SHARDS=$SUBGRAPH_JOIN_SHARDS"
 echo "SUBGRAPH_EDGE_THREADS=$SUBGRAPH_EDGE_THREADS"
