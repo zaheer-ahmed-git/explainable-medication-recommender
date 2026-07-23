@@ -466,6 +466,46 @@ uv run python -m pipeline.feature_gate_review \
 Promote only after reviewing the gate JSON. If it rejects or is inconclusive,
 keep the default roots and current `milestone8b_*` reports canonical.
 
+## Run Phase 8 P0 Gate Recovery
+
+1. Confirm the completed model-ready and frozen reference reports exist. Do
+   not inspect patient rows.
+2. Submit the CPU-only development job:
+
+```bash
+cd "$PROJECT_HOME"
+scripts/calculco/submit_phase8_p0_gate_recovery.sh development
+```
+
+The worker runs `pipeline.training_contract` first. The first run creates
+`reports/phase8_p0_training_contract_lock.json`; later runs compare current
+manifest hashes and artifact metadata with that lock and fail on drift. The
+rank-aware runner then makes every feature, hyperparameter, and fusion choice
+on deterministic patient-grouped MIMIC-train folds.
+
+3. Review only these aggregate reports:
+
+```text
+reports/phase8_p0_training_contract_lock.json
+reports/phase8_p0_training_contract_audit_latest.json
+reports/phase8_p0_gate_recovery_evaluation.json
+reports/phase8_p0_gate_recovery_selection.json
+```
+
+Local sampled matrices, full scores, preprocessors, and models remain ignored
+under `$DATASET_ROOT/processed/phase8_p0/evaluation/gate_recovery/`.
+
+4. Run final mode only if the selection report records
+`neural_training_authorized=true`:
+
+```bash
+scripts/calculco/submit_phase8_p0_gate_recovery.sh final
+```
+
+The CLI independently blocks final MIMIC test scoring when the development
+gate failed. eICU is not used for fitting or tuning. Do not add PyTorch, neural
+training commands, or GPU wrappers until this Stage 1 gate passes.
+
 ## Run Milestone 8 Graph Suitability
 
 1. Confirm Milestone 6 feature/training artifacts exist and Milestone 7 frozen

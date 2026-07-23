@@ -96,6 +96,12 @@ task context, source-code inspection, or local agent memory.
   `reports/codexplan_step10_graph_hybrid_readiness.json`: structure gate
   `pass_for_graph_ablation`, Milestone 8B hybrid lift fails, frozen XGBoost
   retained; neural Transformer-GNN training is not authorized yet.
+- Gate-first Phase 8 P0 Stage 1 is implemented in `pipeline.training_contract`
+  and `pipeline.gate_recovery`, with a CPU-only OAR wrapper and synthetic
+  tests. Its protected-data run is pending. The contract lock is aggregate
+  only; structured model selection uses MIMIC-train patient folds, and MIMIC
+  test remains blocked until validation clears the +0.005 NDCG@10 gate. No
+  PyTorch or neural training surface has been added.
 - `pipeline/graph_suitability.py` implements Milestone 8 graph-readiness:
   train-only concept-level graph edges under
   `Dataset/processed/graph/milestone8/`, aggregate schema/suitability/ablation

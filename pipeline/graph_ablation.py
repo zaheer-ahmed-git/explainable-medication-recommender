@@ -142,6 +142,7 @@ class GraphAblationConfig:
     frozen_selection: bool = False
     seed: int = RANDOM_SEED
     condition_tokens: tuple[str, ...] = ()
+    minimum_graph_support: int = 1
     graph_ablation_version: str = GRAPH_ABLATION_VERSION
     report_version: str = MILESTONE8B_REPORT_VERSION
     graph_version: str = GRAPH_VERSION
@@ -359,6 +360,7 @@ WITH graph_edges AS (
     FROM {parquet_scan(edges)}
     WHERE fit_source = 'mimiciv'
         AND fit_split = 'train'
+        AND support_count >= {max(1, int(config.minimum_graph_support))}
 ),
 condition_medication_edges AS (
     SELECT
@@ -1817,6 +1819,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Optional condition token filter; may be repeated or comma-separated.",
     )
     parser.add_argument(
+        "--minimum-graph-support",
+        type=int,
+        default=1,
+        help="Minimum train-fit support retained when deriving graph features.",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=RANDOM_SEED,
@@ -1875,6 +1883,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 seed=args.seed,
                 condition_tokens=parse_repeated_csv(args.condition_token),
+                minimum_graph_support=max(1, args.minimum_graph_support),
                 feature_version=args.feature_version,
                 duckdb_temp_directory=args.duckdb_temp_dir,
                 duckdb_memory_limit=args.duckdb_memory_limit,

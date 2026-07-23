@@ -34,9 +34,8 @@ The repository is currently in the data-foundation and architecture stage.
   artifact builders are also implemented. The Phase 8 P0 CodexPLAN Step 9
   package now adds a model-ready cohort, consistent input-derived provenance,
   train-fit patient subgraphs and vocabularies, a schema-only data dictionary,
-  and explicit eICU coverage/evaluability gates. Its protected-data completion
-  run and promotion review remain pending. Milestone 7 baseline evaluation is
-  implemented for aggregate
+  and explicit eICU coverage/evaluability gates. Its protected-data package is
+  complete. Milestone 7 baseline evaluation is implemented for aggregate
   coverage, deterministic random, global-popularity, condition-popularity,
   linear, and XGBoost baselines; validation winner frozen as `xgboost` and
   final-mode held-out MIMIC test metrics are recorded in
@@ -44,8 +43,12 @@ The repository is currently in the data-foundation and architecture stage.
   tooling is implemented and the protected-data graph gate passed for
   graph-ablation readiness. Milestone 8B graph-aware ablation tooling is
   implemented for graph-only XGBoost, graph-augmented XGBoost, late fusion, and
-  simple ensemble comparisons against the frozen XGBoost reference; protected
-  Milestone 8B ablation runs are still pending.
+  simple ensemble comparisons against the frozen XGBoost reference. The
+  protected Phase 8 P0 Milestone 8B run failed the required +0.005 NDCG@10
+  lift, so frozen XGBoost remains canonical. A gate-first contract audit and
+  rank-aware structured recovery runner are implemented; their protected-data
+  run is pending, and no neural dependency or Transformer-GNN trainer has been
+  added.
 - Focused synthetic tests cover the current source-inventory, cohort,
   profiling, EDA-summary, extraction, and Milestone 5 harmonization contracts.
   Additional synthetic tests cover Milestone 6 temporal cutoffs, censoring,
@@ -355,6 +358,19 @@ Milestone 8B writes local row-level scores and model artifacts under ignored
 `reports/milestone8b_ablation_evaluation.json`, and
 `reports/milestone8b_frozen_selection.json`. It is a graph-aware ablation gate,
 not validated clinical recommendation behavior or full Transformer-GNN training.
+
+Audit and attempt rank-aware Stage 1 recovery on the Phase 8 P0 package with:
+
+```bash
+scripts/calculco/submit_phase8_p0_gate_recovery.sh development
+```
+
+This CPU-only OAR path first creates or verifies
+`reports/phase8_p0_training_contract_lock.json`, performs all feature and
+fusion selection on patient-grouped MIMIC-train folds, and evaluates one locked
+candidate on validation. Final MIMIC test mode is blocked unless the recovery
+selection clears the gate. The command is documented here but no job is
+submitted automatically.
 
 Do not use `pip`, Poetry, Conda, global Python, or system site-packages.
 

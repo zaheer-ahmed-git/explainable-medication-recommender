@@ -7,7 +7,7 @@ target research architecture.
 
 ## Current State
 
-As of 2026-07-16, the active repository contains research documents,
+As of 2026-07-21, the active repository contains research documents,
 configuration, local licensed datasets, an ignored synthetic prototype,
 metadata-only source inventory, and adult ICU/unit-stay cohort materialization.
 The active `pipeline/` provides configuration, safe path/header inspection,
@@ -34,7 +34,12 @@ materializes a model-ready cohort, normalized patient query subgraphs from
 train-fit concept edges, train-derived vocabularies, and a schema-only package
 dictionary with consistent upstream feature-version inference. Full
 Transformer/GNN neural models and clinical recommendations are not yet
-implemented in the active working tree.
+implemented in the active working tree. The gate-first modeling boundary is
+implemented by `pipeline.training_contract`, which locks aggregate manifests,
+schemas, row counts, fit scope, and temporal/split invariants, and
+`pipeline.gate_recovery`, which selects a rank-aware XGBoost recovery candidate
+using only patient-grouped MIMIC-train folds. The protected recovery run is
+pending; validation and test remain fail-closed behind the recorded gates.
 
 The legacy prototype demonstrates useful conventions such as:
 
@@ -188,6 +193,13 @@ safety, calibration, and external validation over these baselines.
 The current Milestone 8B implementation is an intermediate graph-aware ablation
 gate using existing DuckDB, scikit-learn, and XGBoost dependencies. It does not
 add a neural framework or claim a full hybrid model.
+
+The subsequent Stage 1 recovery layer preserves the same score schema and
+authoritative metrics. It locks training inputs before fitting, excludes
+zero-positive ranking groups from fitting while reporting their aggregate
+coverage, and permits a single validation evaluation only after all feature,
+hyperparameter, and late-fusion choices are frozen on MIMIC-train folds. Neural
+components and PyTorch are conditional on that validation gate passing.
 
 ## Hybrid Model
 

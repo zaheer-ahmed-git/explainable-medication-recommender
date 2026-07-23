@@ -28,6 +28,13 @@ candidates, future-event exclusion, bounded source-stay hash materialization,
 integer-encoded relation-specific edge joins, independent join sharding,
 temporary-part cleanup, normalized vocabulary outputs, schema-only data
 dictionaries, and eICU coverage-only claim blocking.
+Gate-first Stage 1 tests cover immutable contract metadata, pinned versions,
+unsafe-column rejection, temporal and medication leakage, patient-fold
+isolation, positive-group negative sampling, authoritative ranking-metric
+parity, OOF fusion, changed-lock detection, and final-mode blocking. The
+protected recovery run remains an HPC verification step. Neural loader,
+sequence, loss, and graph-tensor tests remain conditional because Stage 2 is
+not implemented.
 The Phase 4-9 visualization generator has a focused synthetic test that verifies
 aggregate-only meeting-pack generation without raw clinical rows.
 
@@ -72,6 +79,7 @@ uv run pytest tests/test_patient_subgraphs.py tests/test_model_ready_package.py
 uv run pytest tests/test_config.py tests/test_graph_ablation.py
 uv run pytest tests/test_feature_gate_review.py tests/test_features.py \
   tests/test_milestone7_baselines.py tests/test_graph_ablation.py
+uv run pytest tests/test_training_contract.py tests/test_gate_recovery.py
 uv run pytest tests/test_phase4_to_9_visualization.py
 uv run pytest tests/test_condition_normalization.py
 uv run pytest tests/test_condition_mapping_builder.py
@@ -175,3 +183,11 @@ gate-review behavior. Protected-data completion requires the successful
 `scripts/calculco/phase8_p0_model_ready.sh` OAR chain, an aggregate final
 package manifest with all required artifacts, and no promotion until
 `reports/phase8_p0_feature_gate_review.json` passes.
+
+Gate-recovery Stage 1 additionally requires contract-lock drift checks,
+declared-versus-actual row counts, safe model projections, aggregate-only
+reports, train-only patient-fold selection, group-preserving sampling, metric
+parity, OOF-only fusion selection, one-shot validation, and final/test
+blocking. Protected completion requires the CPU OAR development run and a
+reviewed `reports/phase8_p0_gate_recovery_selection.json`; it does not imply
+that the gate passed or authorize Stage 2.

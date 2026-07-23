@@ -6,7 +6,7 @@ This roadmap turns the research architecture into a sequence of verifiable
 data and modeling milestones. It supersedes status assumptions in older plans
 when they conflict with the current working tree.
 
-Last reviewed: 2026-07-11.
+Last reviewed: 2026-07-21.
 
 ## Current Baseline
 
@@ -30,9 +30,9 @@ observed-label ranking-table builders are implemented with synthetic tests and
 protected-data materialization. Milestone 7 baseline evaluation is implemented
 through learned linear and XGBoost baselines with frozen validation selection.
 Milestone 8 graph-readiness tooling is implemented for train-only concept-level
-graph artifacts and aggregate suitability reports; protected-data graph
-materialization and graph neural models remain pending. The ignored
-`DepreciatedCode/` prototype supplies historical conventions for candidate
+graph artifacts and aggregate suitability reports; protected graph
+materialization is complete, while graph neural models remain pending. The
+ignored `DepreciatedCode/` prototype supplies historical conventions for candidate
 generation, patient-level splitting, baseline ranking, and ranking metrics.
 
 ## Locked Research Direction
@@ -695,11 +695,12 @@ Exit gate:
 
 ## Milestone 8B: Graph-Aware Ablation Gate
 
-Status: implemented for code and synthetic tests; protected-data ablation runs
-are pending. This milestone uses the passed Milestone 8 graph gate and the
-frozen Milestone 7 XGBoost reference to evaluate whether graph-derived features
-or fusion provide enough held-out validation lift to justify deeper neural
-GNN/Transformer work.
+Status: implemented and evaluated on the protected Phase 8 P0 package. The
+best graph-augmented lift was about +0.0019 NDCG@10, below the required +0.005,
+so frozen XGBoost was retained. This milestone uses the passed Milestone 8
+graph gate and the frozen Milestone 7 XGBoost reference to evaluate whether
+graph-derived features or fusion provide enough held-out validation lift to
+justify deeper neural GNN/Transformer work.
 
 Implemented command:
 
@@ -776,6 +777,29 @@ Execution order:
 CodexPLAN Step 9 here means the model-ready artifact rebuild. It is unrelated
 to Roadmap Milestone 9 grounded explanation.
 
+### Gate-First Structured Recovery
+
+Status: Stage 1 implementation and synthetic verification complete;
+protected-data OAR execution pending. Stage 2 neural implementation is blocked
+by the failed lift gate.
+
+- `pipeline.training_contract` writes an aggregate lock for the four pinned
+  versions, completed upstream manifests, file/schema/count metadata,
+  patient-level split integrity, train-only fit scope, and temporal/label
+  boundaries.
+- `pipeline.gate_recovery` screens the locked condition caps, graph support
+  thresholds and families, candidate-rank ablation, four ranker
+  hyperparameter configurations, and train-OOF late fusion using deterministic
+  three-fold patient grouping.
+- A single locked candidate is compared on MIMIC validation with Phase 8 P0
+  `xgboost_frozen_reference` (`0.374899` NDCG@10; six-decimal target
+  `0.379899`) and MRR/Hit guardrails. Test scoring is fail-closed until pass.
+- `scripts/calculco/submit_phase8_p0_gate_recovery.sh` is CPU-only and uses
+  configured scratch through `common.sh`. It has not been submitted as part of
+  implementation.
+- PyTorch, neural loaders, Transformer/GNN models, and GPU wrappers must not be
+  added until the Stage 1 selection report authorizes them.
+
 ## Milestone 9: Grounded Explanation
 
 Status: not started.
@@ -837,6 +861,7 @@ did not. The next tasks are:
 2. Prioritize cheaper lifts: medication-mapping coverage (including the ATC-3
    eICU-evaluable path), condition-feature redesign after
    `reject_inconclusive`, and targeted feature ablations under the same metric
-   gate.
+   gate. The implemented rank-aware Stage 1 recovery is the next bounded
+   protected-data experiment.
 3. Keep pooled MIMIC/eICU training, full Transformer-GNN claims, and clinical
    recommendation claims disabled until reviewed evidence justifies them.

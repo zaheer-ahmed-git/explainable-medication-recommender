@@ -6,6 +6,15 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ### Added
 
+- Gate-first Phase 8 P0 Stage 1 implementation: `pipeline.training_contract`
+  locks pinned versions, aggregate manifest hashes, artifact metadata/schemas,
+  row counts, fit scope, split integrity, and temporal-label boundaries;
+  `pipeline.gate_recovery` performs patient-fold rank-aware XGBoost screening,
+  train-OOF fusion selection, one-shot validation gating, and fail-closed final
+  scoring using the existing baseline score schema and metrics. Added focused
+  synthetic tests and CPU-only Calculco submit/worker wrappers. PyTorch and
+  neural training remain intentionally absent until the gate passes.
+
 - CodexPLAN Step 10 graph/hybrid readiness review on the Phase 8 P0 stack:
   `Documentation/CodexPLANStep10GraphHybridReadiness.md` and aggregate
   `reports/codexplan_step10_graph_hybrid_readiness.json`. Graph structure gate
