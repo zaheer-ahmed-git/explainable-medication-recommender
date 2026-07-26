@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -13,6 +14,10 @@ def sql_literal(value: object) -> str:
         return "NULL"
     if isinstance(value, bool):
         return "TRUE" if value else "FALSE"
+    if isinstance(value, float) and not math.isfinite(value):
+        if math.isnan(value):
+            return "'nan'::DOUBLE"
+        return "'inf'::DOUBLE" if value > 0 else "'-inf'::DOUBLE"
     if isinstance(value, int | float):
         return str(value)
     return "'" + str(value).replace("'", "''") + "'"

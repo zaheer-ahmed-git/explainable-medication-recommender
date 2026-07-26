@@ -12,6 +12,7 @@ from pipeline.gate_recovery import (
     GateRecoveryConfig,
     RankerHyperparameters,
     RecoveryExperiment,
+    _ranking_metrics_from_source,
     cross_validate_ranker,
     gate_decision,
     patient_fold_sql,
@@ -20,6 +21,7 @@ from pipeline.gate_recovery import (
     recovery_frame_query,
     resolve_recovery_feature_spec,
     select_oof_fusion_weight,
+    select_oof_fusion_weight_duckdb,
 )
 from pipeline.learned_baselines import LearnedFeatureSpec
 from tests.milestone6_helpers import write_parquet_rows
@@ -305,6 +307,87 @@ def test_oof_fusion_prefers_candidate_when_candidate_is_better() -> None:
 
     assert selection["status"] == "selected_from_mimic_train_oof"
     assert selection["selected_candidate_weight"] > 0.5
+
+
+def test_duckdb_ranking_metrics_match_pandas_helper(tmp_path: Path) -> None:
+    frame = pd.DataFrame(
+        {
+            "source": ["mimiciv"] * 5,
+            "split": ["train"] * 5,
+            "ranking_group_id": ["g1", "g1", "g1", "g2", "g2"],
+            "index_condition_token": ["condition:a"] * 5,
+            "candidate_medication_token": ["a", "b", "c", "d", "e"],
+            "candidate_rank": [1, 2, 3, 1, 2],
+            "label_prescribed": [True, False, True, False, True],
+            "score": [0.9, 0.2, 0.8, 0.1, 0.7],
+        }
+    )
+    score_path = tmp_path / "oof" / "fold_0.parquet"
+    score_path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_parquet(score_path, index=False)
+    expected = ranking_metrics_at_k(frame, k=2)
+
+    with duckdb.connect(database=":memory:") as connection:
+        actual = _ranking_metrics_from_source(
+            connection,
+            source_sql=f"SELECT * FROM read_parquet('{score_path}')",
+            score_expr="score",
+            k=2,
+        )
+
+    for metric in (
+        "precision_at_k",
+        "recall_at_k",
+        "hit_rate_at_k",
+        "ndcg_at_k",
+        "mrr_at_k",
+    ):
+        assert actual[metric] == pytest.approx(expected[metric])
+    assert (
+        actual["positive_ranking_group_count"]
+        == expected["positive_ranking_group_count"]
+    )
+
+
+def test_duckdb_fusion_matches_pandas_fusion(tmp_path: Path) -> None:
+    metadata = {
+        "source": ["mimiciv"] * 4,
+        "split": ["train"] * 4,
+        "ranking_group_id": ["g1", "g1", "g2", "g2"],
+        "index_condition_token": ["condition:a"] * 4,
+        "candidate_medication_token": ["a", "b", "a", "b"],
+        "candidate_rank": [1, 2, 1, 2],
+        "label_prescribed": [True, False, True, False],
+    }
+    candidate = pd.DataFrame({**metadata, "score": [0.9, 0.1, 0.8, 0.2]})
+    reference = pd.DataFrame({**metadata, "score": [0.1, 0.9, 0.2, 0.8]})
+
+    candidate_dir = tmp_path / "candidate_oof"
+    reference_dir = tmp_path / "reference_oof"
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    reference_dir.mkdir(parents=True, exist_ok=True)
+    candidate.to_parquet(candidate_dir / "fold_0.parquet", index=False)
+    reference.to_parquet(reference_dir / "fold_0.parquet", index=False)
+
+    config = GateRecoveryConfig(evaluation_root=tmp_path / "evaluation")
+    config.cache_root.mkdir(parents=True, exist_ok=True)
+
+    expected = select_oof_fusion_weight(candidate, reference)
+    with duckdb.connect(database=":memory:") as connection:
+        actual = select_oof_fusion_weight_duckdb(
+            connection,
+            config,
+            candidate_dir=candidate_dir,
+            reference_dir=reference_dir,
+        )
+
+    assert actual["selected_candidate_weight"] == pytest.approx(
+        expected["selected_candidate_weight"]
+    )
+    assert actual["selected_metrics"]["ndcg_at_k"] == pytest.approx(
+        expected["selected_metrics"]["ndcg_at_k"]
+    )
+    assert actual["selected_candidate_weight"] > 0.5
 
 
 def test_final_mode_is_blocked_without_passing_frozen_selection(

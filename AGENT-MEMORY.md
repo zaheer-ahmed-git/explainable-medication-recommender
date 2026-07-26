@@ -94,14 +94,57 @@ task context, source-code inspection, or local agent memory.
   Phase 8 P0 stack in
   `Documentation/CodexPLANStep10GraphHybridReadiness.md` and
   `reports/codexplan_step10_graph_hybrid_readiness.json`: structure gate
-  `pass_for_graph_ablation`, Milestone 8B hybrid lift fails, frozen XGBoost
-  retained; neural Transformer-GNN training is not authorized yet.
+  `pass_for_graph_ablation`, Milestone 8B hybrid lift failed at that review
+  (frozen XGBoost retained). Subsequent Stage 1 gate recovery superseded that
+  authorization block.
 - Gate-first Phase 8 P0 Stage 1 is implemented in `pipeline.training_contract`
-  and `pipeline.gate_recovery`, with a CPU-only OAR wrapper and synthetic
-  tests. Its protected-data run is pending. The contract lock is aggregate
-  only; structured model selection uses MIMIC-train patient folds, and MIMIC
-  test remains blocked until validation clears the +0.005 NDCG@10 gate. No
-  PyTorch or neural training surface has been added.
+  and `pipeline.gate_recovery`. Protected development completed: frozen
+  `xgboost_rank_ndcg_oof_late_fusion` (validation NDCG@10 ≈ `0.394607`) with
+  `neural_training_authorized=true`. The contract lock is aggregate only;
+  structured selection used MIMIC-train patient folds. Optional Stage 1 final
+  MIMIC test scoring remains available when requested.
+- Stage 2 neural training is implemented in the `pipeline.neural_training`
+  subpackage (`config`, `contract`, `data`, `dataset`, `model`, `losses`,
+  `metrics`, `train`, `score`, `__main__`) as a `prepare`/`train`/`score` CLI
+  with `development` and `final` modes. It trains the Transformer
+  patient/context branch only; the GNN branch and joint fusion head are still
+  planned. PyTorch is an optional `neural` dependency group in `pyproject.toml`,
+  imported lazily so `config`, `contract`, `data`, `metrics`, and CLI parsing
+  work without torch. Every stage is fail-closed: it verifies
+  `reports/phase8_p0_training_contract_lock.json` and requires
+  `neural_training_authorized=true` in
+  `reports/phase8_p0_gate_recovery_selection.json` (bypass only via
+  `require_neural_gate=False` for synthetic smoke tests). The neural gate bar
+  is the Stage 1 winner (default scores
+  `.../evaluation/gate_recovery/baseline_scores.parquet`, baseline name
+  `xgboost_rank_ndcg_oof_late_fusion`), not Milestone 8B `0.374899`; fail
+  decision is `retain_structured_recovery_baseline`. Caches, vocabularies,
+  checkpoints, predictions, and row-level scores stay ignored under
+  `Dataset/processed/phase8_p0/neural/`; aggregate reports are
+  `reports/phase8_p0_neural_prepare_manifest.json`,
+  `reports/phase8_p0_neural_training_evaluation.json`,
+  `reports/phase8_p0_neural_score_evaluation.json`, and
+  `reports/phase8_p0_neural_training_selection.json`. Reserved vocabulary tokens
+  are `PAD=0`/`UNK=1` (indices offset by 2); numeric/event-value normalization and
+  candidate priors are train-only; the primary seed is 20260617. Experiment
+  `phase8-p0-neural-transformer-v2` adds a numeric MLP, learned PE, dual-path
+  scorer, train-fit priors/`log1p(candidate_rank)`, and warmup+cosine AdamW;
+  rerun `prepare` after upgrading. The GPU OAR wrapper is
+  `scripts/calculco/phase8_p0_neural_training.sh` (installs the `neural` group).
+  The first protected development run (v1) completed but failed the neural gate
+  (best epoch 0, NDCG@10 ≈ 0.3747 vs Stage 1 ≈ 0.3946).
+- `pipeline.gate_recovery` development mode is memory-bounded after OAR jobs
+  28134/28215 were OOM-killed (exit 137): the earlier code scored every
+  screening fold against the full ~25.7M-row universe and built both candidate
+  and reference OOF plus the fusion search in pandas. Now screening runs on the
+  deterministic train sample; the locked finalist, reference OOF, and validation
+  gate use the full universe streamed to narrow Parquet one fold at a time; and
+  the fusion-weight search runs in DuckDB. It logs stage progress and peak RSS,
+  writes a contract-keyed `screening_checkpoint.json` for resume, and the worker
+  defaults to `DUCKDB_THREADS=8` / `DUCKDB_MEMORY_LIMIT=24GB` (DuckDB's ceiling
+  does not cover pandas/sklearn/XGBoost, so keep it below the node budget) with
+  `MALLOC_ARENA_MAX=2`. Screening selection is sample-based; the gate metric and
+  fail-closed contract are unchanged.
 - `pipeline/graph_suitability.py` implements Milestone 8 graph-readiness:
   train-only concept-level graph edges under
   `Dataset/processed/graph/milestone8/`, aggregate schema/suitability/ablation
@@ -122,14 +165,16 @@ task context, source-code inspection, or local agent memory.
   `harmonize.sh`, `profile_tables.sh` (full source-table re-profile),
   `features.sh`, `build_training_table.sh`, `evaluate_baselines.sh`,
   `submit_evaluate_baselines.sh`, `graph_suitability.sh`,
-  `graph_ablation.sh`, `submit_graph_ablation.sh`, and the `milestone6.sh`
-  chain.
+  `graph_ablation.sh`, `submit_graph_ablation.sh`, the `milestone6.sh`
+  chain, and the GPU `phase8_p0_neural_training.sh` Stage 2 wrapper.
 - `pipeline.profile_tables` rewrites the entire `reports/quality_profile.json`;
   re-profile all tables (not a `--table` subset) so extraction gate entries are
   preserved.
-- Sepsis sub-cohort extraction, detailed EDA notebooks, graph neural models, and
-  hybrid Transformer-GNN training are not yet implemented. A reproducible sepsis definition and
-  index-condition policy are proposed for approval in
+- Sepsis sub-cohort extraction, detailed EDA notebooks, the GNN relation branch,
+  and the joint Transformer-GNN fusion head are not yet implemented; the
+  Transformer patient/context branch is implemented in `pipeline.neural_training`
+  (gated). A reproducible sepsis definition and index-condition policy are
+  proposed for approval in
   `Documentation/SepsisCohortAndIndexConditionPolicy.md`.
 - `DepreciatedCode/` contains the ignored synthetic prototype.
 - The prototype includes preprocessing, deterministic patient splitting,
@@ -171,6 +216,11 @@ task context, source-code inspection, or local agent memory.
   shards for edges/candidates. Tune `SUBGRAPH_JOIN_SHARDS` upward for join
   failures; tune `SUBGRAPH_BATCHES` only for node failures. OAR scratch selection
   prefers `WORK_SCRATCH`, then `/scratch`, before `/tmp`.
+- Neural GPU OAR: `/nodes=1/gpu=1` alone can still land on CPU hosts (chimay01).
+  Require `#OAR -p gpudevice<>'-1'` (mirror of CPU `gpudevice='-1'`). Do not wrap
+  that `-p` expression in extra double quotes inside `#OAR` lines — `oarsub -S`
+  then fails immediately with "There are not enough resources" / `OAR_JOB_ID=-5`.
+  CLI `-p "…"` is fine; the `#OAR` script form is not.
 
 ## Do Not Do
 

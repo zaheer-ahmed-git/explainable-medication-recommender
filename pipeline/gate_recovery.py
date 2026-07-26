@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
+import logging
 import math
 import subprocess
+import time
+import warnings
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +23,11 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import xgboost as xgb
+
+try:  # ``resource`` is POSIX-only; the runner targets Linux Calculco nodes.
+    import resource
+except ImportError:  # pragma: no cover - non-POSIX fallback
+    resource = None  # type: ignore[assignment]
 
 from pipeline.config import (
     DUCKDB_MEMORY_LIMIT,
@@ -120,6 +129,52 @@ METADATA_COLUMNS = (
     "candidate_rank",
     "label_prescribed",
 )
+
+SCREENING_CHECKPOINT_VERSION = "phase8-p0-gate-recovery-screening-checkpoint-v1"
+
+logger = logging.getLogger("pipeline.gate_recovery")
+
+
+def _configure_logging() -> None:
+    """Emit progress to stdout without clobbering an existing root config."""
+
+    if not logging.getLogger().handlers:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s pipeline.gate_recovery %(message)s",
+        )
+    logger.setLevel(logging.INFO)
+
+
+def _peak_rss_gib() -> float:
+    """Return peak resident set size in GiB (0.0 when unavailable)."""
+
+    if resource is None:
+        return 0.0
+    # Linux reports ``ru_maxrss`` in kilobytes.
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024.0 * 1024.0)
+
+
+def _log_stage(message: str, *, started: float | None = None) -> None:
+    """Log a progress message annotated with peak RSS and optional elapsed time."""
+
+    suffix = "" if started is None else f" elapsed={time.monotonic() - started:.1f}s"
+    logger.info("%s peak_rss=%.2fGiB%s", message, _peak_rss_gib(), suffix)
+
+
+def _silence_all_null_imputation_warning() -> None:
+    """Drop the repeated all-null median-imputation warning so logs stay readable.
+
+    Some folds have a lab column (e.g. platelets) with no observed value; sklearn
+    warns once per fit. The behaviour is correct (the column is skipped) but the
+    warning otherwise floods the OAR error log and hides real progress lines.
+    """
+
+    warnings.filterwarnings(
+        "ignore",
+        message="Skipping features without any observed values",
+        category=UserWarning,
+    )
 
 
 @dataclass(frozen=True)
@@ -1100,6 +1155,227 @@ def select_oof_fusion_weight(
     }
 
 
+def _oof_scan(directory: Path) -> str:
+    """Return a DuckDB scan over every fold Parquet file in ``directory``."""
+
+    return f"read_parquet({sql_string(str(directory / '*.parquet'))})"
+
+
+def _ranking_metrics_sql(*, source_sql: str, score_expr: str, k: int) -> str:
+    """Return single-slice ranking metrics matching ``ranking_metric_query``.
+
+    The window sorts and the ideal-DCG subquery mirror
+    ``pipeline.evaluate_baselines.ranking_metric_query`` so DuckDB metrics stay
+    numerically consistent with the pandas ``ranking_metrics_at_k`` helper.
+    """
+
+    return f"""
+WITH src AS (
+{source_sql}
+),
+ranked AS (
+    SELECT
+        ranking_group_id,
+        CASE WHEN label_prescribed THEN 1 ELSE 0 END AS label_int,
+        ROW_NUMBER() OVER (
+            PARTITION BY ranking_group_id
+            ORDER BY {score_expr} DESC, candidate_rank, candidate_medication_token
+        ) AS rank_position,
+        COUNT(*) OVER (PARTITION BY ranking_group_id) AS group_size,
+        SUM(CASE WHEN label_prescribed THEN 1 ELSE 0 END) OVER (
+            PARTITION BY ranking_group_id
+        ) AS group_positive_count
+    FROM src
+),
+group_metrics AS (
+    SELECT
+        ranking_group_id,
+        MIN(group_size) AS group_size,
+        MIN(group_positive_count) AS group_positive_count,
+        SUM(CASE WHEN rank_position <= {k} AND label_int = 1 THEN 1 ELSE 0 END)
+            AS hits_at_k,
+        SUM(CASE
+            WHEN rank_position <= {k} AND label_int = 1
+                THEN 1.0 / LOG(2, rank_position + 1)
+            ELSE 0.0
+        END) AS dcg_at_k,
+        MAX(CASE
+            WHEN rank_position <= {k} AND label_int = 1
+                THEN 1.0 / rank_position
+            ELSE 0.0
+        END) AS reciprocal_rank_at_k
+    FROM ranked
+    GROUP BY ranking_group_id
+),
+positive_group_metrics AS (
+    SELECT
+        *,
+        (
+            SELECT SUM(1.0 / LOG(2, rank_value + 1))
+            FROM range(
+                1,
+                CAST(LEAST(group_positive_count, {k}) AS BIGINT) + 1
+            ) AS ideal(rank_value)
+        ) AS ideal_dcg_at_k
+    FROM group_metrics
+    WHERE group_positive_count > 0
+)
+SELECT
+    COUNT(*) AS positive_ranking_group_count,
+    AVG(hits_at_k::DOUBLE / LEAST({k}, group_size)) AS precision_at_k,
+    AVG(hits_at_k::DOUBLE / group_positive_count) AS recall_at_k,
+    AVG(CASE WHEN hits_at_k > 0 THEN 1.0 ELSE 0.0 END) AS hit_rate_at_k,
+    AVG(CASE
+        WHEN ideal_dcg_at_k > 0 THEN dcg_at_k / ideal_dcg_at_k
+        ELSE NULL
+    END) AS ndcg_at_k,
+    AVG(reciprocal_rank_at_k) AS mrr_at_k
+FROM positive_group_metrics
+"""
+
+
+def _ranking_metrics_from_source(
+    connection: duckdb.DuckDBPyConnection,
+    *,
+    source_sql: str,
+    score_expr: str,
+    k: int = SELECTION_K,
+) -> dict[str, float | int]:
+    """Compute aggregate ranking metrics for one score source via DuckDB."""
+
+    row = connection.execute(
+        _ranking_metrics_sql(source_sql=source_sql, score_expr=score_expr, k=k)
+    ).fetchone()
+    columns = (
+        "positive_ranking_group_count",
+        "precision_at_k",
+        "recall_at_k",
+        "hit_rate_at_k",
+        "ndcg_at_k",
+        "mrr_at_k",
+    )
+    values = row if row is not None else (0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    metrics: dict[str, float | int] = {}
+    for name, value in zip(columns, values, strict=True):
+        if name == "positive_ranking_group_count":
+            metrics[name] = int(value or 0)
+        else:
+            metrics[name] = float(value or 0.0)
+    return metrics
+
+
+def _fusion_base_query(candidate_dir: Path, reference_dir: Path) -> str:
+    """Return the rank-normalized candidate/reference join used for fusion.
+
+    The 0-based rank and group-size normalization reproduce the pandas
+    ``_rank_normalized`` helper so DuckDB fusion selects the same weight the
+    in-memory path would.
+    """
+
+    keys = ", ".join(METADATA_COLUMNS)
+    return f"""
+WITH candidate AS (
+    SELECT {keys}, score AS cand_score
+    FROM {_oof_scan(candidate_dir)}
+),
+reference AS (
+    SELECT {keys}, score AS ref_score
+    FROM {_oof_scan(reference_dir)}
+),
+paired AS (
+    SELECT
+        candidate.ranking_group_id,
+        candidate.candidate_rank,
+        candidate.candidate_medication_token,
+        candidate.label_prescribed,
+        candidate.cand_score,
+        reference.ref_score
+    FROM candidate
+    INNER JOIN reference USING ({keys})
+),
+normed AS (
+    SELECT
+        ranking_group_id,
+        candidate_rank,
+        candidate_medication_token,
+        label_prescribed,
+        ROW_NUMBER() OVER (
+            PARTITION BY ranking_group_id
+            ORDER BY cand_score DESC, candidate_rank, candidate_medication_token
+        ) - 1 AS cand_rank0,
+        ROW_NUMBER() OVER (
+            PARTITION BY ranking_group_id
+            ORDER BY ref_score DESC, candidate_rank, candidate_medication_token
+        ) - 1 AS ref_rank0,
+        COUNT(*) OVER (PARTITION BY ranking_group_id) AS group_size
+    FROM paired
+)
+SELECT
+    ranking_group_id,
+    candidate_rank,
+    candidate_medication_token,
+    label_prescribed,
+    CASE
+        WHEN group_size > 1 THEN 1.0 - cand_rank0::DOUBLE / (group_size - 1)
+        ELSE 1.0
+    END AS cand_norm,
+    CASE
+        WHEN group_size > 1 THEN 1.0 - ref_rank0::DOUBLE / (group_size - 1)
+        ELSE 1.0
+    END AS ref_norm
+FROM normed
+"""
+
+
+def select_oof_fusion_weight_duckdb(
+    connection: duckdb.DuckDBPyConnection,
+    config: GateRecoveryConfig,
+    *,
+    candidate_dir: Path,
+    reference_dir: Path,
+) -> dict[str, Any]:
+    """Choose a fusion weight from streamed OOF Parquet without pandas merges.
+
+    The rank-normalized base is materialized once to Parquet, then each weight is
+    scored with a bounded single-slice aggregate query so the full train universe
+    never enters Python memory.
+    """
+
+    base_path = config.cache_root / "fusion_base.parquet"
+    copy_query_to_parquet(
+        connection,
+        _fusion_base_query(candidate_dir, reference_dir),
+        base_path,
+    )
+    base_source = f"SELECT * FROM {parquet_scan(base_path)}"
+    candidates: list[dict[str, Any]] = []
+    for weight in FUSION_WEIGHT_GRID:
+        score_expr = f"({weight} * cand_norm + {1.0 - weight} * ref_norm)"
+        metrics = _ranking_metrics_from_source(
+            connection,
+            source_sql=base_source,
+            score_expr=score_expr,
+            k=SELECTION_K,
+        )
+        candidates.append({"candidate_weight": float(weight), **metrics})
+    selected = sorted(
+        candidates,
+        key=lambda row: (
+            -float(row["ndcg_at_k"]),
+            -float(row["mrr_at_k"]),
+            -float(row["hit_rate_at_k"]),
+            -float(row["candidate_weight"]),
+        ),
+    )[0]
+    return {
+        "status": "selected_from_mimic_train_oof",
+        "selected_candidate_weight": float(selected["candidate_weight"]),
+        "selection_k": SELECTION_K,
+        "selected_metrics": selected,
+        "candidates": candidates,
+    }
+
+
 def _load_frame(
     connection: duckdb.DuckDBPyConnection,
     query: str,
@@ -1515,6 +1791,217 @@ def _hyperparameters_from_dict(payload: dict[str, Any]) -> RankerHyperparameters
     return RankerHyperparameters(**payload)
 
 
+def _write_oof_parquet(frame: pd.DataFrame, output_path: Path) -> int:
+    """Write a narrow (metadata + score) out-of-fold score file."""
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    columns = [*METADATA_COLUMNS, "score"]
+    table = pa.Table.from_pandas(frame.loc[:, columns], preserve_index=False)
+    pq.write_table(table, output_path)
+    return int(len(frame))
+
+
+def _clear_oof_dir(directory: Path) -> None:
+    """Remove stale fold files so a rerun does not mix score generations."""
+
+    directory.mkdir(parents=True, exist_ok=True)
+    for stale in directory.glob("*.parquet"):
+        stale.unlink()
+
+
+def _load_full_fold_scoring(
+    connection: duckdb.DuckDBPyConnection,
+    config: GateRecoveryConfig,
+    experiment: RecoveryExperiment,
+    feature_spec: LearnedFeatureSpec,
+    fold_id: int,
+) -> pd.DataFrame:
+    """Load one held-out fold of the full candidate universe (bounded memory)."""
+
+    base = recovery_frame_query(
+        config,
+        experiment,
+        feature_spec,
+        split="train",
+        sampled=False,
+    )
+    frame = connection.execute(
+        f"SELECT * FROM (\n{base}\n) AS full_frame "
+        f"WHERE patient_fold_id = {int(fold_id)}"
+    ).fetchdf()
+    if frame.empty:
+        raise ValueError(f"patient fold {fold_id} has no scoring rows")
+    return frame
+
+
+def _stream_ranker_oof(
+    connection: duckdb.DuckDBPyConnection,
+    config: GateRecoveryConfig,
+    experiment: RecoveryExperiment,
+    feature_spec: LearnedFeatureSpec,
+    hyperparameters: RankerHyperparameters,
+    train_sample: pd.DataFrame,
+    *,
+    seed: int,
+    fold_count: int,
+    output_dir: Path,
+) -> dict[str, Any]:
+    """Fit each fold on the sample and stream full-universe OOF scores to Parquet.
+
+    Models are fit on the deterministic sample (as in screening) and scored on
+    the full held-out fold, one fold at a time, so the concatenated OOF universe
+    never lives in Python memory.
+    """
+
+    _clear_oof_dir(output_dir)
+    fold_rows: list[dict[str, Any]] = []
+    best_rounds: list[int] = []
+    for fold_id in range(fold_count):
+        fit_rows = train_sample[train_sample["patient_fold_id"] != fold_id]
+        if fit_rows.empty:
+            raise ValueError(f"patient fold {fold_id} has no fit rows")
+        heldout = _load_full_fold_scoring(
+            connection,
+            config,
+            experiment,
+            feature_spec,
+            fold_id,
+        )
+        model, _preprocessor, rounds, raw_scores = _fit_ranker_fold(
+            fit_rows,
+            heldout,
+            feature_spec,
+            hyperparameters,
+            seed=seed + fold_id,
+        )
+        scored = _score_frame(heldout, raw_scores)
+        scoring_row_count = int(len(scored))
+        fold_path = output_dir / f"fold_{fold_id}.parquet"
+        _write_oof_parquet(scored, fold_path)
+        fold_metrics = _ranking_metrics_from_source(
+            connection,
+            source_sql=f"SELECT * FROM {parquet_scan(fold_path)}",
+            score_expr="score",
+        )
+        fold_rows.append(
+            {
+                "fold_id": fold_id,
+                "fit_row_count": int(len(fit_rows)),
+                "scoring_row_count": scoring_row_count,
+                "best_boost_rounds": rounds,
+                **fold_metrics,
+            }
+        )
+        best_rounds.append(rounds)
+        _log_stage(
+            f"finalist OOF fold {fold_id} "
+            f"ndcg@10={float(fold_metrics['ndcg_at_k']):.6f}"
+        )
+        del heldout, scored, raw_scores, model, _preprocessor
+        gc.collect()
+    return {
+        "experiment_name": experiment.name,
+        "experiment": asdict(experiment),
+        "hyperparameters": asdict(hyperparameters),
+        "feature_count": len(feature_spec.model_columns),
+        "mean_ndcg_at_10": float(np.mean([row["ndcg_at_k"] for row in fold_rows])),
+        "mean_mrr_at_10": float(np.mean([row["mrr_at_k"] for row in fold_rows])),
+        "mean_hit_rate_at_10": float(
+            np.mean([row["hit_rate_at_k"] for row in fold_rows])
+        ),
+        "median_best_boost_rounds": int(median(best_rounds)),
+        "folds": fold_rows,
+    }
+
+
+def _stream_reference_oof(
+    connection: duckdb.DuckDBPyConnection,
+    config: GateRecoveryConfig,
+    experiment: RecoveryExperiment,
+    feature_spec: LearnedFeatureSpec,
+    train_sample: pd.DataFrame,
+    *,
+    seed: int,
+    fold_count: int,
+    output_dir: Path,
+) -> None:
+    """Stream fold-matched binary reference OOF scores to Parquet."""
+
+    _clear_oof_dir(output_dir)
+    for fold_id in range(fold_count):
+        fit_rows = train_sample[train_sample["patient_fold_id"] != fold_id]
+        if fit_rows.empty:
+            raise ValueError(f"reference fold {fold_id} has no fit rows")
+        heldout = _load_full_fold_scoring(
+            connection,
+            config,
+            experiment,
+            feature_spec,
+            fold_id,
+        )
+        scores = _fit_binary_reference_fold(
+            fit_rows,
+            heldout,
+            feature_spec,
+            seed=seed + fold_id,
+        )
+        scored = _score_frame(heldout, scores)
+        _write_oof_parquet(scored, output_dir / f"fold_{fold_id}.parquet")
+        _log_stage(f"reference OOF fold {fold_id} rows={len(scored)}")
+        del heldout, scored, scores
+        gc.collect()
+
+
+def _screening_checkpoint_path(config: GateRecoveryConfig) -> Path:
+    return config.evaluation_root / "screening_checkpoint.json"
+
+
+def _load_screening_checkpoint(
+    config: GateRecoveryConfig,
+    *,
+    contract_digest: str,
+) -> dict[str, Any] | None:
+    """Return a reusable screening checkpoint matching the current run key."""
+
+    path = _screening_checkpoint_path(config)
+    if not path.exists():
+        return None
+    try:
+        payload = load_json(path)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if (
+        payload.get("schema_version") != SCREENING_CHECKPOINT_VERSION
+        or payload.get("contract_digest") != contract_digest
+        or int(payload.get("seed", -1)) != int(config.seed)
+        or int(payload.get("fold_count", -1)) != int(config.fold_count)
+    ):
+        return None
+    return payload
+
+
+def _write_screening_checkpoint(
+    config: GateRecoveryConfig,
+    *,
+    contract_digest: str,
+    results: list[dict[str, Any]],
+    selected_features: RecoveryExperiment,
+    selected_hyperparameters: RankerHyperparameters,
+) -> None:
+    write_json(
+        _screening_checkpoint_path(config),
+        {
+            "schema_version": SCREENING_CHECKPOINT_VERSION,
+            "contract_digest": contract_digest,
+            "seed": config.seed,
+            "fold_count": config.fold_count,
+            "results": results,
+            "selected_features": asdict(selected_features),
+            "selected_hyperparameters": asdict(selected_hyperparameters),
+        },
+    )
+
+
 def _run_development(
     connection: duckdb.DuckDBPyConnection,
     config: GateRecoveryConfig,
@@ -1522,24 +2009,26 @@ def _run_development(
     generated_at: str,
     contract_digest: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    started = time.monotonic()
+    _log_stage("materializing graph feature caches")
     for threshold in GRAPH_SUPPORT_THRESHOLDS:
         materialize_graph_features(connection, config, threshold)
 
-    results: list[dict[str, Any]] = []
-    frame_cache: dict[tuple[str, bool], pd.DataFrame] = {}
-    cached_experiment_name: str | None = None
+    sample_cache: dict[str, pd.DataFrame] = {}
+    cached_sample_name: str | None = None
 
-    def frames(
+    def sample_frame(
         experiment: RecoveryExperiment,
         feature_spec: LearnedFeatureSpec,
-    ) -> tuple[pd.DataFrame, pd.DataFrame]:
-        nonlocal cached_experiment_name
-        if cached_experiment_name != experiment.name:
-            frame_cache.clear()
-            cached_experiment_name = experiment.name
-        key = (experiment.name, True)
-        if key not in frame_cache:
-            frame_cache[key] = _load_frame(
+    ) -> pd.DataFrame:
+        """Return the deterministic train sample, holding only one in memory."""
+
+        nonlocal cached_sample_name
+        if cached_sample_name != experiment.name:
+            sample_cache.clear()
+            gc.collect()
+            cached_sample_name = experiment.name
+            sample_cache[experiment.name] = _load_frame(
                 connection,
                 recovery_frame_query(
                     config,
@@ -1549,106 +2038,133 @@ def _run_development(
                     sampled=True,
                 ),
             )
-        scoring_key = (experiment.name, False)
-        if scoring_key not in frame_cache:
-            frame_cache[scoring_key] = _load_frame(
-                connection,
-                recovery_frame_query(
-                    config,
-                    experiment,
-                    feature_spec,
-                    split="train",
-                    sampled=False,
-                ),
+        return sample_cache[experiment.name]
+
+    checkpoint = _load_screening_checkpoint(config, contract_digest=contract_digest)
+    if checkpoint is not None:
+        _log_stage("resuming from screening checkpoint")
+        results: list[dict[str, Any]] = list(checkpoint["results"])
+        selected_features = _experiment_from_dict(checkpoint["selected_features"])
+        selected_hyperparameters = _hyperparameters_from_dict(
+            checkpoint["selected_hyperparameters"]
+        )
+    else:
+        results = []
+
+        def evaluate(
+            experiment: RecoveryExperiment,
+            hyperparameters: RankerHyperparameters,
+        ) -> dict[str, Any]:
+            """Screen one configuration on the deterministic train sample only.
+
+            Screening compares configurations on the identical bounded sample so
+            the full candidate universe is never loaded; the finalist and the
+            validation gate are still evaluated on the full universe below.
+            """
+
+            feature_spec = resolve_recovery_feature_spec(connection, config, experiment)
+            frame = sample_frame(experiment, feature_spec)
+            result, _scores = cross_validate_ranker(
+                frame,
+                frame,
+                feature_spec,
+                experiment,
+                hyperparameters,
+                seed=config.seed,
+                fold_count=config.fold_count,
             )
-        return frame_cache[key], frame_cache[scoring_key]
+            results.append(result)
+            _log_stage(
+                f"screened {experiment.name} "
+                f"{hyperparameters.name} "
+                f"sample_ndcg@10={float(result['mean_ndcg_at_10']):.6f}",
+                started=started,
+            )
+            return result
 
-    def evaluate(
-        experiment: RecoveryExperiment,
-        hyperparameters: RankerHyperparameters,
-    ) -> dict[str, Any]:
-        feature_spec = resolve_recovery_feature_spec(connection, config, experiment)
-        train_sample, train_scoring = frames(experiment, feature_spec)
-        result, _scores = cross_validate_ranker(
-            train_sample,
-            train_scoring,
-            feature_spec,
-            experiment,
-            hyperparameters,
-            seed=config.seed,
-            fold_count=config.fold_count,
+        condition_results = [
+            evaluate(
+                RecoveryExperiment(cap, 1, "none", True),
+                SCREENING_HYPERPARAMETERS,
+            )
+            for cap in CONDITION_CAPS
+        ]
+        best_condition = int(
+            select_best_result(condition_results)["experiment"]["condition_cap"]
         )
-        results.append(result)
-        return result
 
-    condition_results = [
-        evaluate(
-            RecoveryExperiment(cap, 1, "none", True),
-            SCREENING_HYPERPARAMETERS,
+        support_results = [
+            evaluate(
+                RecoveryExperiment(best_condition, threshold, "all", True),
+                SCREENING_HYPERPARAMETERS,
+            )
+            for threshold in GRAPH_SUPPORT_THRESHOLDS
+        ]
+        best_support = int(
+            select_best_result(support_results)["experiment"]["graph_support_threshold"]
         )
-        for cap in CONDITION_CAPS
-    ]
-    best_condition = int(
-        select_best_result(condition_results)["experiment"]["condition_cap"]
-    )
 
-    support_results = [
-        evaluate(
-            RecoveryExperiment(best_condition, threshold, "all", True),
-            SCREENING_HYPERPARAMETERS,
+        family_results = [
+            evaluate(
+                RecoveryExperiment(best_condition, best_support, family, True),
+                SCREENING_HYPERPARAMETERS,
+            )
+            for family in ("direct", "context", "all")
+        ]
+        best_family = str(
+            select_best_result(family_results)["experiment"]["graph_family"]
         )
-        for threshold in GRAPH_SUPPORT_THRESHOLDS
-    ]
-    best_support = int(
-        select_best_result(support_results)["experiment"]["graph_support_threshold"]
-    )
 
-    family_results = [
-        evaluate(
-            RecoveryExperiment(best_condition, best_support, family, True),
-            SCREENING_HYPERPARAMETERS,
+        rank_results = [
+            evaluate(
+                RecoveryExperiment(
+                    best_condition, best_support, best_family, include_rank
+                ),
+                SCREENING_HYPERPARAMETERS,
+            )
+            for include_rank in (True, False)
+        ]
+        selected_features = _experiment_from_dict(
+            select_best_result(rank_results)["experiment"]
         )
-        for family in ("direct", "context", "all")
-    ]
-    best_family = str(select_best_result(family_results)["experiment"]["graph_family"])
 
-    rank_results = [
-        evaluate(
-            RecoveryExperiment(best_condition, best_support, best_family, include_rank),
-            SCREENING_HYPERPARAMETERS,
+        hyper_results = [
+            evaluate(selected_features, hyperparameters)
+            for hyperparameters in HYPERPARAMETER_GRID
+        ]
+        best_hyper_result = select_best_result(hyper_results)
+        selected_hyperparameters = _hyperparameters_from_dict(
+            best_hyper_result["hyperparameters"]
         )
-        for include_rank in (True, False)
-    ]
-    selected_features = _experiment_from_dict(
-        select_best_result(rank_results)["experiment"]
-    )
-
-    hyper_results = [
-        evaluate(selected_features, hyperparameters)
-        for hyperparameters in HYPERPARAMETER_GRID
-    ]
-    best_hyper_result = select_best_result(hyper_results)
-    selected_hyperparameters = _hyperparameters_from_dict(
-        best_hyper_result["hyperparameters"]
-    )
+        _write_screening_checkpoint(
+            config,
+            contract_digest=contract_digest,
+            results=results,
+            selected_features=selected_features,
+            selected_hyperparameters=selected_hyperparameters,
+        )
+        _log_stage("screening complete; checkpoint written", started=started)
 
     selected_spec = resolve_recovery_feature_spec(
         connection,
         config,
         selected_features,
     )
-    train_sample, train_scoring = frames(selected_features, selected_spec)
-    final_cv, candidate_oof = cross_validate_ranker(
-        train_sample,
-        train_scoring,
-        selected_spec,
+    train_sample = sample_frame(selected_features, selected_spec)
+
+    candidate_oof_dir = config.cache_root / "candidate_oof"
+    _log_stage("streaming finalist candidate OOF over full train universe")
+    final_cv = _stream_ranker_oof(
+        connection,
+        config,
         selected_features,
+        selected_spec,
         selected_hyperparameters,
+        train_sample,
         seed=config.seed,
         fold_count=config.fold_count,
-        capture_scores=True,
+        output_dir=candidate_oof_dir,
     )
-    assert candidate_oof is not None
 
     reference_experiment = RecoveryExperiment(40, 1, "none", True)
     reference_spec = resolve_recovery_feature_spec(
@@ -1656,16 +2172,36 @@ def _run_development(
         config,
         reference_experiment,
     )
-    reference_sample, reference_scoring = frames(reference_experiment, reference_spec)
-    reference_oof = cross_validate_binary_reference(
-        reference_sample,
-        reference_scoring,
+    reference_sample = sample_frame(reference_experiment, reference_spec)
+    reference_oof_dir = config.cache_root / "reference_oof"
+    _log_stage("streaming reference OOF over full train universe")
+    _stream_reference_oof(
+        connection,
+        config,
+        reference_experiment,
         reference_spec,
+        reference_sample,
         seed=config.seed,
         fold_count=config.fold_count,
+        output_dir=reference_oof_dir,
     )
-    fusion = select_oof_fusion_weight(candidate_oof, reference_oof)
-    candidate_oof_metrics = ranking_metrics_at_k(candidate_oof)
+    # The reference sample was only needed to fit reference folds.
+    sample_cache.pop(reference_experiment.name, None)
+    cached_sample_name = None
+    gc.collect()
+
+    _log_stage("selecting OOF fusion weight in DuckDB", started=started)
+    fusion = select_oof_fusion_weight_duckdb(
+        connection,
+        config,
+        candidate_dir=candidate_oof_dir,
+        reference_dir=reference_oof_dir,
+    )
+    candidate_oof_metrics = _ranking_metrics_from_source(
+        connection,
+        source_sql=f"SELECT * FROM {_oof_scan(candidate_oof_dir)}",
+        score_expr="score",
+    )
     fusion_metrics = fusion["selected_metrics"]
     use_fusion = (
         float(fusion_metrics["ndcg_at_k"]),
@@ -1679,6 +2215,7 @@ def _run_development(
     fusion["selected_variant"] = "late_fusion" if use_fusion else "ranker_only"
 
     boost_rounds = int(final_cv["median_best_boost_rounds"])
+    train_sample = sample_frame(selected_features, selected_spec)
     final_model, final_preprocessor = _fit_final_ranker(
         train_sample,
         selected_spec,
@@ -1710,6 +2247,12 @@ def _run_development(
     }
     write_json(config.selected_config_path, selected_payload)
 
+    # The train sample is no longer needed once the final ranker is fit.
+    sample_cache.clear()
+    cached_sample_name = None
+    gc.collect()
+
+    _log_stage("scoring full validation universe with the locked ranker")
     validation_frame = _load_frame(
         connection,
         recovery_frame_query(
@@ -1767,12 +2310,25 @@ def _run_development(
         selected_baseline_name=selected_baseline_name,
     )
     evaluation["candidate_score_row_count"] = candidate_row_count
+    evaluation["scoring_policy"] = {
+        "screening_scope": "mimic_train_deterministic_sample",
+        "finalist_oof_scope": "mimic_train_full_candidate_universe",
+        "reference_oof_scope": "mimic_train_full_candidate_universe",
+        "gate_scope": "mimic_validation_full_candidate_universe",
+        "fusion_weight_search": "duckdb_streamed_oof",
+        "note": (
+            "Configurations are compared on the identical bounded train sample; "
+            "the locked finalist, reference OOF, and validation gate use the full "
+            "candidate universe streamed through DuckDB to bound peak memory."
+        ),
+    }
     selection = _selection_report(
         config,
         evaluation,
         generated_at=generated_at,
         selected_baseline_name=selected_baseline_name,
     )
+    _log_stage("development gate recovery complete", started=started)
     return evaluation, selection
 
 
@@ -1858,7 +2414,10 @@ def build_gate_recovery(
 ) -> dict[str, Any]:
     """Run development selection or frozen final scoring."""
 
+    _configure_logging()
+    _silence_all_null_imputation_warning()
     generated_at = datetime.now(UTC).isoformat()
+    _log_stage(f"gate recovery start mode={config.mode}")
     errors = preflight_errors(config)
     if errors:
         report = {

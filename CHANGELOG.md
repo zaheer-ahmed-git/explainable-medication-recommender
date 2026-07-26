@@ -4,7 +4,79 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ## [Unreleased]
 
+### Changed
+
+- Neural Transformer gap-recovery upgrade
+  (`phase8-p0-neural-transformer-v2`): numeric MLP stay encoder, learned
+  positional encodings, dual-path candidate scorer (MLP + scaled
+  context–candidate dot product), train-only global and condition×candidate
+  log-odds priors plus `log1p(candidate_rank)` in group caches, AdamW
+  warmup+cosine schedule (peak LR `1e-4`, weight decay `1e-3`, dropout `0.2`,
+  patience 5), and per-batch aux-BCE `pos_weight` with weight `0.1`. Requires
+  rerunning `prepare` before `train`. Synthetic tests cover priors, dual-path
+  scoring, and the LR schedule. GNN/fusion remain out of scope; the Stage 1
+  NDCG gate bar is unchanged.
+
+### Fixed
+
+- Neural `prepare` no longer dies on DuckDB `STDDEV_SAMP is out of range` when
+  train stay features contain extreme finite values (job 28346). Mean/std now
+  exclude non-finite values and magnitudes above `1e100`, map those cells to the
+  normalized mean in the caches, and record aggregate exclusion counts. The OAR
+  neural wrapper now uses `/nodes=1/gpu=1` with `#OAR -p gpudevice<>'-1'` (no
+  extra quotes; quoted `-p` breaks `oarsub -S`) so jobs do not land on CPU-only
+  nodes (28346/28347 on chimay01).
+
+- Updated Stage 2 neural comparison baseline and status docs after Stage 1 gate
+  recovery froze `xgboost_rank_ndcg_oof_late_fusion` with
+  `neural_training_authorized=true` (validation NDCG@10 ≈ `0.394607`). The
+  Transformer now gates against that Stage 1 winner (+0.005 NDCG@10, MRR/Hit
+  guards) using gate-recovery `baseline_scores.parquet`, not Milestone 8B
+  `xgboost_frozen_reference` (`0.374899`). Fail decision is
+  `retain_structured_recovery_baseline`. Default reference paths and OAR
+  `--reference-scores` follow the Stage 1 package; docs
+  (`TrainingPlan`, roadmap, `AGENT-MEMORY`, `WORKFLOWS`, detailed plan) no
+  longer claim neural work is unauthorized.
+
+- Made `pipeline.gate_recovery` development mode memory-safe after two OAR
+  runs (28134, 28215) were OOM-killed (exit 137) during full-universe fold
+  scoring and pandas OOF fusion. Configuration screening now runs on the
+  deterministic train sample only, while the locked finalist, binary reference
+  OOF, and validation gate still use the full candidate universe. Finalist and
+  reference out-of-fold scores stream to narrow Parquet one fold at a time, and
+  the fusion-weight search runs in DuckDB over that Parquet instead of
+  concatenating and merging the universe in pandas. Added stdlib progress and
+  peak-RSS logging, a contract-keyed screening checkpoint for resume, and a
+  filter for the repeated all-null median-imputation warning. The CPU worker
+  `scripts/calculco/phase8_p0_gate_recovery.sh` now defaults to
+  `DUCKDB_THREADS=8`, `DUCKDB_MEMORY_LIMIT=24GB`, sets `MALLOC_ARENA_MAX=2` and
+  `PYTHONUNBUFFERED=1`, and warns when DuckDB spill falls back to `/tmp`.
+  Screening selection is now sample-based; the neural-readiness gate metric and
+  its fail-closed contract are unchanged.
+
 ### Added
+
+- Stage 2 conditional neural Transformer patient/context training pipeline:
+  `pipeline.neural_training` implements a `prepare`/`train`/`score` CLI with
+  `development` and `final` modes. `prepare` builds train-fit event/condition/
+  candidate/categorical vocabularies (reserved `PAD=0`/`UNK=1`), train-only
+  numeric and event-value normalization, a persisted `feature_layout.json`, and
+  memory-bounded hash-sharded DuckDB caches. `train` fits a Transformer event
+  encoder plus static-context encoder and candidate scorer with a multi-positive
+  listwise softmax and auxiliary BCE objective, early stopping on validation
+  NDCG@10, gradient clipping, optional mixed precision, checkpointing, and
+  post-hoc temperature calibration. `score` writes canonical
+  `baseline_scores.parquet` rows, computes authoritative DuckDB metrics against
+  the Stage 1 structured recovery baseline, and records a neural gate/selection
+  report. Every
+  stage is fail-closed behind the structured recovery gate
+  (`neural_training_authorized`) and the training-contract lock. PyTorch is added
+  as an optional `neural` dependency group (imported lazily) and is not synced by
+  default. Added synthetic torch-guarded tests for data prep, ranking metrics,
+  dataset collation, the model/losses, the preflight/gate, and an end-to-end
+  smoke test, plus a configurable GPU OAR wrapper
+  (`scripts/calculco/phase8_p0_neural_training.sh`) and job env template. The GNN
+  relation branch and joint fusion head remain planned.
 
 - Gate-first Phase 8 P0 Stage 1 implementation: `pipeline.training_contract`
   locks pinned versions, aggregate manifest hashes, artifact metadata/schemas,
@@ -12,8 +84,9 @@ All notable repository changes are recorded here. Dates use ISO 8601.
   `pipeline.gate_recovery` performs patient-fold rank-aware XGBoost screening,
   train-OOF fusion selection, one-shot validation gating, and fail-closed final
   scoring using the existing baseline score schema and metrics. Added focused
-  synthetic tests and CPU-only Calculco submit/worker wrappers. PyTorch and
-  neural training remain intentionally absent until the gate passes.
+  synthetic tests and CPU-only Calculco submit/worker wrappers. PyTorch was kept
+  out of this Stage 1 change; the Stage 2 neural branch (see the entry above) was
+  added separately and stays fail-closed behind this gate.
 
 - CodexPLAN Step 10 graph/hybrid readiness review on the Phase 8 P0 stack:
   `Documentation/CodexPLANStep10GraphHybridReadiness.md` and aggregate

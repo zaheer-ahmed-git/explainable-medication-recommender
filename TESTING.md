@@ -32,9 +32,15 @@ Gate-first Stage 1 tests cover immutable contract metadata, pinned versions,
 unsafe-column rejection, temporal and medication leakage, patient-fold
 isolation, positive-group negative sampling, authoritative ranking-metric
 parity, OOF fusion, changed-lock detection, and final-mode blocking. The
-protected recovery run remains an HPC verification step. Neural loader,
-sequence, loss, and graph-tensor tests remain conditional because Stage 2 is
-not implemented.
+protected recovery run remains an HPC verification step. Stage 2 neural
+Transformer tests cover DuckDB cache preparation (train-only vocabularies,
+normalization, feature layout, sharded materialization), the NumPy ranking-metric
+accumulator, shard assembly and torch collation, the Transformer forward pass and
+listwise/combined losses, the fail-closed preflight/gate, and an end-to-end
+prepare/train/score smoke test. PyTorch-dependent tests use
+`pytest.importorskip("torch")` and skip when the optional `neural` group is not
+installed. Graph-tensor and GNN model tests remain pending because the GNN branch
+is not implemented yet.
 The Phase 4-9 visualization generator has a focused synthetic test that verifies
 aggregate-only meeting-pack generation without raw clinical rows.
 
@@ -80,6 +86,12 @@ uv run pytest tests/test_config.py tests/test_graph_ablation.py
 uv run pytest tests/test_feature_gate_review.py tests/test_features.py \
   tests/test_milestone7_baselines.py tests/test_graph_ablation.py
 uv run pytest tests/test_training_contract.py tests/test_gate_recovery.py
+uv run pytest tests/test_neural_data.py tests/test_neural_metrics.py \
+  tests/test_neural_contract.py
+# Torch-dependent (skip without the optional neural group):
+uv sync --group neural
+uv run pytest tests/test_neural_dataset.py tests/test_neural_model.py \
+  tests/test_neural_train_score.py tests/test_neural_schedule.py
 uv run pytest tests/test_phase4_to_9_visualization.py
 uv run pytest tests/test_condition_normalization.py
 uv run pytest tests/test_condition_mapping_builder.py
@@ -191,3 +203,13 @@ parity, OOF-only fusion selection, one-shot validation, and final/test
 blocking. Protected completion requires the CPU OAR development run and a
 reviewed `reports/phase8_p0_gate_recovery_selection.json`; it does not imply
 that the gate passed or authorize Stage 2.
+
+Stage 2 neural Transformer completion additionally requires the torch-free cache
+preparation, metric, and preflight/gate tests plus the torch-guarded dataset,
+model/loss, and end-to-end smoke tests (run after `uv sync --group neural`). It
+requires fail-closed behavior when `neural_training_authorized` is absent or the
+contract lock drifts, train-only vocabularies and normalization, canonical
+`baseline_scores.parquet` output, and aggregate-only neural reports. Protected
+completion requires the GPU OAR run via
+`scripts/calculco/phase8_p0_neural_training.sh`; the development run does not
+authorize final MIMIC test scoring unless the neural selection clears the gate.

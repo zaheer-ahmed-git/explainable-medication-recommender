@@ -45,10 +45,18 @@ The repository is currently in the data-foundation and architecture stage.
   implemented for graph-only XGBoost, graph-augmented XGBoost, late fusion, and
   simple ensemble comparisons against the frozen XGBoost reference. The
   protected Phase 8 P0 Milestone 8B run failed the required +0.005 NDCG@10
-  lift, so frozen XGBoost remains canonical. A gate-first contract audit and
-  rank-aware structured recovery runner are implemented; their protected-data
-  run is pending, and no neural dependency or Transformer-GNN trainer has been
-  added.
+  lift, so frozen XGBoost remained the Milestone 8B reference. Gate-first
+  Stage 1 structured recovery then cleared that bar: frozen selection
+  `xgboost_rank_ndcg_oof_late_fusion` (validation NDCG@10 ≈ `0.394607`) with
+  `neural_training_authorized=true`. The Stage 2 neural Transformer
+  patient/context training pipeline is implemented in `pipeline.neural_training`
+  (DuckDB cache preparation, PyTorch Transformer recommender, listwise training
+  with early stopping and temperature calibration, canonical-schema scoring,
+  and a validation gate/selection report against the Stage 1 winner). PyTorch
+  is an optional `neural` dependency group and is not synced by default; every
+  stage stays fail-closed behind the structured recovery gate and contract
+  lock. The first protected neural OAR run is pending. The GNN relation branch
+  and the joint fusion head are not yet implemented.
 - Focused synthetic tests cover the current source-inventory, cohort,
   profiling, EDA-summary, extraction, and Milestone 5 harmonization contracts.
   Additional synthetic tests cover Milestone 6 temporal cutoffs, censoring,
@@ -60,8 +68,12 @@ The repository is currently in the data-foundation and architecture stage.
   cold-start flags, fusion, eICU coverage-only behavior, and report safety.
   Phase 8 P0 package tests additionally cover model-ready cohort timing,
   provenance inference, train-only subgraphs, cold candidates, local
-  vocabularies, and schema-only reports. The full Transformer-GNN model remains
-  planned.
+  vocabularies, and schema-only reports. Stage 2 neural tests cover DuckDB cache
+  preparation, ranking metrics, shard assembly and collation, the Transformer
+  forward pass and losses, the fail-closed preflight/gate, and an end-to-end
+  prepare/train/score smoke test (PyTorch-dependent tests skip when the optional
+  `neural` group is not installed). The GNN branch and full Transformer-GNN
+  fusion remain planned.
 
 Do not interpret the poster's illustrative medication table or planned system
 diagram as a clinically validated implementation.
@@ -371,6 +383,32 @@ fusion selection on patient-grouped MIMIC-train folds, and evaluates one locked
 candidate on validation. Final MIMIC test mode is blocked unless the recovery
 selection clears the gate. The command is documented here but no job is
 submitted automatically.
+
+Run the Stage 2 neural Transformer branch when the structured recovery
+selection records `neural_training_authorized` (Stage 1 development has
+already frozen that authorization). The neural gate must clear +0.005
+NDCG@10 over the Stage 1 winner (`xgboost_rank_ndcg_oof_late_fusion`), not
+the older Milestone 8B XGBoost anchor. PyTorch is optional and not synced by
+default, so install the `neural` group on the worker first:
+
+```bash
+uv sync --group neural
+uv run python -m pipeline.neural_training prepare
+uv run python -m pipeline.neural_training train
+uv run python -m pipeline.neural_training score
+```
+
+`prepare` builds train-fit vocabularies, numeric normalization, and memory-
+bounded sharded DuckDB caches under ignored `Dataset/processed/phase8_p0/neural/`;
+`train` runs the listwise + auxiliary training loop with early stopping,
+checkpointing, and temperature calibration; `score` writes canonical scores plus
+aggregate-only reports
+`reports/phase8_p0_neural_prepare_manifest.json`,
+`reports/phase8_p0_neural_training_evaluation.json`,
+`reports/phase8_p0_neural_score_evaluation.json`, and
+`reports/phase8_p0_neural_training_selection.json`. For protected-data scale,
+submit the GPU OAR wrapper `scripts/calculco/phase8_p0_neural_training.sh` (see
+`WORKFLOWS.md`). Every stage stays fail-closed behind the recovery gate.
 
 Do not use `pip`, Poetry, Conda, global Python, or system site-packages.
 

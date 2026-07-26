@@ -22,11 +22,27 @@ fi
 : "${GATE_RECOVERY_TOP_K:=1,3,5,10}"
 : "${GATE_RECOVERY_FOLD_COUNT:=3}"
 : "${GATE_RECOVERY_SEED:=20260617}"
-: "${DUCKDB_THREADS:=16}"
-: "${DUCKDB_MEMORY_LIMIT:=48GB}"
+# DuckDB's memory ceiling only bounds DuckDB operators; pandas, sklearn, and
+# XGBoost allocate on top of it inside the same cgroup. Keep the DuckDB ceiling
+# well below the node budget so those libraries retain headroom, and cap the
+# thread count so per-operator scratch buffers stay small.
+: "${DUCKDB_THREADS:=8}"
+: "${DUCKDB_MEMORY_LIMIT:=24GB}"
 
 export DUCKDB_THREADS DUCKDB_MEMORY_LIMIT
 export OMP_NUM_THREADS="$DUCKDB_THREADS"
+# Reduce glibc per-thread arena fragmentation for a long-lived multithreaded
+# process and stream Python logs so the OAR .out heartbeat stays live.
+export MALLOC_ARENA_MAX="${MALLOC_ARENA_MAX:-2}"
+export PYTHONUNBUFFERED=1
+
+case "${DUCKDB_TEMP_DIR:-}" in
+  /tmp/*)
+    echo "WARNING: DUCKDB_TEMP_DIR is under /tmp ($DUCKDB_TEMP_DIR)." >&2
+    echo "  If /tmp is a tmpfs, DuckDB spill consumes RAM and can trigger OOM." >&2
+    echo "  Prefer a disk-backed WORK_SCRATCH or /scratch base." >&2
+    ;;
+esac
 
 phase8_root="${PHASE8_P0_ROOT:-$DATASET_ROOT/processed/phase8_p0}"
 features_root="${PHASE8_P0_FEATURES_ROOT:-$phase8_root/features}"

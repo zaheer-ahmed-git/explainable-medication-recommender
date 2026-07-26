@@ -31,9 +31,13 @@ protected-data materialization. Milestone 7 baseline evaluation is implemented
 through learned linear and XGBoost baselines with frozen validation selection.
 Milestone 8 graph-readiness tooling is implemented for train-only concept-level
 graph artifacts and aggregate suitability reports; protected graph
-materialization is complete, while graph neural models remain pending. The
-ignored `DepreciatedCode/` prototype supplies historical conventions for candidate
-generation, patient-level splitting, baseline ranking, and ranking metrics.
+materialization is complete. The gate-first Stage 1 contract audit and rank-aware
+XGBoost recovery runner are implemented (protected run pending), and the Stage 2
+Transformer patient/context branch is implemented in `pipeline.neural_training`
+as fail-closed, gated code; the GNN relation branch and joint fusion remain
+pending. The ignored `DepreciatedCode/` prototype supplies historical conventions
+for candidate generation, patient-level splitting, baseline ranking, and ranking
+metrics.
 
 ## Locked Research Direction
 
@@ -779,9 +783,14 @@ to Roadmap Milestone 9 grounded explanation.
 
 ### Gate-First Structured Recovery
 
-Status: Stage 1 implementation and synthetic verification complete;
-protected-data OAR execution pending. Stage 2 neural implementation is blocked
-by the failed lift gate.
+Status: Stage 1 protected development gate passed. Frozen selection
+`xgboost_rank_ndcg_oof_late_fusion` records `neural_training_authorized=true`
+(validation NDCG@10 ≈ `0.394607` vs Milestone 8B `xgboost_frozen_reference`
+`0.374899`). The Stage 2 Transformer patient/context branch is implemented in
+`pipeline.neural_training` and is authorized to run on protected data; it must
+clear +0.005 NDCG@10 over that Stage 1 winner (≈ `0.399607`) with MRR/Hit
+guardrails. The first protected neural OAR run is pending. The GNN relation
+branch and joint fusion head remain unimplemented.
 
 - `pipeline.training_contract` writes an aggregate lock for the four pinned
   versions, completed upstream manifests, file/schema/count metadata,
@@ -791,14 +800,19 @@ by the failed lift gate.
   thresholds and families, candidate-rank ablation, four ranker
   hyperparameter configurations, and train-OOF late fusion using deterministic
   three-fold patient grouping.
-- A single locked candidate is compared on MIMIC validation with Phase 8 P0
+- Stage 1 compared one locked candidate on MIMIC validation with Phase 8 P0
   `xgboost_frozen_reference` (`0.374899` NDCG@10; six-decimal target
-  `0.379899`) and MRR/Hit guardrails. Test scoring is fail-closed until pass.
+  `0.379899`) and MRR/Hit guardrails; that gate cleared. Optional Stage 1
+  final (held-out MIMIC test) remains available and fail-closed until
+  requested.
 - `scripts/calculco/submit_phase8_p0_gate_recovery.sh` is CPU-only and uses
-  configured scratch through `common.sh`. It has not been submitted as part of
-  implementation.
-- PyTorch, neural loaders, Transformer/GNN models, and GPU wrappers must not be
-  added until the Stage 1 selection report authorizes them.
+  configured scratch through `common.sh`.
+- The Stage 2 Transformer branch (`pipeline.neural_training`, optional `neural`
+  PyTorch group, GPU wrapper `scripts/calculco/phase8_p0_neural_training.sh`)
+  re-checks the contract lock and Stage 1 authorization on every stage. Its
+  comparison baseline is the Stage 1 recovery winner scores under
+  `$DATASET_ROOT/processed/phase8_p0/evaluation/gate_recovery/baseline_scores.parquet`,
+  not the older Milestone 8B XGBoost scores.
 
 ## Milestone 9: Grounded Explanation
 

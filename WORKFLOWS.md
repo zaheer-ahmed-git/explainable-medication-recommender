@@ -483,6 +483,17 @@ manifest hashes and artifact metadata with that lock and fail on drift. The
 rank-aware runner then makes every feature, hyperparameter, and fusion choice
 on deterministic patient-grouped MIMIC-train folds.
 
+Development mode is memory-bounded: configuration screening runs on the
+deterministic train sample, while the locked finalist, binary reference OOF, and
+the validation gate use the full candidate universe streamed to narrow Parquet
+one fold at a time, with the fusion-weight search executed in DuckDB. The worker
+logs stage progress and peak RSS to the OAR `.out`, writes a contract-keyed
+`screening_checkpoint.json` so a resubmit resumes after screening, and defaults
+to `DUCKDB_THREADS=8`, `DUCKDB_MEMORY_LIMIT=24GB`, `MALLOC_ARENA_MAX=2`, and
+`PYTHONUNBUFFERED=1`. The DuckDB ceiling stays below the node budget so pandas,
+sklearn, and XGBoost keep headroom; ensure DuckDB spill lands on disk-backed
+scratch rather than a `/tmp` tmpfs (the worker warns on `/tmp` fallback).
+
 3. Review only these aggregate reports:
 
 ```text
@@ -503,8 +514,88 @@ scripts/calculco/submit_phase8_p0_gate_recovery.sh final
 ```
 
 The CLI independently blocks final MIMIC test scoring when the development
-gate failed. eICU is not used for fitting or tuning. Do not add PyTorch, neural
-training commands, or GPU wrappers until this Stage 1 gate passes.
+gate failed. eICU is not used for fitting or tuning.
+
+## Run Phase 8 P0 Neural Training (Stage 2)
+
+Run the Stage 2 Transformer patient/context branch after the structured
+recovery gate records `neural_training_authorized=true` in
+`reports/phase8_p0_gate_recovery_selection.json` (Stage 1 development has
+already frozen that authorization). The GNN relation branch and
+joint fusion head are not implemented yet; this trains the Transformer branch.
+
+1. Confirm the gate selection is frozen/authorized and the model-ready
+   artifacts, contract lock, and Stage 1 recovery baseline scores exist under
+   `$DATASET_ROOT/processed/phase8_p0/evaluation/gate_recovery/baseline_scores.parquet`.
+   Do not inspect patient rows. The neural gate beats
+   `xgboost_rank_ndcg_oof_late_fusion` (≈ `0.394607` NDCG@10), not the older
+   Milestone 8B `xgboost_frozen_reference`.
+2. Install the optional PyTorch group on the worker (it is not synced by
+   default so the rest of the repository stays lightweight):
+
+```bash
+uv sync --group neural
+```
+
+3. Prepare train-fit vocabularies, numeric normalization, and memory-bounded
+   sharded DuckDB caches, then train and score:
+
+```bash
+uv run python -m pipeline.neural_training prepare
+uv run python -m pipeline.neural_training train
+uv run python -m pipeline.neural_training score
+```
+
+The `prepare` stage is PyTorch-free and can run on the login node for bounded
+fixtures; `train` and `score` import torch lazily and expect a GPU/CPU worker.
+Every stage runs the same fail-closed preflight (`contract` module): it verifies
+the training-contract lock and re-checks the neural gate. `prepare` builds
+vocabularies with reserved `PAD=0`/`UNK=1` tokens, computes train-only numeric
+and event-value normalization, fits train-only candidate priors
+(global and condition×candidate log-odds) plus `log1p(candidate_rank)`, and
+writes `feature_layout.json` so training and scoring share one feature
+ordering. After any schema/prior change (including the v2 gap-recovery
+upgrade), **rerun `prepare` before `train`** so group caches contain the new
+candidate-side columns. `train` runs the multi-positive listwise softmax plus
+weighted auxiliary BCE (per-batch `pos_weight`) with AdamW warmup+cosine,
+early stopping on validation NDCG@10, gradient clipping, optional mixed
+precision, checkpointing, and post-hoc temperature calibration. `score` writes
+canonical `baseline_scores.parquet` rows, combines them with the Stage 1
+recovery baseline scores for authoritative DuckDB metrics, and records the
+neural gate decision against that winner (+0.005 NDCG@10).
+
+4. For protected-data scale, submit the GPU OAR wrapper (it installs the
+   `neural` group and runs the selected stages):
+
+```bash
+scripts/calculco/submit_phase8_p0_neural_training.sh development
+```
+
+The worker requests `/nodes=1/gpu=1` plus `#OAR -p gpudevice<>'-1'` (no extra
+quotes around the `-p` expression) so OAR places the job on a GPU host
+(chimay31+ / visu*), not a CPU node such as chimay01. Confirm
+`assigned_hostnames` with `oarstat -j <id> -f` / `oarstatmon.py` before trusting
+a long train run. To pin one host, set
+`#OAR -p network_address='chimay34' and gpudevice<>'-1'` in
+`phase8_p0_neural_training.sh`. Tune stages, mode, seed, sequence length, batch
+size, and DuckDB limits through the generated
+`scripts/calculco/phase8_p0_neural_training_job.env`.
+
+5. Review only these aggregate reports:
+
+```text
+reports/phase8_p0_neural_prepare_manifest.json
+reports/phase8_p0_neural_training_evaluation.json
+reports/phase8_p0_neural_score_evaluation.json
+reports/phase8_p0_neural_training_selection.json
+```
+
+Local caches, checkpoints, predictions, and row-level scores remain ignored
+under `$DATASET_ROOT/processed/phase8_p0/neural/`.
+
+6. Run final MIMIC test scoring only after the development selection records a
+   passing neural gate and the neural selection is frozen (`--mode final
+   --frozen-selection`). eICU is not used for fitting, tuning, or selection.
 
 ## Run Milestone 8 Graph Suitability
 
