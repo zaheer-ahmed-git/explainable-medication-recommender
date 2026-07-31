@@ -40,9 +40,13 @@ from pipeline.extract_utils import (
 from pipeline.features import copy_query_to_parquet, fetch_dict_rows
 from pipeline.io_utils import quote_identifier
 from pipeline.neural_training.config import (
+    CANDIDATE_SIDE_FEATURES,
     FEATURE_LAYOUT_VERSION,
+    GRAPH_SIDE_FEATURES,
+    GRAPH_SUPPORT_THRESHOLD,
     PREDICTION_OFFSET_HOURS,
     PREPARE_SCHEMA_VERSION,
+    PRIOR_SIDE_FEATURES,
     PRIOR_SMOOTHING_ALPHA,
     RESERVED_TOKEN_COUNT,
     UNK_INDEX,
@@ -515,6 +519,117 @@ FROM per_pair
     )
 
 
+def materialize_graph_side_features(
+    connection: duckdb.DuckDBPyConnection,
+    config: NeuralTrainingConfig,
+) -> dict[str, Any]:
+    """Materialize Stage-1-matched train-fit graph tabular features for caches.
+
+    Reuses :func:`pipeline.graph_ablation.graph_feature_query` so the neural
+    branch sees the same leakage-safe edge summaries as the frozen Stage 1
+    late-fusion winner (support threshold
+    :data:`GRAPH_SUPPORT_THRESHOLD`). When ``graph_edges`` is absent (synthetic
+    fixtures), write an empty typed table and fill zeros at join time.
+    """
+
+    from pipeline.graph_ablation import GraphAblationConfig, graph_feature_query
+
+    output_path = config.graph_features_path
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not config.graph_edges_path.exists():
+        zero_columns = ",\n        ".join(
+            f"CAST(0.0 AS DOUBLE) AS {quote_identifier(name)}"
+            for name in GRAPH_SIDE_FEATURES
+        )
+        query = f"""
+SELECT
+    CAST(NULL AS VARCHAR) AS source,
+    CAST(NULL AS VARCHAR) AS split,
+    CAST(NULL AS VARCHAR) AS stay_uid,
+    CAST(NULL AS VARCHAR) AS ranking_group_id,
+    CAST(NULL AS VARCHAR) AS index_condition_token,
+    CAST(NULL AS VARCHAR) AS candidate_medication_token,
+    {zero_columns}
+WHERE FALSE
+"""
+        rows = copy_query_to_parquet(connection, query, output_path)
+        return {
+            "status": "zeros_fallback",
+            "row_count": rows,
+            "support_threshold": GRAPH_SUPPORT_THRESHOLD,
+            "graph_edges_present": False,
+            "feature_columns": list(GRAPH_SIDE_FEATURES),
+        }
+
+    graph_config = GraphAblationConfig(
+        features_root=config.features_root,
+        training_root=config.training_root,
+        graph_root=config.graph_root,
+        evaluation_root=config.cache_root,
+        mode=config.mode,
+        seed=config.seed,
+        feature_version="temporal-features-v2",
+        minimum_graph_support=GRAPH_SUPPORT_THRESHOLD,
+        duckdb_temp_directory=config.duckdb_temp_directory,
+        duckdb_memory_limit=config.duckdb_memory_limit,
+        duckdb_threads=config.duckdb_threads,
+    )
+    feature_query = graph_feature_query(graph_config)
+    selected = ",\n    ".join(
+        (
+            "source",
+            "split",
+            "stay_uid",
+            "ranking_group_id",
+            "index_condition_token",
+            "candidate_medication_token",
+            *GRAPH_SIDE_FEATURES,
+        )
+    )
+    rows = copy_query_to_parquet(
+        connection,
+        f"SELECT {selected} FROM ({feature_query}) AS graph_features",
+        output_path,
+    )
+    return {
+        "status": "materialized",
+        "row_count": rows,
+        "support_threshold": GRAPH_SUPPORT_THRESHOLD,
+        "graph_edges_present": True,
+        "feature_columns": list(GRAPH_SIDE_FEATURES),
+    }
+
+
+def graph_side_normalization_stats(
+    connection: duckdb.DuckDBPyConnection,
+    config: NeuralTrainingConfig,
+) -> dict[str, tuple[float, float]]:
+    """Return train-only mean/std for graph candidate-side numeric columns."""
+
+    if not config.graph_features_path.exists():
+        return {name: (0.0, 1.0) for name in GRAPH_SIDE_FEATURES}
+    aggregates: list[str] = []
+    for index, name in enumerate(GRAPH_SIDE_FEATURES):
+        raw = f"CAST({quote_identifier(name)} AS DOUBLE)"
+        usable = _finite_bounded_expr(raw)
+        aggregates.append(f"AVG({usable}) AS m{index}")
+        aggregates.append(f"STDDEV_SAMP({usable}) AS s{index}")
+    query = f"""
+SELECT {", ".join(aggregates)}
+FROM {parquet_scan(config.graph_features_path)}
+WHERE source = {sql_string(DEVELOPMENT_SOURCE)} AND split = 'train'
+"""
+    row = connection.execute(query).fetchone()
+    values = list(row) if row is not None else []
+    stats: dict[str, tuple[float, float]] = {}
+    for index, name in enumerate(GRAPH_SIDE_FEATURES):
+        base = 2 * index
+        mean = values[base] if base < len(values) else None
+        std = values[base + 1] if base + 1 < len(values) else None
+        stats[name] = _safe_mean_std(mean, std)
+    return stats
+
+
 def vocab_embedding_size(
     connection: duckdb.DuckDBPyConnection,
     path: Path,
@@ -776,18 +891,39 @@ WHERE ranked.recency_rank <= {int(layout.max_sequence_length)}
 """
 
 
+def _normalized_graph_side_projection(
+    graph_stats: dict[str, tuple[float, float]],
+    *,
+    alias: str,
+) -> str:
+    """Return SQL selecting train-normalized graph candidate-side columns."""
+
+    projections: list[str] = []
+    for name in GRAPH_SIDE_FEATURES:
+        mean, std = graph_stats.get(name, (0.0, 1.0))
+        column = f"CAST({alias}.{quote_identifier(name)} AS DOUBLE)"
+        usable = _finite_bounded_expr(column)
+        normalized = f"({usable} - {mean!r}) / {std!r}"
+        projections.append(
+            f"CASE WHEN {usable} IS NOT NULL AND isfinite({normalized}) "
+            f"THEN {normalized} ELSE 0.0 END AS {quote_identifier(name)}"
+        )
+    return ",\n        ".join(projections)
+
+
 def groups_query(
     config: NeuralTrainingConfig,
     *,
     split: str,
     shard_index: int,
     positive_groups_only: bool,
+    graph_stats: dict[str, tuple[float, float]] | None = None,
 ) -> str:
     """Return one shard of per-candidate ranking rows with indexes and priors.
 
-    Candidate-side features are train-fit only:
-    ``log1p(candidate_rank)``, global candidate log-odds, and
-    condition×candidate log-odds (falling back to the global prior).
+    Candidate-side features are train-fit only: ``log1p(candidate_rank)``,
+    global / condition×candidate log-odds, and Stage-1-matched graph tabular
+    summaries (normalized with train-only mean/std).
     """
 
     shard = stay_shard_filter(
@@ -805,6 +941,8 @@ def groups_query(
         GROUP BY ranking_group_id
         HAVING SUM(CASE WHEN label_prescribed THEN 1 ELSE 0 END) > 0
     )"""
+    stats = graph_stats or {name: (0.0, 1.0) for name in GRAPH_SIDE_FEATURES}
+    graph_projection = _normalized_graph_side_projection(stats, alias="graph")
     return f"""
 WITH scoped_rows AS (
     SELECT
@@ -850,7 +988,8 @@ SELECT
             background.background_log_odds,
             0.0
         ) AS DOUBLE
-    ) AS condition_candidate_prior
+    ) AS condition_candidate_prior,
+        {graph_projection}
 FROM scoped_rows AS pcm
 CROSS JOIN background
 LEFT JOIN {parquet_scan(config.condition_vocabulary_path)} AS cond
@@ -862,6 +1001,11 @@ LEFT JOIN {parquet_scan(config.global_candidate_prior_path)} AS global_prior
 LEFT JOIN {parquet_scan(config.condition_candidate_prior_path)} AS pair_prior
     ON pcm.index_condition_token = pair_prior.index_condition_token
     AND pcm.candidate_medication_token = pair_prior.candidate_medication_token
+LEFT JOIN {parquet_scan(config.graph_features_path)} AS graph
+    ON pcm.source = graph.source
+    AND pcm.split = graph.split
+    AND pcm.ranking_group_id = graph.ranking_group_id
+    AND pcm.candidate_medication_token = graph.candidate_medication_token
 WHERE {shard}{positive_filter}
 """
 
@@ -907,6 +1051,7 @@ def _materialize_split(
     *,
     event_mean: float,
     event_std: float,
+    graph_stats: dict[str, tuple[float, float]],
     split: str,
 ) -> dict[str, Any]:
     """Materialize context, event, and group caches for one split."""
@@ -955,6 +1100,7 @@ def _materialize_split(
                 split=split,
                 shard_index=shard_index,
                 positive_groups_only=positive_groups_only,
+                graph_stats=graph_stats,
             ),
             groups_dir / f"shard_{shard_index:04d}.parquet",
         )
@@ -995,6 +1141,8 @@ def base_manifest(
             "vocabulary_fit_scope": "mimiciv_train",
             "normalization_fit_scope": "mimiciv_train",
             "prior_fit_scope": "mimiciv_train",
+            "graph_feature_fit_scope": "mimiciv_train",
+            "graph_support_threshold": GRAPH_SUPPORT_THRESHOLD,
             "event_window": f"0 <= event_time_hours_from_admit <= "
             f"{PREDICTION_OFFSET_HOURS}",
             "medication_events_excluded": True,
@@ -1056,6 +1204,8 @@ def prepare_neural_caches(config: NeuralTrainingConfig) -> dict[str, Any]:
             build_categorical_vocabulary(connection, config, layout.categorical_columns)
             global_prior_rows = build_global_candidate_prior(connection, config)
             pair_prior_rows = build_condition_candidate_prior(connection, config)
+            graph_materialization = materialize_graph_side_features(connection, config)
+            graph_stats = graph_side_normalization_stats(connection, config)
             vocab_sizes = {
                 "event": vocab_embedding_size(connection, config.event_vocabulary_path),
                 "condition": vocab_embedding_size(
@@ -1067,11 +1217,10 @@ def prepare_neural_caches(config: NeuralTrainingConfig) -> dict[str, Any]:
                 "categorical": categorical_embedding_sizes(connection, config),
             }
             layout_payload = layout.as_dict(vocab_sizes=vocab_sizes)
-            layout_payload["candidate_side_features"] = [
-                "candidate_rank_feat",
-                "global_prior",
-                "condition_candidate_prior",
-            ]
+            layout_payload["candidate_side_features"] = list(CANDIDATE_SIDE_FEATURES)
+            layout_payload["prior_side_features"] = list(PRIOR_SIDE_FEATURES)
+            layout_payload["graph_side_features"] = list(GRAPH_SIDE_FEATURES)
+            layout_payload["graph_support_threshold"] = GRAPH_SUPPORT_THRESHOLD
             write_json(config.feature_layout_path, layout_payload)
             manifest["feature_layout"] = {
                 "numeric_column_count": len(layout.numeric_columns),
@@ -1082,6 +1231,7 @@ def prepare_neural_caches(config: NeuralTrainingConfig) -> dict[str, Any]:
                 "candidate_side_features": layout_payload["candidate_side_features"],
                 "global_candidate_prior_rows": global_prior_rows,
                 "condition_candidate_prior_rows": pair_prior_rows,
+                "graph_side_features": graph_materialization,
             }
             # Aggregate-only data-quality note: some upstream trend columns can
             # carry non-finite or explosively large finite values (for example
@@ -1105,6 +1255,7 @@ def prepare_neural_caches(config: NeuralTrainingConfig) -> dict[str, Any]:
                         numeric_stats,
                         event_mean=event_mean,
                         event_std=event_std,
+                        graph_stats=graph_stats,
                         split=split,
                     )
                 )
@@ -1122,9 +1273,11 @@ def prepare_neural_caches(config: NeuralTrainingConfig) -> dict[str, Any]:
                 "categorical_vocabulary": str(config.categorical_vocabulary_path),
                 "global_candidate_prior": str(config.global_candidate_prior_path),
                 "condition_candidate_prior": str(config.condition_candidate_prior_path),
+                "graph_features": str(config.graph_features_path),
                 "cache_root": str(config.cache_root),
             }
             manifest["leakage_policy"]["prior_fit_scope"] = "mimiciv_train"
+            manifest["leakage_policy"]["graph_feature_fit_scope"] = "mimiciv_train"
     except Exception as error:  # noqa: BLE001 - reported as aggregate status
         manifest["status"] = "failed"
         manifest["reason"] = safe_error_message(error)

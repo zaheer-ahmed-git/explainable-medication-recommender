@@ -254,6 +254,9 @@ def write_neural_fixture(
         features_root=features_root,
         training_root=training_root,
         neural_root=neural_root,
+        # Keep synthetic runs off the protected Stage 1 graph_edges path so
+        # prepare falls back to zero-filled graph side features.
+        graph_root=root / "graph",
         contract_lock_path=contract_lock,
         gate_selection_path=gate_selection,
         prepare_manifest_path=root / "reports" / "prepare_manifest.json",

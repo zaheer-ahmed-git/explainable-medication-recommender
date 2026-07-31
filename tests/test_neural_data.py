@@ -63,20 +63,25 @@ def test_prepare_builds_vocab_layout_and_caches(tmp_path: Path) -> None:
     )
     assert train_candidate_rows == 4 * len(CANDIDATE_TOKENS)
 
-    # Train-only priors are persisted and joined into group caches.
+    # Train-only priors and Stage-1-matched graph side columns are joined in.
     assert config.global_candidate_prior_path.exists()
     assert config.condition_candidate_prior_path.exists()
-    assert layout["candidate_side_features"] == [
-        "candidate_rank_feat",
-        "global_prior",
-        "condition_candidate_prior",
-    ]
+    assert config.graph_features_path.exists()
+    from pipeline.neural_training.config import CANDIDATE_SIDE_FEATURES
+
+    assert layout["candidate_side_features"] == list(CANDIDATE_SIDE_FEATURES)
     assert manifest["leakage_policy"]["prior_fit_scope"] == "mimiciv_train"
+    assert manifest["leakage_policy"]["graph_feature_fit_scope"] == "mimiciv_train"
+    assert (
+        manifest["feature_layout"]["graph_side_features"]["status"] == "zeros_fallback"
+    )
     group_row = _read_rows(next(config.groups_dir("train").glob("*.parquet")))[0]
     assert "candidate_rank_feat" in group_row
     assert "global_prior" in group_row
     assert "condition_candidate_prior" in group_row
+    assert "graph_direct_edge_present" in group_row
     assert math.isfinite(float(group_row["global_prior"]))
+    assert float(group_row["graph_direct_edge_present"]) == 0.0
 
 
 def test_prepare_handles_nonfinite_numeric_features(tmp_path: Path) -> None:

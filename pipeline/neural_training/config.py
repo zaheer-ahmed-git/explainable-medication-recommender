@@ -25,11 +25,40 @@ from pipeline.config import (
 PREPARE_SCHEMA_VERSION = "phase8-p0-neural-prepare-manifest-v1"
 TRAINING_SCHEMA_VERSION = "phase8-p0-neural-training-evaluation-v1"
 SELECTION_SCHEMA_VERSION = "phase8-p0-neural-training-selection-v1"
-EXPERIMENT_VERSION = "phase8-p0-neural-transformer-v2"
-FEATURE_LAYOUT_VERSION = "phase8-p0-neural-feature-layout-v2"
-# Candidate-side features joined into group caches: log1p(rank), global
-# log-odds prior, condition×candidate log-odds prior (train-fit only).
-CANDIDATE_SIDE_FEATURE_COUNT = 3
+EXPERIMENT_VERSION = "phase8-p0-neural-transformer-v3"
+FEATURE_LAYOUT_VERSION = "phase8-p0-neural-feature-layout-v3"
+# Base candidate-side features (always present). Stage-1-matched train-fit
+# graph tabular columns are appended at prepare time (see GRAPH_SIDE_FEATURES).
+PRIOR_SIDE_FEATURES = (
+    "candidate_rank_feat",
+    "global_prior",
+    "condition_candidate_prior",
+)
+# Match the frozen Stage 1 recovery lock: context graph family at support 5,
+# plus the direct-edge summaries that late fusion's graph-only branch carries.
+# This is train-fit tabular graph signal only — not GNN message passing.
+GRAPH_SUPPORT_THRESHOLD = 5
+GRAPH_SIDE_FEATURES = (
+    "graph_condition_medication_support_count",
+    "graph_condition_medication_log_support",
+    "graph_condition_medication_support_share",
+    "graph_condition_total_medication_support",
+    "graph_condition_medication_degree",
+    "graph_condition_lab_degree",
+    "graph_condition_vital_degree",
+    "graph_condition_intervention_degree",
+    "graph_condition_total_degree",
+    "graph_condition_total_support",
+    "graph_candidate_medication_degree",
+    "graph_candidate_medication_support",
+    "graph_candidate_coprescription_degree",
+    "graph_candidate_coprescription_support",
+    "graph_condition_in_graph",
+    "graph_candidate_in_graph",
+    "graph_direct_edge_present",
+)
+CANDIDATE_SIDE_FEATURES = PRIOR_SIDE_FEATURES + GRAPH_SIDE_FEATURES
+CANDIDATE_SIDE_FEATURE_COUNT = len(CANDIDATE_SIDE_FEATURES)
 PRIOR_SMOOTHING_ALPHA = 1.0
 
 # The neural gate compares against the Stage 1 structured recovery winner
@@ -80,40 +109,50 @@ PREDICTION_OFFSET_HOURS = 24
 
 @dataclass(frozen=True)
 class NeuralArchitecture:
-    """Transformer patient/context architecture (v2 gap-recovery defaults).
+    """Transformer patient/context architecture (v3 gap-recovery defaults).
 
     The GNN branch and joint fusion head remain documented extension points;
     this pipeline still trains the Transformer-only branch (plan Phase C).
+    Tabular stay features use a residual MLP with feature dropout; candidate
+    scoring fuses projected Stage-1-matched side features.
     """
 
     event_embedding_dim: int = 128
     encoder_layers: int = 2
     attention_heads: int = 4
     feedforward_dim: int = 256
-    dropout: float = 0.2
+    dropout: float = 0.3
+    feature_dropout: float = 0.15
     categorical_embedding_dim: int = 16
     condition_embedding_dim: int = 64
     candidate_embedding_dim: int = 128
     context_hidden_dim: int = 256
     scorer_hidden_dim: int = 256
+    candidate_side_hidden_dim: int = 64
 
 
 @dataclass(frozen=True)
 class NeuralOptimization:
-    """Optimization schedule for the neural branch (v2 gap-recovery defaults)."""
+    """Optimization schedule for the neural branch (v3 gap-recovery defaults)."""
 
-    learning_rate: float = 1e-4
-    weight_decay: float = 1e-3
+    learning_rate: float = 5e-5
+    weight_decay: float = 2e-3
     gradient_clip_norm: float = 1.0
     max_epochs: int = 30
-    early_stopping_patience: int = 5
+    early_stopping_patience: int = 2
+    early_stopping_min_delta: float = 1e-4
     batch_ranking_groups: int = 64
-    auxiliary_bce_weight: float = 0.1
+    auxiliary_bce_weight: float = 0.05
+    # Extra listwise CE on the catalog-primary positive (lowest candidate_rank
+    # among labeled positives) to push MRR without changing label semantics.
+    primary_positive_weight: float = 0.5
     mixed_precision: bool = True
     # Linear warmup over the first ``warmup_epochs`` of optimizer steps, then
     # cosine decay to ``min_lr_ratio * learning_rate`` across ``max_epochs``.
-    warmup_epochs: float = 1.0
-    min_lr_ratio: float = 0.1
+    warmup_epochs: float = 0.5
+    min_lr_ratio: float = 0.05
+    # EMA of weights used for validation selection and exported checkpoint.
+    ema_decay: float = 0.995
 
 
 @dataclass(frozen=True)
@@ -212,6 +251,14 @@ class NeuralTrainingConfig:
     @property
     def condition_candidate_prior_path(self) -> Path:
         return self.vocab_root / "condition_candidate_prior.parquet"
+
+    @property
+    def graph_edges_path(self) -> Path:
+        return self.graph_root / "graph_edges.parquet"
+
+    @property
+    def graph_features_path(self) -> Path:
+        return self.cache_root / "graph_features.parquet"
 
     @property
     def checkpoints_root(self) -> Path:

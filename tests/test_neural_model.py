@@ -23,6 +23,7 @@ from pipeline.neural_training.losses import (  # noqa: E402
     auxiliary_bce_loss,
     combined_loss,
     listwise_softmax_loss,
+    primary_positive_listwise_loss,
 )
 from pipeline.neural_training.model import build_model  # noqa: E402
 
@@ -107,16 +108,40 @@ def test_combined_loss_components_are_finite() -> None:
     mask = torch.tensor([[True, True, True]])
     labels = torch.tensor([[1.0, 0.0, 1.0]])
     logits = torch.tensor([[2.0, -1.0, 1.5]])
+    ranks = torch.tensor([[1, 2, 3]])
 
-    outputs = combined_loss(logits, labels, mask, auxiliary_weight=0.1)
+    outputs = combined_loss(
+        logits,
+        labels,
+        mask,
+        auxiliary_weight=0.1,
+        primary_positive_weight=0.5,
+        candidate_ranks=ranks,
+    )
 
     assert torch.isfinite(outputs.total)
     assert torch.isfinite(outputs.listwise)
     assert torch.isfinite(outputs.auxiliary)
+    assert torch.isfinite(outputs.primary_positive)
     assert torch.isclose(
         outputs.total,
-        outputs.listwise + 0.1 * auxiliary_bce_loss(logits, labels, mask),
+        outputs.listwise
+        + 0.1 * auxiliary_bce_loss(logits, labels, mask)
+        + 0.5 * outputs.primary_positive,
     )
+
+
+def test_primary_positive_loss_prefers_catalog_primary() -> None:
+    mask = torch.tensor([[True, True, True]])
+    labels = torch.tensor([[1.0, 1.0, 0.0]])
+    ranks = torch.tensor([[1, 5, 9]])
+    # High score on the catalog-primary positive (rank 1) should win.
+    good = torch.tensor([[4.0, 0.0, -1.0]])
+    bad = torch.tensor([[0.0, 4.0, -1.0]])
+
+    assert primary_positive_listwise_loss(
+        good, labels, mask, ranks
+    ) < primary_positive_listwise_loss(bad, labels, mask, ranks)
 
 
 def test_auxiliary_bce_upweights_sparse_positives() -> None:

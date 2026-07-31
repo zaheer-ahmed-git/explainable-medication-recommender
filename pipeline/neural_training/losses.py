@@ -8,6 +8,10 @@ probabilities, which the scoring step later temperature-calibrates. The
 auxiliary term uses a per-batch ``pos_weight`` so the heavy negative majority
 does not dominate the gradient.
 
+A catalog-primary listwise term (lowest ``candidate_rank`` among labeled
+positives) pushes the first relevant item higher — the quantity MRR@K rewards —
+without changing label semantics or using future information.
+
 PyTorch is imported directly; this module is only loaded when the neural branch
 runs.
 """
@@ -27,6 +31,7 @@ class LossOutputs:
     total: torch.Tensor
     listwise: torch.Tensor
     auxiliary: torch.Tensor
+    primary_positive: torch.Tensor
 
 
 def listwise_softmax_loss(
@@ -56,6 +61,42 @@ def listwise_softmax_loss(
     selected = torch.where(positive, log_probs, torch.zeros_like(log_probs))
     per_group = selected.sum(dim=1) / positive_counts.clamp(min=1)
     return -(per_group[has_positive]).mean()
+
+
+def primary_positive_listwise_loss(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    candidate_mask: torch.Tensor,
+    candidate_ranks: torch.Tensor,
+) -> torch.Tensor:
+    """Return listwise CE on the catalog-primary positive per group.
+
+    Among labeled positives in a group, the candidate with the lowest catalog
+    ``candidate_rank`` is treated as the single target. This is leakage-safe
+    (catalog order is train-fit) and directly incentivizes a high MRR@K.
+    """
+
+    positive = (labels > 0.5) & candidate_mask
+    if not bool(positive.any()):
+        return logits.masked_fill(~candidate_mask, 0.0).sum() * 0.0
+
+    # Mask non-positives to +inf so amin selects the lowest rank among positives.
+    rank_for_amin = candidate_ranks.to(dtype=torch.float32).masked_fill(
+        ~positive, float("inf")
+    )
+    primary_rank = rank_for_amin.min(dim=1, keepdim=True).values
+    primary = positive & (candidate_ranks.to(dtype=torch.float32) == primary_rank)
+    # Break rare ties by keeping only the first matching column.
+    cumulative = primary.cumsum(dim=1)
+    primary = primary & (cumulative == 1)
+    has_primary = primary.any(dim=1)
+    if not bool(has_primary.any()):
+        return logits.masked_fill(~candidate_mask, 0.0).sum() * 0.0
+
+    log_probs = functional.log_softmax(logits, dim=1)
+    selected = torch.where(primary, log_probs, torch.zeros_like(log_probs))
+    per_group = selected.sum(dim=1)
+    return -(per_group[has_primary]).mean()
 
 
 def _batch_positive_weight(
@@ -101,10 +142,23 @@ def combined_loss(
     candidate_mask: torch.Tensor,
     *,
     auxiliary_weight: float,
+    primary_positive_weight: float = 0.0,
+    candidate_ranks: torch.Tensor | None = None,
 ) -> LossOutputs:
-    """Return the combined listwise + weighted auxiliary BCE loss."""
+    """Return the combined listwise + aux BCE (+ optional primary-positive) loss."""
 
     listwise = listwise_softmax_loss(logits, labels, candidate_mask)
     auxiliary = auxiliary_bce_loss(logits, labels, candidate_mask)
-    total = listwise + auxiliary_weight * auxiliary
-    return LossOutputs(total=total, listwise=listwise, auxiliary=auxiliary)
+    if primary_positive_weight > 0.0 and candidate_ranks is not None:
+        primary = primary_positive_listwise_loss(
+            logits, labels, candidate_mask, candidate_ranks
+        )
+    else:
+        primary = logits.masked_fill(~candidate_mask, 0.0).sum() * 0.0
+    total = listwise + auxiliary_weight * auxiliary + primary_positive_weight * primary
+    return LossOutputs(
+        total=total,
+        listwise=listwise,
+        auxiliary=auxiliary,
+        primary_positive=primary,
+    )

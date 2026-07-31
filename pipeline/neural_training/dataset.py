@@ -29,15 +29,12 @@ import pandas as pd
 
 from pipeline.neural_training.config import (
     CANDIDATE_SIDE_FEATURE_COUNT,
+    CANDIDATE_SIDE_FEATURES,
     PAD_INDEX,
     NeuralTrainingConfig,
 )
 
-CANDIDATE_SIDE_FEATURE_COLUMNS = (
-    "candidate_rank_feat",
-    "global_prior",
-    "condition_candidate_prior",
-)
+CANDIDATE_SIDE_FEATURE_COLUMNS = CANDIDATE_SIDE_FEATURES
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, avoids importing torch eagerly
     import torch
@@ -307,6 +304,7 @@ class NeuralBatch:
     candidate_mask: "torch.Tensor"  # (G, C) bool, True where valid
     labels: "torch.Tensor"  # (G, C)
     candidate_side_features: "torch.Tensor"  # (G, C, F)
+    candidate_rank: "torch.Tensor"  # (G, C) catalog ranks (0 on pads)
     sources: tuple[str, ...]
     splits: tuple[str, ...]
     stay_uids: tuple[str, ...]
@@ -335,6 +333,7 @@ class NeuralBatch:
             candidate_mask=self.candidate_mask.to(device),
             labels=self.labels.to(device),
             candidate_side_features=self.candidate_side_features.to(device),
+            candidate_rank=self.candidate_rank.to(device),
             sources=self.sources,
             splits=self.splits,
             stay_uids=self.stay_uids,
@@ -377,6 +376,7 @@ def collate_examples(
     )
     candidate_mask = torch.zeros((group_count, max_candidates), dtype=torch.bool)
     labels = torch.zeros((group_count, max_candidates), dtype=torch.float32)
+    candidate_rank = torch.zeros((group_count, max_candidates), dtype=torch.long)
     side_dim = spec.candidate_side_dim
     candidate_side = torch.zeros(
         (group_count, max_candidates, side_dim), dtype=torch.float32
@@ -409,6 +409,9 @@ def collate_examples(
         )
         candidate_mask[row, :count] = True
         labels[row, :count] = torch.tensor(example.labels, dtype=torch.float32)
+        candidate_rank[row, :count] = torch.tensor(
+            example.candidate_rank, dtype=torch.long
+        )
         if side_dim and count:
             candidate_side[row, :count] = torch.tensor(
                 example.candidate_side_features, dtype=torch.float32
@@ -427,6 +430,7 @@ def collate_examples(
         candidate_mask=candidate_mask,
         labels=labels,
         candidate_side_features=candidate_side,
+        candidate_rank=candidate_rank,
         sources=tuple(example.source for example in examples),
         splits=tuple(example.split for example in examples),
         stay_uids=tuple(example.stay_uid for example in examples),

@@ -93,6 +93,8 @@ def test_collate_pads_events_and_candidates(tmp_path: Path) -> None:
         len(CANDIDATE_TOKENS),
         spec.candidate_side_dim,
     )
+    assert batch.candidate_rank.shape == (2, len(CANDIDATE_TOKENS))
+    assert batch.candidate_rank[0, 0].item() == 1
     # Non-padded event positions must be marked valid in the pad mask.
     assert (~batch.event_pad_mask).sum().item() == sum(
         example.sequence_length for example in examples

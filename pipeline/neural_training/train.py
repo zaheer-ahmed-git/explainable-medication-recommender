@@ -43,6 +43,35 @@ from pipeline.neural_training.metrics import RankingMetricAccumulator
 from pipeline.neural_training.model import TransformerRecommender, build_model
 
 
+class ModelEMA:
+    """Exponential moving average of model parameters for selection/export."""
+
+    def __init__(self, model: nn.Module, decay: float):
+        self.decay = float(decay)
+        self.shadow = {
+            name: parameter.detach().clone()
+            for name, parameter in model.named_parameters()
+            if parameter.requires_grad
+        }
+
+    @torch.no_grad()
+    def update(self, model: nn.Module) -> None:
+        if self.decay <= 0.0:
+            return
+        for name, parameter in model.named_parameters():
+            if not parameter.requires_grad or name not in self.shadow:
+                continue
+            self.shadow[name].mul_(self.decay).add_(
+                parameter.detach(), alpha=1.0 - self.decay
+            )
+
+    @torch.no_grad()
+    def copy_to(self, model: nn.Module) -> None:
+        for name, parameter in model.named_parameters():
+            if name in self.shadow:
+                parameter.data.copy_(self.shadow[name])
+
+
 def set_global_seed(seed: int) -> None:
     """Seed Python, NumPy, and PyTorch RNGs for reproducible runs."""
 
@@ -116,13 +145,19 @@ def _train_one_epoch(
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LRScheduler,
     scaler: "torch.cuda.amp.GradScaler | None",
+    ema: ModelEMA | None,
     epoch: int,
 ) -> dict[str, float]:
     """Run one shuffled training pass and return mean loss components."""
 
     model.train()
     use_amp = scaler is not None
-    totals = {"total": 0.0, "listwise": 0.0, "auxiliary": 0.0}
+    totals = {
+        "total": 0.0,
+        "listwise": 0.0,
+        "auxiliary": 0.0,
+        "primary_positive": 0.0,
+    }
     batch_count = 0
     for batch in iter_batches(
         config,
@@ -142,6 +177,8 @@ def _train_one_epoch(
                 batch.labels,
                 batch.candidate_mask,
                 auxiliary_weight=config.optimization.auxiliary_bce_weight,
+                primary_positive_weight=config.optimization.primary_positive_weight,
+                candidate_ranks=batch.candidate_rank,
             )
         if use_amp and scaler is not None:
             scaler.scale(loss.total).backward()
@@ -157,10 +194,13 @@ def _train_one_epoch(
                 model.parameters(), config.optimization.gradient_clip_norm
             )
             optimizer.step()
+        if ema is not None:
+            ema.update(model)
         scheduler.step()
         totals["total"] += float(loss.total.detach())
         totals["listwise"] += float(loss.listwise.detach())
         totals["auxiliary"] += float(loss.auxiliary.detach())
+        totals["primary_positive"] += float(loss.primary_positive.detach())
         batch_count += 1
     if batch_count == 0:
         raise ValueError("training split produced no batches; run `prepare` first")
@@ -200,6 +240,8 @@ def evaluate_split(
             moved.labels,
             moved.candidate_mask,
             auxiliary_weight=config.optimization.auxiliary_bce_weight,
+            primary_positive_weight=config.optimization.primary_positive_weight,
+            candidate_ranks=moved.candidate_rank,
         )
         loss_total += float(loss.total.detach())
         batch_count += 1
@@ -380,12 +422,18 @@ def train_transformer(config: NeuralTrainingConfig) -> dict[str, Any]:
     )
     use_amp = _use_amp(config, device)
     scaler = torch.cuda.amp.GradScaler() if use_amp else None
+    ema: ModelEMA | None = None
+    if config.optimization.ema_decay > 0.0:
+        ema = ModelEMA(model, decay=config.optimization.ema_decay)
+    # Shadow model used only for EMA validation / checkpoint export.
+    ema_model = build_model(spec, config.architecture).to(device) if ema else None
 
     history: list[dict[str, Any]] = []
     best_metric = float("-inf")
     best_epoch = -1
     best_validation: dict[str, Any] = {}
     epochs_without_improvement = 0
+    min_delta = float(config.optimization.early_stopping_min_delta)
 
     for epoch in range(config.optimization.max_epochs):
         train_metrics = _train_one_epoch(
@@ -396,10 +444,15 @@ def train_transformer(config: NeuralTrainingConfig) -> dict[str, Any]:
             optimizer=optimizer,
             scheduler=scheduler,
             scaler=scaler,
+            ema=ema,
             epoch=epoch,
         )
+        eval_model = model
+        if ema is not None and ema_model is not None:
+            ema.copy_to(ema_model)
+            eval_model = ema_model
         validation_metrics = evaluate_split(
-            model, config, spec, device=device, split="validation"
+            eval_model, config, spec, device=device, split="validation"
         )
         history.append(
             {
@@ -407,21 +460,23 @@ def train_transformer(config: NeuralTrainingConfig) -> dict[str, Any]:
                 "train_loss": train_metrics["total"],
                 "train_listwise_loss": train_metrics["listwise"],
                 "train_auxiliary_loss": train_metrics["auxiliary"],
+                "train_primary_positive_loss": train_metrics["primary_positive"],
                 "learning_rate": train_metrics["learning_rate"],
                 "validation_loss": validation_metrics["loss"],
                 "validation_ndcg_at_10": validation_metrics["ndcg_at_k"],
                 "validation_mrr_at_10": validation_metrics["mrr_at_k"],
                 "validation_hit_rate_at_10": validation_metrics["hit_rate_at_k"],
+                "evaluated_with_ema": ema is not None,
             }
         )
         current = float(validation_metrics["ndcg_at_k"])
-        if current > best_metric:
+        if current > best_metric + min_delta:
             best_metric = current
             best_epoch = epoch
             best_validation = validation_metrics
             epochs_without_improvement = 0
             save_checkpoint(
-                model,
+                eval_model,
                 config,
                 spec,
                 path=config.checkpoint_path,
@@ -483,6 +538,8 @@ def train_transformer(config: NeuralTrainingConfig) -> dict[str, Any]:
             "steps_per_epoch": steps_per_epoch,
             "warmup_epochs": config.optimization.warmup_epochs,
             "min_lr_ratio": config.optimization.min_lr_ratio,
+            "ema_decay": config.optimization.ema_decay,
+            "early_stopping_min_delta": config.optimization.early_stopping_min_delta,
         },
         "model": {
             "parameter_count": best_model.parameter_count(),

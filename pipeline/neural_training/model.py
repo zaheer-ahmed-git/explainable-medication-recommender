@@ -1,13 +1,14 @@
-"""Transformer patient/context recommender (Stage 2 neural branch, v2).
+"""Transformer patient/context recommender (Stage 2 neural branch, v3).
 
 The model implements the Transformer-only branch of the target two-branch
 architecture (``Documentation/TrainingplanDetailed.md``). A Transformer encoder
 with learned positional encodings summarizes the in-window clinical event
-sequence; numeric stay features pass through a dedicated MLP and are fused with
-categorical embeddings and the sequence summary into a patient-context vector.
-A dual-path candidate scorer (MLP + scaled dot-product) ranks every candidate
-medication for the group's index condition, using train-fit candidate-side
-priors and ``log1p(candidate_rank)``.
+sequence; numeric stay features pass through a residual MLP with feature
+dropout and are fused with categorical embeddings and the sequence summary into
+a patient-context vector. A dual-path candidate scorer (MLP + scaled
+dot-product) ranks every candidate medication using projected train-fit
+candidate-side features (rank, priors, and Stage-1-matched graph tabular
+summaries).
 
 The GNN relation branch and the joint fusion head remain documented extension
 points: :class:`TransformerRecommender` exposes its context vector so a later
@@ -113,32 +114,57 @@ class EventSequenceEncoder(nn.Module):
 
 
 class NumericEncoder(nn.Module):
-    """Project high-dimensional stay numerics through a small MLP."""
+    """Project high-dimensional stay numerics through a residual MLP.
+
+    Feature dropout (training only) randomly zeros input columns so the network
+    cannot rely on any single tabular cue — a lightweight stand-in for the
+    column subsampling trees use, without adding FT-Transformer capacity that
+    would worsen the observed epoch-1 overfit.
+    """
 
     def __init__(self, numeric_dim: int, architecture: NeuralArchitecture):
         super().__init__()
         hidden = architecture.context_hidden_dim
+        self.feature_dropout = float(architecture.feature_dropout)
         if numeric_dim <= 0:
             self.network: nn.Module | None = None
             self.output_dim = 0
             return
+        self.input_norm = nn.LayerNorm(numeric_dim)
         self.network = nn.Sequential(
-            nn.LayerNorm(numeric_dim),
             nn.Linear(numeric_dim, hidden),
             nn.GELU(),
             nn.Dropout(architecture.dropout),
             nn.Linear(hidden, hidden),
+            nn.GELU(),
+            nn.Dropout(architecture.dropout),
+            nn.Linear(hidden, hidden),
         )
+        self.skip = (
+            nn.Identity()
+            if numeric_dim == hidden
+            else nn.Linear(numeric_dim, hidden, bias=False)
+        )
+        self.output_norm = nn.LayerNorm(hidden)
         self.output_dim = hidden
 
     def forward(self, numeric: torch.Tensor) -> torch.Tensor:
         if self.network is None:
             return numeric.new_zeros((numeric.shape[0], 0))
-        return self.network(numeric)
+        features = self.input_norm(numeric)
+        if self.training and self.feature_dropout > 0.0 and features.shape[-1] > 0:
+            keep = torch.rand(
+                features.shape[-1], device=features.device, dtype=features.dtype
+            )
+            keep = (keep >= self.feature_dropout).to(features.dtype)
+            # Keep expected scale when columns are dropped.
+            keep = keep / max(1e-6, 1.0 - self.feature_dropout)
+            features = features * keep.unsqueeze(0)
+        return self.output_norm(self.network(features) + self.skip(features))
 
 
 class StaticContextEncoder(nn.Module):
-    """Embed numeric stay features (via MLP) and low-cardinality categoricals."""
+    """Embed numeric stay features (via residual MLP) and low-cardinality categoricals."""
 
     def __init__(self, spec: FeatureLayoutSpec, architecture: NeuralArchitecture):
         super().__init__()
@@ -168,12 +194,40 @@ class StaticContextEncoder(nn.Module):
         return torch.cat(parts, dim=-1)
 
 
+class CandidateSideEncoder(nn.Module):
+    """Project train-fit candidate-side features (rank, priors, graph) to a vector."""
+
+    def __init__(self, candidate_side_dim: int, architecture: NeuralArchitecture):
+        super().__init__()
+        hidden = architecture.candidate_side_hidden_dim
+        self.candidate_side_dim = candidate_side_dim
+        if candidate_side_dim <= 0:
+            self.network: nn.Module | None = None
+            self.output_dim = 0
+            return
+        self.network = nn.Sequential(
+            nn.LayerNorm(candidate_side_dim),
+            nn.Linear(candidate_side_dim, hidden),
+            nn.GELU(),
+            nn.Dropout(architecture.dropout),
+            nn.Linear(hidden, hidden),
+        )
+        self.output_dim = hidden
+
+    def forward(self, candidate_side_features: torch.Tensor) -> torch.Tensor:
+        if self.network is None:
+            return candidate_side_features.new_zeros(
+                (*candidate_side_features.shape[:-1], 0)
+            )
+        return self.network(candidate_side_features)
+
+
 class DualPathCandidateScorer(nn.Module):
     """MLP path plus scaled context–candidate dot product.
 
     Condition and candidate embeddings are owned by
-    :class:`TransformerRecommender`; this module only builds the scoring
-    projections over already-embedded tensors.
+    :class:`TransformerRecommender`; this module scores already-embedded
+    tensors after candidate-side features have been projected.
     """
 
     def __init__(
@@ -181,18 +235,21 @@ class DualPathCandidateScorer(nn.Module):
         *,
         context_dim: int,
         architecture: NeuralArchitecture,
-        candidate_side_dim: int,
+        candidate_side_encoded_dim: int,
     ):
         super().__init__()
-        self.candidate_side_dim = candidate_side_dim
+        self.candidate_side_encoded_dim = candidate_side_encoded_dim
         scorer_input = (
             context_dim
             + architecture.condition_embedding_dim
             + architecture.candidate_embedding_dim
-            + candidate_side_dim
+            + candidate_side_encoded_dim
         )
         self.mlp = nn.Sequential(
             nn.Linear(scorer_input, architecture.scorer_hidden_dim),
+            nn.GELU(),
+            nn.Dropout(architecture.dropout),
+            nn.Linear(architecture.scorer_hidden_dim, architecture.scorer_hidden_dim),
             nn.GELU(),
             nn.Dropout(architecture.dropout),
             nn.Linear(architecture.scorer_hidden_dim, 1),
@@ -202,6 +259,10 @@ class DualPathCandidateScorer(nn.Module):
         self.key_proj = nn.Linear(
             architecture.candidate_embedding_dim, interaction_dim, bias=False
         )
+        # Condition-aware bilinear path: context ⊙ (condition ⊗ candidate).
+        self.condition_gate = nn.Linear(
+            architecture.condition_embedding_dim, interaction_dim, bias=False
+        )
         self.scale = 1.0 / math.sqrt(interaction_dim)
 
     def forward(
@@ -210,7 +271,7 @@ class DualPathCandidateScorer(nn.Module):
         context: torch.Tensor,
         condition: torch.Tensor,
         candidate: torch.Tensor,
-        candidate_side_features: torch.Tensor,
+        candidate_side_encoded: torch.Tensor,
         candidate_mask: torch.Tensor,
     ) -> torch.Tensor:
         candidate_count = candidate.shape[1]
@@ -221,14 +282,15 @@ class DualPathCandidateScorer(nn.Module):
                 context_expanded,
                 condition_expanded,
                 candidate,
-                candidate_side_features,
+                candidate_side_encoded,
             ),
             dim=-1,
         )
         mlp_logits = self.mlp(scorer_input).squeeze(-1)
         query = self.query_proj(context).unsqueeze(1)
         key = self.key_proj(candidate)
-        dot_logits = (query * key).sum(dim=-1) * self.scale
+        gate = torch.sigmoid(self.condition_gate(condition)).unsqueeze(1)
+        dot_logits = (query * key * gate).sum(dim=-1) * self.scale
         logits = mlp_logits + dot_logits
         return logits.masked_fill(~candidate_mask, float("-inf"))
 
@@ -270,10 +332,13 @@ class TransformerRecommender(nn.Module):
             if spec.candidate_side_dim
             else CANDIDATE_SIDE_FEATURE_COUNT
         )
+        self.candidate_side_encoder = CandidateSideEncoder(
+            self.candidate_side_dim, architecture
+        )
         self.scorer = DualPathCandidateScorer(
             context_dim=hidden,
             architecture=architecture,
-            candidate_side_dim=self.candidate_side_dim,
+            candidate_side_encoded_dim=self.candidate_side_encoder.output_dim,
         )
 
     def encode_context(
@@ -317,11 +382,12 @@ class TransformerRecommender(nn.Module):
 
         condition = self.condition_embedding(condition_index)
         candidate = self.candidate_embedding(candidate_index)
+        side_encoded = self.candidate_side_encoder(candidate_side_features)
         return self.scorer(
             context=context,
             condition=condition,
             candidate=candidate,
-            candidate_side_features=candidate_side_features,
+            candidate_side_encoded=side_encoded,
             candidate_mask=candidate_mask,
         )
 
