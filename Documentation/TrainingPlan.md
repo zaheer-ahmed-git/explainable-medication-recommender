@@ -17,14 +17,29 @@
   calibration, canonical-schema scoring, a neural gate/selection report, an
   optional `neural` PyTorch dependency group, a GPU OAR wrapper
   (`scripts/calculco/phase8_p0_neural_training.sh`), and synthetic
-  torch-guarded tests. Every stage is fail-closed behind the Stage 1 gate; the
-  GNN branch and joint fusion (Phase D) are not implemented yet.
+  torch-guarded tests. Every stage is fail-closed behind the Stage 1 gate.
+- Phase D code is implemented in `pipeline.gnn_training` with
+  `prepare`, `train-gnn`, `score-gnn`,
+  `train-fusion`, and `score-fusion` commands; patient-fold
+  graph exclusion, immutable frozen-Transformer caches, standalone
+  qualification, late/residual fusion, and one-shot final gates are covered by
+  focused synthetic tests. CPU prepare and GPU training/scoring OAR wrappers
+  are present. Protected Phase D jobs and metrics remain pending.
 - Experiment version `phase8-p0-neural-transformer-v2` (gap recovery) adds a
   numeric MLP encoder, learned positional encodings, dual-path candidate
   scorer, train-only global/condition×candidate priors plus `log1p(candidate_rank)`,
   warmup+cosine AdamW (`1e-4` / WD `1e-3` / dropout `0.2` / patience 5), and
   per-batch aux-BCE `pos_weight`. Rerun `prepare` before `train` so group
-  caches include the new candidate-side columns.
+  caches include the new candidate-side columns. Protected v2 (job 28374)
+  reached NDCG@10 ≈ `0.3955` (best epoch 1) but still failed the neural gate
+  (+0.0009 vs required +0.005; MRR drop −0.017).
+- Experiment version `phase8-p0-neural-transformer-v3` targets the residual
+  gap without GNN message passing: Stage-1-matched train-fit graph tabular
+  side features (support 5), residual numeric MLP with feature dropout,
+  candidate-side MLP + condition-gated dual-path scorer, catalog-primary
+  listwise term for MRR, EMA selection, and a more regularized schedule
+  (`5e-5` / WD `2e-3` / dropout `0.3` / patience 2). Rerun `prepare` before
+  `train`.
 - Stage 2 on protected data is authorized by the frozen Stage 1 selection. The
   Transformer must beat that Stage 1 winner (not the older Milestone 8B
   `xgboost_frozen_reference` at `0.374899`): required validation NDCG@10 is at
@@ -35,9 +50,9 @@
 
 ## Summary
 - Use the completed `processed/phase8_p0/` package as the immutable training input contract, pinned to `temporal-features-v2`, `graph-suitability-v1`, `observed-medication-label-v1`, and `patient-split-v1`.
-- Stage 1 structured recovery has cleared the Milestone 8B XGBoost bar and
-  authorized the Transformer prototype. Full Transformer-GNN / joint fusion
-  remains later work.
+- Stage 1 structured recovery cleared the Milestone 8B XGBoost bar and
+  authorized the Transformer prototype. Phase D Transformer-GNN/fusion code is
+  implemented; protected execution and validation remain later work.
 - Training still proceeds in gates: Stage 1 structured recovery against frozen
   Milestone 8B XGBoost; Stage 2 neural branch against the Stage 1 recovery
   winner.
@@ -55,9 +70,8 @@
   - MIMIC validation is evaluated once for the locked recovery gate.
   - MIMIC test is final-only after frozen selection.
   - eICU primary `rxnorm_or_atc` remains coverage-only; use `atc3_or_rxnorm` only for external sensitivity metrics.
-- The `pipeline.neural_training` surface is implemented and Stage 1-authorized
-  (Transformer branch only so far):
-  - Inputs: `patient_stay_features`, `event_sequences`, `patient_condition_medication`, and train-derived vocabularies. The GNN inputs `graph_edges` and `patient_subgraphs` are reserved for the not-yet-implemented GNN/fusion branch.
+- The `pipeline.neural_training` surface is implemented and Stage 1-authorized:
+  - Inputs: `patient_stay_features`, `event_sequences`, `patient_condition_medication`, and train-derived vocabularies. Phase D consumes the separate locked `graph_edges`/`patient_subgraphs` contract.
   - Outputs: ignored local model/cache artifacts under `$DATASET_ROOT/processed/phase8_p0/neural/` and aggregate-only reports under `reports/` (`phase8_p0_neural_prepare_manifest.json`, `phase8_p0_neural_training_evaluation.json`, `phase8_p0_neural_score_evaluation.json`, `phase8_p0_neural_training_selection.json`).
   - Gate: compare against Stage 1 recovery winner scores
     (`.../evaluation/gate_recovery/baseline_scores.parquet`, default baseline
@@ -82,12 +96,14 @@
     caps, graph support thresholds, graph-feature transformations,
     candidate-rank ablation, and train out-of-fold fusion.
   - Freeze a new candidate only if it clears the existing 8B lift rule.
-- Phase C: Neural branch smoke tests
+- Phase C: Neural branch smoke tests (implemented)
   - Build tiny synthetic and bounded MIMIC-train loaders without raw-row reporting.
   - Train Transformer-only and GNN-only models separately; compare each to XGBoost and graph-only baselines.
-- Phase D: Hybrid training
+- Phase D: Hybrid training (code implemented; protected run pending)
   - Fuse patient embedding, sequence embedding, candidate medication embedding, and GNN subgraph embedding.
-  - Run validation selection, freeze once, then emit final MIMIC test and ATC-3 eICU sensitivity reports.
+  - Run validation selection, freeze once, and permit one gated MIMIC-test
+    score. eICU remains coverage-only until a separately reviewed ATC-3
+    artifact rebuild is available.
 - Phase E: Reporting
   - Report aggregate metrics only: NDCG@10, MRR@10, Hit@10, precision@10, recall@10, AP, ROC-AUC, Brier score, ECE, coverage, cold-start rates, and label caveats.
 
@@ -103,11 +119,18 @@
   They cover dataset readers, group batching, temporal cutoff enforcement,
   train-only vocab use, the fail-closed preflight/gate, ranking-metric parity,
   and an end-to-end prepare/train/score smoke test.
+- Phase D tests are implemented in `tests/test_gnn_*.py`. They cover
+  exact contracts and artifact hashes, patient-fold graph exclusion, the
+  24-hour temporal cutoff, graph encoding/loading, model and fusion behavior,
+  frozen Transformer immutability, canonical scoring, non-finite-value
+  rejection, atomic final-run claims, and the complete synthetic five-stage
+  workflow.
 - Verification commands:
   - `uv run pytest tests/test_model_ready_package.py tests/test_patient_subgraphs.py`
   - `uv run pytest tests/test_milestone7_baselines.py tests/test_graph_ablation.py`
   - `uv run pytest tests/test_neural_data.py tests/test_neural_metrics.py tests/test_neural_contract.py`
   - `uv sync --group neural && uv run pytest tests/test_neural_dataset.py tests/test_neural_model.py tests/test_neural_train_score.py`
+  - `uv run pytest tests/test_gnn_contract.py tests/test_gnn_crossfit.py tests/test_gnn_data.py tests/test_gnn_dataset.py tests/test_gnn_frozen_transformer.py tests/test_gnn_scoring.py tests/test_gnn_train_score.py`
   - `uv run ruff check .`
   - `uv run ruff format --check .`
 

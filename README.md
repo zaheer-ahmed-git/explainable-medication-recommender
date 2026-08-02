@@ -14,7 +14,9 @@ prescribe medication, and must not replace professional clinical judgment.
 
 ## Current Status
 
-The repository is currently in the data-foundation and architecture stage.
+The repository is in the data-foundation and experimental-model implementation
+stage. The software is research-only and protected-scale GNN results are still
+pending.
 
 - The research objective and target architecture are documented.
 - Licensed MIMIC-IV v3.1, MIMIC-IV-Note v2.2, and eICU-CRD v2.0 data are
@@ -55,8 +57,21 @@ The repository is currently in the data-foundation and architecture stage.
   and a validation gate/selection report against the Stage 1 winner). PyTorch
   is an optional `neural` dependency group and is not synced by default; every
   stage stays fail-closed behind the structured recovery gate and contract
-  lock. The first protected neural OAR run is pending. The GNN relation branch
-  and the joint fusion head are not yet implemented.
+  lock. Protected development runs completed for v1/v2 and failed the neural
+  gate (v2 NDCG@10 ≈ `0.3955`, short of +0.005 and the MRR guard); v3 adds
+  Stage-1-matched graph tabular side features, stronger regularization, and
+  MRR-oriented primary-positive loss. The Phase D relation branch and frozen-
+  Transformer fusion workflow are now implemented in
+  `pipeline.gnn_training`: fold-excluded graph preparation, a native
+  PyTorch R-GCN-style ranker, four pre-registered relation ablations,
+  full-train refit, canonical standalone scoring, late/residual fusion, and
+  fail-closed development/final gates. Focused synthetic tests pass, including
+  the complete five-stage smoke workflow. Protected `prepare` and cross-fit
+  cache construction completed. The first development GPU run (job 8825)
+  stopped in `train-gnn` before optimization because DuckDB had emitted
+  multiple Parquet fragments per logical edge partition; the loader now
+  accepts those fragments deterministically. No protected GNN/fusion model or
+  performance result is claimed until training and scoring are rerun.
 - Focused synthetic tests cover the current source-inventory, cohort,
   profiling, EDA-summary, extraction, and Milestone 5 harmonization contracts.
   Additional synthetic tests cover Milestone 6 temporal cutoffs, censoring,
@@ -72,8 +87,10 @@ The repository is currently in the data-foundation and architecture stage.
   preparation, ranking metrics, shard assembly and collation, the Transformer
   forward pass and losses, the fail-closed preflight/gate, and an end-to-end
   prepare/train/score smoke test (PyTorch-dependent tests skip when the optional
-  `neural` group is not installed). The GNN branch and full Transformer-GNN
-  fusion remain planned.
+  `neural` group is not installed). Phase D GNN tests cover
+  contract/hash drift, patient-fold graph exclusion, temporal cutoffs,
+  bounded graph loading, model/fusion behavior, canonical scoring, final-run
+  claims, and an end-to-end synthetic workflow.
 
 Do not interpret the poster's illustrative medication table or planned system
 diagram as a clinically validated implementation.

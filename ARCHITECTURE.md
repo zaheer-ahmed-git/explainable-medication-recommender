@@ -219,14 +219,17 @@ Models contextual and temporal interactions among demographics, diagnoses,
 laboratories, vitals, prior interventions, and optional note representations.
 **Implemented (Stage 2, gated):** `pipeline.neural_training` encodes the
 train-fit static context and event sequence with a Transformer encoder and
-scores medication candidates with a shared candidate scorer. It consumes only
+scores medication candidates with a dual-path scorer over projected
+candidate-side features (catalog rank, train-fit priors, and Stage-1-matched
+train-fit graph tabular summaries — not GNN message passing). It consumes only
 leakage-reviewed inputs, reuses the training-contract lock and canonical score
 schema, and runs only when the structured recovery gate records
 `neural_training_authorized`. Its validation bar is the Stage 1 recovery
 winner (`xgboost_rank_ndcg_oof_late_fusion`), not Milestone 8B
-`xgboost_frozen_reference`. The GNN branch and joint fusion are not yet
-implemented, so the current head scores candidates from patient/context
-embeddings alone.
+`xgboost_frozen_reference`. The separate Phase D GNN and fusion package is
+implemented. Protected preparation completed, but its first training attempt
+(job 8825) failed in shard loading before model optimization; the corrected
+loader has not yet been exercised by a replacement training job.
 
 ### GNN Branch
 
@@ -234,10 +237,30 @@ Models heterogeneous relations among patients or stays, diagnoses,
 medications, laboratory concepts, and curated medical knowledge. Graph
 construction must avoid test-set and future-event leakage.
 
+**Implemented (Phase D code, protected training pending):**
+`pipeline.gnn_training` consumes the locked Milestone 8 patient
+subgraphs and expands five forward relations into five reverses plus a
+self-loop. A native PyTorch R-GCN-style encoder produces query/candidate/context
+representations and medication logits. Patient-grouped model selection uses
+physical fold-excluded graph caches: held-out patients are removed before
+support counts, coprescription, temporal event edges, vocabulary, cold-start
+state, and edge normalization are fitted. The full-train graph is marked
+`full_train_refit_only` and cannot drive selection.
+
 ### Fusion
 
 Combines patient-context and graph-aware embeddings to score medication
-candidates. Fusion choices and ablations must be recorded.
+candidates. The implemented candidates are constrained within-group late
+fusion and a zero-initialized residual head over a separately trained GNN copy;
+the frozen Transformer and standalone GNN checkpoints remain immutable.
+
+The frozen Transformer cache is a full-train refit, not a Transformer
+cross-fit. Late-fusion weight fitting is therefore recorded as train
+meta-fitting over GNN OOF logits plus a fixed train-derived Transformer
+covariate, not as complete hybrid OOF evidence. Promotion depends on the
+separate MIMIC validation gate. Protected Phase D preparation is complete;
+successful training/scoring and all GNN/hybrid performance claims remain
+pending.
 
 ## Explanation Boundary
 

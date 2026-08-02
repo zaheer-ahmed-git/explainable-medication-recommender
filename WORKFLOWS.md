@@ -521,8 +521,8 @@ gate failed. eICU is not used for fitting or tuning.
 Run the Stage 2 Transformer patient/context branch after the structured
 recovery gate records `neural_training_authorized=true` in
 `reports/phase8_p0_gate_recovery_selection.json` (Stage 1 development has
-already frozen that authorization). The GNN relation branch and
-joint fusion head are not implemented yet; this trains the Transformer branch.
+already frozen that authorization). This section trains the Transformer branch;
+the separate implemented Phase D workflow is documented below.
 
 1. Confirm the gate selection is frozen/authorized and the model-ready
    artifacts, contract lock, and Stage 1 recovery baseline scores exist under
@@ -552,15 +552,17 @@ Every stage runs the same fail-closed preflight (`contract` module): it verifies
 the training-contract lock and re-checks the neural gate. `prepare` builds
 vocabularies with reserved `PAD=0`/`UNK=1` tokens, computes train-only numeric
 and event-value normalization, fits train-only candidate priors
-(global and condition×candidate log-odds) plus `log1p(candidate_rank)`, and
-writes `feature_layout.json` so training and scoring share one feature
-ordering. After any schema/prior change (including the v2 gap-recovery
-upgrade), **rerun `prepare` before `train`** so group caches contain the new
-candidate-side columns. `train` runs the multi-positive listwise softmax plus
-weighted auxiliary BCE (per-batch `pos_weight`) with AdamW warmup+cosine,
-early stopping on validation NDCG@10, gradient clipping, optional mixed
-precision, checkpointing, and post-hoc temperature calibration. `score` writes
-canonical `baseline_scores.parquet` rows, combines them with the Stage 1
+(global and condition×candidate log-odds) plus `log1p(candidate_rank)` and
+Stage-1-matched train-fit graph tabular side features (support threshold 5),
+and writes `feature_layout.json` so training and scoring share one feature
+ordering. After any schema/prior/graph-side change (including the v3
+gap-recovery upgrade), **rerun `prepare` before `train`** so group caches
+contain the new candidate-side columns. `train` runs multi-positive listwise
+softmax, catalog-primary-positive listwise (MRR-oriented), and weighted
+auxiliary BCE (per-batch `pos_weight`) with AdamW warmup+cosine, EMA weight
+selection, early stopping on validation NDCG@10, gradient clipping, optional
+mixed precision, checkpointing, and post-hoc temperature calibration. `score`
+writes canonical `baseline_scores.parquet` rows, combines them with the Stage 1
 recovery baseline scores for authoritative DuckDB metrics, and records the
 neural gate decision against that winner (+0.005 NDCG@10).
 
@@ -597,6 +599,117 @@ under `$DATASET_ROOT/processed/phase8_p0/neural/`.
    passing neural gate and the neural selection is frozen (`--mode final
    --frozen-selection`). eICU is not used for fitting, tuning, or selection.
 
+## Run Phase 8 P0 GNN and Frozen-Transformer Fusion (Phase D)
+
+Phase D code is implemented, but protected preparation/training has not yet
+run. The full-train graph is refit-only; model selection requires five
+patient-fold-excluded graph caches and exact artifact hashes.
+
+1. Export the Calculco paths and sync the existing optional PyTorch group:
+
+```bash
+export PROJECT_HOME=/path/to/ResearchModule
+export DATASET_ROOT=/path/to/protected/Dataset
+export WORK_SCRATCH=/path/to/job/scratch
+export REPORTS_ROOT="${REPORTS_ROOT:-$PROJECT_HOME/reports}"
+cd "$PROJECT_HOME"
+uv sync --group neural
+```
+
+2. Confirm the upstream aggregate contracts and frozen Transformer artifacts
+   exist without opening patient rows:
+
+```bash
+test -f "$REPORTS_ROOT/phase8_p0_training_contract_lock.json"
+test -f "$REPORTS_ROOT/phase8_p0_patient_subgraphs_manifest.json"
+test -f "$REPORTS_ROOT/phase8_p0_neural_training_selection.json"
+test -f "$DATASET_ROOT/processed/phase8_p0/neural/checkpoints/transformer_recommender.pt"
+uv run python -m pipeline.gnn_training --help
+```
+
+3. Review protected-NFS free space. Cross-fit preparation currently writes five
+   physical fold trees, so set `GNN_CROSSFIT_MIN_FREE_GIB` to the
+   reviewed minimum; Python also computes a cache-derived estimate and requires
+   whichever value is larger. Submit the CPU preparation job:
+
+```bash
+export WORK_SCRATCH=/workdir/<lab>/<username>
+# Defaults after the DuckDB OOM on job 7800: 4 threads, 128GB DuckDB ceiling,
+# and a large spill cap on WORK_SCRATCH. Override only after capacity review.
+GNN_CROSSFIT_MIN_FREE_GIB=<reviewed-value> \
+  scripts/calculco/submit_phase8_p0_gnn_prepare.sh
+```
+
+The wrapper requires DuckDB spill under `$WORK_SCRATCH`, runs
+`uv sync --group neural`, and executes only `prepare`. Cross-fit rebuilds the
+~9.5GB patient-subgraph edge table one ranking-group shard at a time so joins
+can spill instead of materializing the full edge set in RAM. It
+does not print patient rows. Preparation is ready only when both reports record
+`status=completed`:
+
+```text
+reports/phase8_p0_gnn_prepare_manifest.json
+reports/phase8_p0_gnn_crossfit_graph_manifest.json
+```
+
+Restricted graph caches, exact hash manifests, frozen Transformer contexts and
+logits, and vocabularies stay under
+`$DATASET_ROOT/processed/phase8_p0/gnn/`.
+
+4. After aggregate review, submit the development GPU chain:
+
+```bash
+scripts/calculco/submit_phase8_p0_gnn_training.sh development
+```
+
+It runs, in order:
+
+```text
+train-gnn → score-gnn → train-fusion → score-fusion
+```
+
+`train-gnn` selects four pre-registered relation variants using
+patient-grouped cross-fit graphs, writes selected GNN OOF logits, refits on the
+full train graph, and calibrates on MIMIC validation. `score-gnn`
+compares the standalone branch with the locked graph-only XGBoost reference.
+Fusion keeps the Transformer immutable and compares late versus residual
+candidates against the frozen Transformer validation metrics.
+
+The frozen Transformer representations are a full-train refit, not
+Transformer OOF outputs. Late-fusion weight fitting is recorded as train
+meta-fitting over GNN OOF logits and a fixed train-derived Transformer
+covariate; only the separate validation gate supports promotion.
+
+5. Review aggregate reports only:
+
+```text
+reports/phase8_p0_gnn_training_evaluation.json
+reports/phase8_p0_gnn_score_evaluation.json
+reports/phase8_p0_gnn_training_selection.json
+reports/phase8_p0_fusion_training_evaluation.json
+reports/phase8_p0_fusion_score_evaluation.json
+reports/phase8_p0_fusion_training_selection.json
+```
+
+6. Final scoring is optional, gated, atomic, and one-shot. Submit exactly one
+   selected scorer only after its development selection authorizes final
+   scoring:
+
+```bash
+GNN_FINAL_SCORE_CONFIRM=I_UNDERSTAND_ONE_SHOT \
+  scripts/calculco/submit_phase8_p0_gnn_training.sh final score-gnn
+
+# Or, for an authorized promoted hybrid:
+GNN_FINAL_SCORE_CONFIRM=I_UNDERSTAND_ONE_SHOT \
+  scripts/calculco/submit_phase8_p0_gnn_training.sh final score-fusion
+```
+
+The scoring command creates an exclusive completion/attempt marker before
+test predictions. A concurrent run or interrupted attempt remains blocked; do
+not remove or reset the marker without a separate reviewed recovery decision.
+The broader MIMIC test split is not wholly unseen because the frozen
+Transformer was evaluated earlier, and reports disclose that limitation.
+
 ## Run Milestone 8 Graph Suitability
 
 1. Confirm Milestone 6 feature/training artifacts exist and Milestone 7 frozen
@@ -620,8 +733,9 @@ oarsub -O "$PROJECT_HOME/scripts/calculco/logs/rm_graph_%jobid%.out" \
    `reports/milestone8_ablation_plan.json`.
 5. Keep concept-level graph edges local under ignored
    `$DATASET_ROOT/processed/graph/milestone8/`.
-6. Do not train or claim a Transformer-GNN improvement until the graph gate and
-   held-out baseline evidence are reviewed.
+6. Treat this as an upstream graph gate only. Phase D still requires its own
+   protected preparation, validation selection, and frozen-artifact review
+   before any Transformer-GNN improvement claim.
 
 ## Run Milestone 8B Graph Ablations
 

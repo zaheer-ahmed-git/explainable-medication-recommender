@@ -12,8 +12,9 @@ integration, and final-mode gating. Milestone 8 graph-readiness tooling has
 synthetic tests for train-only graph fitting, cold-start reporting, sparse
 graphs, and report safety. Milestone 8B graph-aware ablation tooling has
 synthetic tests for train-fit graph features, cold-start flags, fusion,
-final-mode gating, eICU coverage-only behavior, and report safety. Graph neural
-models are still planned and still need their own tests as they are added.
+final-mode gating, eICU coverage-only behavior, and report safety. Phase D
+graph neural and frozen-Transformer fusion code has focused synthetic tests;
+protected-scale verification remains pending.
 Condition mapping tests also cover active A1/B3 sepsis mapping generation and
 `icd_prefix` project-group matching. Training-table tests cover the default
 RxNorm-first candidate token strategy and the ATC-3-first coverage-sensitivity
@@ -34,13 +35,19 @@ isolation, positive-group negative sampling, authoritative ranking-metric
 parity, OOF fusion, changed-lock detection, and final-mode blocking. The
 protected recovery run remains an HPC verification step. Stage 2 neural
 Transformer tests cover DuckDB cache preparation (train-only vocabularies,
-normalization, feature layout, sharded materialization), the NumPy ranking-metric
-accumulator, shard assembly and torch collation, the Transformer forward pass and
-listwise/combined losses, the fail-closed preflight/gate, and an end-to-end
-prepare/train/score smoke test. PyTorch-dependent tests use
-`pytest.importorskip("torch")` and skip when the optional `neural` group is not
-installed. Graph-tensor and GNN model tests remain pending because the GNN branch
-is not implemented yet.
+normalization, priors, Stage-1-matched graph side-feature fallback, feature
+layout, sharded materialization), the NumPy ranking-metric accumulator, shard
+assembly and torch collation, the Transformer forward pass, listwise /
+primary-positive / combined losses, EMA schedule helpers, the fail-closed
+preflight/gate, and an end-to-end prepare/train/score smoke test.
+PyTorch-dependent tests use `pytest.importorskip("torch")` and skip when the
+optional `neural` group is not installed. GNN tests cover fail-closed
+contracts and exact hash locks, fold-excluded support/vocabulary fitting,
+future-event exclusion beyond 24 hours, compact graph loading and batching,
+relation expansion/normalization, R-GCN and fusion behavior, frozen
+Transformer immutability/alignment, canonical score reconciliation,
+non-finite-value rejection, atomic final-run claims, and the complete
+five-stage synthetic smoke workflow.
 The Phase 4-9 visualization generator has a focused synthetic test that verifies
 aggregate-only meeting-pack generation without raw clinical rows.
 
@@ -92,6 +99,10 @@ uv run pytest tests/test_neural_data.py tests/test_neural_metrics.py \
 uv sync --group neural
 uv run pytest tests/test_neural_dataset.py tests/test_neural_model.py \
   tests/test_neural_train_score.py tests/test_neural_schedule.py
+uv run pytest tests/test_gnn_contract.py tests/test_gnn_crossfit.py \
+  tests/test_gnn_data.py tests/test_gnn_dataset.py \
+  tests/test_gnn_frozen_transformer.py tests/test_gnn_scoring.py \
+  tests/test_gnn_train_score.py
 uv run pytest tests/test_phase4_to_9_visualization.py
 uv run pytest tests/test_condition_normalization.py
 uv run pytest tests/test_condition_mapping_builder.py

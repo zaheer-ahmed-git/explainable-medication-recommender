@@ -106,9 +106,9 @@ task context, source-code inspection, or local agent memory.
 - Stage 2 neural training is implemented in the `pipeline.neural_training`
   subpackage (`config`, `contract`, `data`, `dataset`, `model`, `losses`,
   `metrics`, `train`, `score`, `__main__`) as a `prepare`/`train`/`score` CLI
-  with `development` and `final` modes. It trains the Transformer
-  patient/context branch only; the GNN branch and joint fusion head are still
-  planned. PyTorch is an optional `neural` dependency group in `pyproject.toml`,
+  with `development` and `final` modes. It trains and freezes the
+  Transformer patient/context branch. PyTorch is an optional `neural`
+  dependency group in `pyproject.toml`,
   imported lazily so `config`, `contract`, `data`, `metrics`, and CLI parsing
   work without torch. Every stage is fail-closed: it verifies
   `reports/phase8_p0_training_contract_lock.json` and requires
@@ -127,12 +127,37 @@ task context, source-code inspection, or local agent memory.
   `reports/phase8_p0_neural_training_selection.json`. Reserved vocabulary tokens
   are `PAD=0`/`UNK=1` (indices offset by 2); numeric/event-value normalization and
   candidate priors are train-only; the primary seed is 20260617. Experiment
-  `phase8-p0-neural-transformer-v2` adds a numeric MLP, learned PE, dual-path
+  `phase8-p0-neural-transformer-v2` added a numeric MLP, learned PE, dual-path
   scorer, train-fit priors/`log1p(candidate_rank)`, and warmup+cosine AdamW;
-  rerun `prepare` after upgrading. The GPU OAR wrapper is
+  protected v2 (job 28374) reached NDCG@10 ≈ 0.3955 but failed the +0.005 /
+  MRR gate. `phase8-p0-neural-transformer-v3` adds Stage-1-matched train-fit
+  graph tabular side features (support 5), residual numeric MLP with feature
+  dropout, candidate-side MLP, condition-gated scorer, primary-positive
+  listwise for MRR, EMA selection, and stronger regularization; rerun
+  `prepare` after upgrading. The GPU OAR wrapper is
   `scripts/calculco/phase8_p0_neural_training.sh` (installs the `neural` group).
   The first protected development run (v1) completed but failed the neural gate
   (best epoch 0, NDCG@10 ≈ 0.3747 vs Stage 1 ≈ 0.3946).
+- Phase D is implemented in `pipeline.gnn_training`. Its five-stage CLI
+  prepares a full-train refit cache plus five patient-fold-excluded selection
+  caches, extracts immutable Transformer contexts/logits, selects four native
+  PyTorch R-GCN-style ablations, refits and qualifies a standalone relation
+  branch, and trains/qualifies late and zero-initialized residual fusion. Exact
+  artifact hashes, canonical candidate reconciliation, non-finite-value
+  rejection, and atomic one-shot final markers fail closed. The full-train
+  graph is never selection-eligible. The Transformer cache is a full-train
+  refit rather than Transformer OOF, so late alpha is documented as train
+  meta-fitting over GNN OOF plus a fixed Transformer covariate; promotion uses
+  the separate validation gate. Focused synthetic tests pass, including the
+  complete workflow. Protected preparation and cross-fit caches completed.
+  Development job 8825 failed before optimization because edge partitions can
+  contain multiple DuckDB Parquet fragments; the loader now assembles all
+  fragments deterministically. A replacement training/scoring run and all
+  protected GNN/fusion metrics remain pending.
+  CPU prepare and GPU train/score wrappers are
+  `scripts/calculco/phase8_p0_gnn_prepare.sh` and
+  `scripts/calculco/phase8_p0_gnn_training.sh`; prepare requires
+  `WORK_SCRATCH` and a reviewed `GNN_CROSSFIT_MIN_FREE_GIB`.
 - `pipeline.gate_recovery` development mode is memory-bounded after OAR jobs
   28134/28215 were OOM-killed (exit 137): the earlier code scored every
   screening fold against the full ~25.7M-row universe and built both candidate
@@ -166,14 +191,15 @@ task context, source-code inspection, or local agent memory.
   `features.sh`, `build_training_table.sh`, `evaluate_baselines.sh`,
   `submit_evaluate_baselines.sh`, `graph_suitability.sh`,
   `graph_ablation.sh`, `submit_graph_ablation.sh`, the `milestone6.sh`
-  chain, and the GPU `phase8_p0_neural_training.sh` Stage 2 wrapper.
+  chain, the GPU `phase8_p0_neural_training.sh` Stage 2 wrapper, and
+  the Phase D GNN CPU-prepare/GPU-training wrappers.
 - `pipeline.profile_tables` rewrites the entire `reports/quality_profile.json`;
   re-profile all tables (not a `--table` subset) so extraction gate entries are
   preserved.
-- Sepsis sub-cohort extraction, detailed EDA notebooks, the GNN relation branch,
-  and the joint Transformer-GNN fusion head are not yet implemented; the
-  Transformer patient/context branch is implemented in `pipeline.neural_training`
-  (gated). A reproducible sepsis definition and index-condition policy are
+- Sepsis sub-cohort extraction and detailed EDA notebooks remain unimplemented.
+  Transformer, GNN relation, and fusion workflow code exists, but Phase D has
+  not been run on protected data. A reproducible sepsis definition and
+  index-condition policy are
   proposed for approval in
   `Documentation/SepsisCohortAndIndexConditionPolicy.md`.
 - `DepreciatedCode/` contains the ignored synthetic prototype.

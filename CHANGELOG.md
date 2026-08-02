@@ -6,6 +6,17 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ### Changed
 
+- Neural Transformer gap-recovery v3 (`phase8-p0-neural-transformer-v3`) after
+  protected v2 job 28374 nearly tied Stage 1 NDCG but missed the +0.005 lift and
+  failed the MRR guard: join Stage-1-matched train-fit graph tabular features
+  (support threshold 5; context + direct summaries that late fusion carries)
+  into group caches; residual numeric MLP with feature dropout; candidate-side
+  feature MLP; condition-gated dual-path scorer; catalog-primary-positive
+  listwise term for MRR; EMA weight selection; lower peak LR (`5e-5`), higher
+  weight decay / dropout, aux-BCE `0.05`, patience 2 with min-delta. Requires
+  rerunning `prepare` before `train`. GNN message passing and the Stage 1 NDCG
+  gate bar remain unchanged.
+
 - Neural Transformer gap-recovery upgrade
   (`phase8-p0-neural-transformer-v2`): numeric MLP stay encoder, learned
   positional encodings, dual-path candidate scorer (MLP + scaled
@@ -18,6 +29,12 @@ All notable repository changes are recorded here. Dates use ISO 8601.
   NDCG gate bar is unchanged.
 
 ### Fixed
+
+- GNN graph-shard loading now accepts every deterministically ordered Parquet
+  fragment in one logical Hive split/shard partition, matching DuckDB's
+  multi-file `COPY ... PARTITION_BY` output while retaining one logical shard
+  as the memory boundary. This fixes the pre-training loader failure observed
+  in protected development job 8825 without requiring another `prepare` run.
 
 - Neural `prepare` no longer dies on DuckDB `STDDEV_SAMP is out of range` when
   train stay features contain extreme finite values (job 28346). Mean/std now
@@ -56,6 +73,19 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ### Added
 
+- Phase D GNN and frozen-Transformer fusion workflow in
+  `pipeline.gnn_training`: a lazy five-stage CLI; exact immutable
+  contracts; full-train refit and patient-fold-excluded graph caches; frozen
+  Transformer representation extraction; a native PyTorch R-GCN-style
+  medication ranker with four pre-registered relation ablations; standalone
+  selection/refit/calibration/scoring; late and zero-initialized residual
+  fusion; canonical DuckDB scoring; and atomic one-shot final gates. Added
+  focused synthetic contract, leakage, temporal-cutoff, batching, model,
+  scoring, non-finite-value, final-claim, and end-to-end tests. Added separate
+  capacity-gated CPU prepare and GPU train/score Calculco wrappers. Protected
+  preparation later completed; successful training and metrics remain pending
+  after the pre-training loader failure in development job 8825.
+
 - Stage 2 conditional neural Transformer patient/context training pipeline:
   `pipeline.neural_training` implements a `prepare`/`train`/`score` CLI with
   `development` and `final` modes. `prepare` builds train-fit event/condition/
@@ -75,8 +105,7 @@ All notable repository changes are recorded here. Dates use ISO 8601.
   default. Added synthetic torch-guarded tests for data prep, ranking metrics,
   dataset collation, the model/losses, the preflight/gate, and an end-to-end
   smoke test, plus a configurable GPU OAR wrapper
-  (`scripts/calculco/phase8_p0_neural_training.sh`) and job env template. The GNN
-  relation branch and joint fusion head remain planned.
+  (`scripts/calculco/phase8_p0_neural_training.sh`) and job env template.
 
 - Gate-first Phase 8 P0 Stage 1 implementation: `pipeline.training_contract`
   locks pinned versions, aggregate manifest hashes, artifact metadata/schemas,

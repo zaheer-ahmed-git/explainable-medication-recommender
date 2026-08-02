@@ -6,7 +6,7 @@ This roadmap turns the research architecture into a sequence of verifiable
 data and modeling milestones. It supersedes status assumptions in older plans
 when they conflict with the current working tree.
 
-Last reviewed: 2026-07-21.
+Last reviewed: 2026-07-31.
 
 ## Current Baseline
 
@@ -32,10 +32,15 @@ through learned linear and XGBoost baselines with frozen validation selection.
 Milestone 8 graph-readiness tooling is implemented for train-only concept-level
 graph artifacts and aggregate suitability reports; protected graph
 materialization is complete. The gate-first Stage 1 contract audit and rank-aware
-XGBoost recovery runner are implemented (protected run pending), and the Stage 2
-Transformer patient/context branch is implemented in `pipeline.neural_training`
-as fail-closed, gated code; the GNN relation branch and joint fusion remain
-pending. The ignored `DepreciatedCode/` prototype supplies historical conventions
+XGBoost recovery runner and Stage 2 Transformer patient/context branch are
+implemented. Phase D relation modeling and frozen-Transformer fusion are also
+implemented as fail-closed code in `pipeline.gnn_training`, with focused
+synthetic end-to-end verification and Calculco wrappers. Protected Phase D
+cache construction completed; development job 8825 failed in the graph-shard
+loader before training, and the loader has since been corrected to assemble
+multi-file DuckDB partitions. Training, scoring, and metric review remain
+pending. The
+ignored `DepreciatedCode/` prototype supplies historical conventions
 for candidate generation, patient-level splitting, baseline ranking, and ranking
 metrics.
 
@@ -69,6 +74,7 @@ pipeline/
   harmonize.py
   features.py
   build_training_table.py
+  gnn_training/
 tests/
   fixtures/
 notebooks/
@@ -757,7 +763,9 @@ Status: protected-data package materialized (2026-07-17 model-ready manifest);
 Milestone 7/8/8B Phase 8 P0 reports exist; feature promotion gate is
 `reject_inconclusive`. CodexPLAN Step 10 graph/hybrid readiness review
 (2026-07-18) confirms structure pass and hybrid-lift fail: retain frozen
-XGBoost; do not start neural Transformer-GNN yet. See
+XGBoost. That historical decision was later superseded for prototype work by
+the Stage 1 structured-recovery authorization; it did not itself validate a
+Transformer-GNN result. See
 `Documentation/CodexPLANStep10GraphHybridReadiness.md`.
 
 Execution order:
@@ -789,8 +797,11 @@ Status: Stage 1 protected development gate passed. Frozen selection
 `0.374899`). The Stage 2 Transformer patient/context branch is implemented in
 `pipeline.neural_training` and is authorized to run on protected data; it must
 clear +0.005 NDCG@10 over that Stage 1 winner (≈ `0.399607`) with MRR/Hit
-guardrails. The first protected neural OAR run is pending. The GNN relation
-branch and joint fusion head remain unimplemented.
+guardrails. Protected Transformer v1/v2 development runs completed and did not
+clear the neural gate; the v3 implementation is the current code. The GNN
+relation branch and joint fusion workflow are implemented and synthetically
+verified. Protected GNN preparation completed, while training and metric
+review remain pending after the pre-training loader failure in job 8825.
 
 - `pipeline.training_contract` writes an aggregate lock for the four pinned
   versions, completed upstream manifests, file/schema/count metadata,
