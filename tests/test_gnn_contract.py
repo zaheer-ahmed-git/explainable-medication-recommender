@@ -360,6 +360,7 @@ def test_defaults_and_relation_vocabulary_are_stable() -> None:
     assert config.optimization.gradient_clip_norm == 1.0
     assert config.optimization.max_epochs == 30
     assert config.optimization.early_stopping_patience == 3
+    assert config.optimization.mixed_precision is True
     assert len(FORWARD_RELATION_TYPES) == 5
     assert REVERSE_RELATION_TYPES == tuple(
         f"reverse_{relation}" for relation in FORWARD_RELATION_TYPES
@@ -388,6 +389,14 @@ def test_cli_builds_config_without_importing_stage_modules() -> None:
     assert config.fold_count == 5
     assert config.optimization.learning_rate == 3e-4
     assert config.allow_ungated is True
+
+
+def test_cli_can_disable_mixed_precision_for_numerical_fallback() -> None:
+    args = parse_args(["train-gnn", "--no-mixed-precision"])
+
+    config = build_config(args)
+
+    assert config.optimization.mixed_precision is False
 
 
 def test_prepare_accepts_exact_upstream_locks(tmp_path: Path) -> None:

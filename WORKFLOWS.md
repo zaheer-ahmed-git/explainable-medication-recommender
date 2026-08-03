@@ -675,6 +675,12 @@ compares the standalone branch with the locked graph-only XGBoost reference.
 Fusion keeps the Transformer immutable and compares late versus residual
 candidates against the frozen Transformer validation metrics.
 
+CUDA mixed precision remains the default. Recoverable gradient overflow backs
+off the dynamic loss scale and retries the same batch; persistent overflow
+fails closed. For a separately reviewed full-precision diagnostic run, submit
+with `GNN_MIXED_PRECISION=0`. This fallback changes execution precision and
+must be recorded with the run rather than silently enabled.
+
 The frozen Transformer representations are a full-train refit, not
 Transformer OOF outputs. Late-fusion weight fitting is recorded as train
 meta-fitting over GNN OOF logits and a fixed train-derived Transformer

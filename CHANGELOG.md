@@ -30,6 +30,17 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ### Fixed
 
+- GNN and residual-fusion mixed-precision optimization now treats non-finite
+  scaled gradients as recoverable AMP overflow: it skips the unsafe update,
+  backs off the loss scale, and retries the same batch up to a bounded limit.
+  Persistent overflow and any full-precision non-finite gradient still fail
+  closed with model-parameter diagnostics. Epoch history records optimizer
+  steps, overflow retries, maximum pre-clip gradient norm, and minimum loss
+  scale. The CLI and Calculco wrapper expose an explicit
+  `GNN_MIXED_PRECISION=0` fallback while preserving mixed precision by default.
+  This addresses the optimization failure in protected job 10962; successful
+  protected training remains pending.
+
 - GNN graph-shard loading now accepts every deterministically ordered Parquet
   fragment in one logical Hive split/shard partition, matching DuckDB's
   multi-file `COPY ... PARTITION_BY` output while retaining one logical shard
@@ -84,7 +95,8 @@ All notable repository changes are recorded here. Dates use ISO 8601.
   scoring, non-finite-value, final-claim, and end-to-end tests. Added separate
   capacity-gated CPU prepare and GPU train/score Calculco wrappers. Protected
   preparation later completed; successful training and metrics remain pending
-  after the pre-training loader failure in development job 8825.
+  after loader failure job 8825 and mixed-precision optimization failure job
+  10962.
 
 - Stage 2 conditional neural Transformer patient/context training pipeline:
   `pipeline.neural_training` implements a `prepare`/`train`/`score` CLI with

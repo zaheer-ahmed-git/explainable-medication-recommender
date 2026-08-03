@@ -23,7 +23,7 @@
   `scripts/calculco/`, both requiring `$WORK_SCRATCH`. No job was submitted as
   part of implementation.
 
-## Implementation Status (2026-08-03)
+## Implementation Status (2026-08-04)
 
 - The five-stage CLI, native PyTorch relation model, fold-excluded graph
   preparation, frozen-Transformer representation cache, standalone GNN
@@ -37,8 +37,12 @@
   optimization, because the loader required one Parquet file per logical edge
   partition while DuckDB emitted multiple fragments. The loader now combines
   all fragments in deterministic filename order while retaining one logical
-  shard as the memory boundary. No protected GNN/fusion model or metric is
-  claimed until training and scoring are rerun.
+  shard as the memory boundary. Job 10962 passed that boundary, then failed
+  during backpropagation when gradient clipping treated an AMP overflow as
+  fatal. Mixed-precision training now performs bounded loss-scale backoff and
+  retries the same batch; persistent overflow still fails closed with safe
+  parameter-level diagnostics. No protected GNN/fusion model or metric is
+  claimed until training and scoring are rerun successfully.
 - Cross-fit preparation currently materializes five physical fold-excluded
   cache trees. Because this is storage-intensive, protected preparation fails
   unless `GNN_CROSSFIT_MIN_FREE_GIB` records a reviewed threshold and the

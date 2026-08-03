@@ -60,6 +60,21 @@ class FrozenBatch:
     logits: torch.Tensor
 
 
+@dataclass(frozen=True)
+class OptimizerStepResult:
+    """Aggregate-only outcome of one backward/optimizer attempt."""
+
+    optimizer_step_applied: bool
+    gradient_norm: float | None
+    loss_scale_before: float | None
+    loss_scale_after: float | None
+    nonfinite_parameter_names: tuple[str, ...]
+
+
+MAX_AMP_OVERFLOW_RETRIES_PER_BATCH = 24
+TRAIN_LOSS_NAMES = ("total", "listwise", "auxiliary", "primary_positive")
+
+
 def set_global_seed(seed: int) -> None:
     """Seed Python, NumPy, and PyTorch deterministically."""
 
@@ -91,6 +106,100 @@ def require_finite_loss(loss: Any) -> None:
     for name in ("total", "listwise", "auxiliary", "primary_positive"):
         value = getattr(loss, name)
         require_finite_tensor(value, name=f"{name} loss")
+
+
+def backward_optimizer_step(
+    *,
+    loss: torch.Tensor,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scaler: torch.amp.GradScaler | None,
+    gradient_clip_norm: float,
+) -> OptimizerStepResult:
+    """Backpropagate, clip finite gradients, and safely handle AMP overflow.
+
+    Dynamic loss scaling is expected to encounter an overflow while finding a
+    safe scale for large graph batches.  In mixed precision, a non-finite
+    unscaled gradient therefore backs off the scaler and reports that the
+    caller must retry the same batch.  Full-precision non-finite gradients are
+    not recoverable through loss-scale adjustment and remain fatal.
+    """
+
+    if gradient_clip_norm <= 0:
+        raise ValueError("gradient_clip_norm must be positive")
+    named_parameters = tuple(
+        (name, parameter)
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad
+    )
+    parameters = tuple(parameter for _name, parameter in named_parameters)
+    if not parameters:
+        raise ValueError("optimizer step requires trainable model parameters")
+
+    loss_scale_before = float(scaler.get_scale()) if scaler is not None else None
+    if scaler is not None:
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
+    else:
+        loss.backward()
+
+    total_norm = nn.utils.clip_grad_norm_(
+        parameters,
+        gradient_clip_norm,
+        error_if_nonfinite=False,
+    )
+    if bool(torch.isfinite(total_norm).item()):
+        if scaler is not None:
+            scaler.step(optimizer)
+            scaler.update()
+            loss_scale_after = float(scaler.get_scale())
+        else:
+            optimizer.step()
+            loss_scale_after = None
+        return OptimizerStepResult(
+            optimizer_step_applied=True,
+            gradient_norm=float(total_norm.detach().cpu()),
+            loss_scale_before=loss_scale_before,
+            loss_scale_after=loss_scale_after,
+            nonfinite_parameter_names=(),
+        )
+
+    nonfinite_names = tuple(
+        name
+        for name, parameter in named_parameters
+        if parameter.grad is not None
+        and not bool(torch.isfinite(parameter.grad).all().item())
+    )
+    if scaler is None:
+        detail = ", ".join(nonfinite_names[:8])
+        if len(nonfinite_names) > 8:
+            detail += ", ..."
+        if not detail:
+            detail = "finite component gradients with a non-finite total norm"
+        raise FloatingPointError(
+            "full-precision backward produced non-finite gradients: " + detail
+        )
+
+    # ``unscale_`` records per-optimizer inf/nan state. When component
+    # gradients are non-finite, ``step`` safely skips the optimizer update and
+    # ``update`` reduces the scale. A total-norm overflow from individually
+    # finite gradients is not recorded by ``unscale_``, so back it off
+    # explicitly and do not call the optimizer.
+    if nonfinite_names:
+        scaler.step(optimizer)
+        scaler.update()
+    else:
+        assert loss_scale_before is not None
+        scaler.update(new_scale=loss_scale_before * 0.5)
+    loss_scale_after = float(scaler.get_scale())
+    optimizer.zero_grad(set_to_none=True)
+    return OptimizerStepResult(
+        optimizer_step_applied=False,
+        gradient_norm=None,
+        loss_scale_before=loss_scale_before,
+        loss_scale_after=loss_scale_after,
+        nonfinite_parameter_names=nonfinite_names,
+    )
 
 
 def resolve_device(config: GNNTrainingConfig) -> torch.device:
@@ -347,15 +456,13 @@ def _train_gnn_epoch(
     epoch: int,
     shards_root: Path,
     exclude_fold_ids: frozenset[int] | None,
-) -> dict[str, float]:
+) -> dict[str, float | int]:
     model.train()
-    totals = {
-        "total": 0.0,
-        "listwise": 0.0,
-        "auxiliary": 0.0,
-        "primary_positive": 0.0,
-    }
+    totals = dict.fromkeys(TRAIN_LOSS_NAMES, 0.0)
     batch_count = 0
+    amp_overflow_retries = 0
+    max_gradient_norm = 0.0
+    minimum_loss_scale = float(scaler.get_scale()) if scaler is not None else 1.0
     amp_enabled = scaler is not None
     for batch in iter_batches(
         config,
@@ -370,47 +477,73 @@ def _train_gnn_epoch(
         require_positive=True,
     ):
         moved = batch.to(device)
-        optimizer.zero_grad(set_to_none=True)
-        with torch.autocast(device_type=device.type, enabled=amp_enabled):
-            output = model.forward_batch(moved)
-            loss = combined_loss(
+        batch_overflow_retries = 0
+        while True:
+            optimizer.zero_grad(set_to_none=True)
+            with torch.autocast(device_type=device.type, enabled=amp_enabled):
+                output = model.forward_batch(moved)
+                loss = combined_loss(
+                    output.logits,
+                    moved.labels,
+                    moved.candidate_mask,
+                    auxiliary_weight=config.optimization.auxiliary_bce_weight,
+                    primary_positive_weight=(
+                        config.optimization.primary_positive_weight
+                    ),
+                    candidate_ranks=moved.candidate_rank,
+                )
+            require_finite_tensor(
                 output.logits,
-                moved.labels,
-                moved.candidate_mask,
-                auxiliary_weight=config.optimization.auxiliary_bce_weight,
-                primary_positive_weight=config.optimization.primary_positive_weight,
-                candidate_ranks=moved.candidate_rank,
+                name="GNN training logits",
+                mask=moved.candidate_mask,
             )
-        require_finite_tensor(
-            output.logits,
-            name="GNN training logits",
-            mask=moved.candidate_mask,
-        )
-        require_finite_loss(loss)
-        if scaler is not None:
-            scaler.scale(loss.total).backward()
-            scaler.unscale_(optimizer)
-            nn.utils.clip_grad_norm_(
-                model.parameters(),
-                config.optimization.gradient_clip_norm,
-                error_if_nonfinite=True,
+            require_finite_loss(loss)
+            step_result = backward_optimizer_step(
+                loss=loss.total,
+                model=model,
+                optimizer=optimizer,
+                scaler=scaler,
+                gradient_clip_norm=config.optimization.gradient_clip_norm,
             )
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            loss.total.backward()
-            nn.utils.clip_grad_norm_(
-                model.parameters(),
-                config.optimization.gradient_clip_norm,
-                error_if_nonfinite=True,
-            )
-            optimizer.step()
+            if step_result.optimizer_step_applied:
+                assert step_result.gradient_norm is not None
+                max_gradient_norm = max(
+                    max_gradient_norm,
+                    step_result.gradient_norm,
+                )
+                if step_result.loss_scale_after is not None:
+                    minimum_loss_scale = min(
+                        minimum_loss_scale,
+                        step_result.loss_scale_after,
+                    )
+                break
+            batch_overflow_retries += 1
+            amp_overflow_retries += 1
+            if step_result.loss_scale_after is not None:
+                minimum_loss_scale = min(
+                    minimum_loss_scale,
+                    step_result.loss_scale_after,
+                )
+            if batch_overflow_retries >= MAX_AMP_OVERFLOW_RETRIES_PER_BATCH:
+                names = ", ".join(step_result.nonfinite_parameter_names[:8])
+                detail = f"; parameters={names}" if names else ""
+                raise FloatingPointError(
+                    "mixed-precision gradients remained non-finite after "
+                    f"{MAX_AMP_OVERFLOW_RETRIES_PER_BATCH} loss-scale "
+                    f"backoffs for one batch{detail}"
+                )
         for name in totals:
             totals[name] += float(getattr(loss, name).detach())
         batch_count += 1
     if batch_count == 0:
         raise ValueError("GNN fitting scope produced no positive ranking groups")
-    return {name: value / batch_count for name, value in totals.items()}
+    return {
+        **{name: value / batch_count for name, value in totals.items()},
+        "optimizer_step_count": batch_count,
+        "amp_overflow_retry_count": amp_overflow_retries,
+        "max_gradient_norm": max_gradient_norm,
+        "minimum_loss_scale": minimum_loss_scale,
+    }
 
 
 def fit_crossfit_gnn(
@@ -469,7 +602,11 @@ def fit_crossfit_gnn(
         )
         row = {
             "epoch": epoch,
-            **{f"train_{key}_loss": value for key, value in train_metrics.items()},
+            **{f"train_{key}_loss": train_metrics[key] for key in TRAIN_LOSS_NAMES},
+            "train_optimizer_step_count": train_metrics["optimizer_step_count"],
+            "train_amp_overflow_retry_count": train_metrics["amp_overflow_retry_count"],
+            "train_max_gradient_norm": train_metrics["max_gradient_norm"],
+            "train_minimum_loss_scale": train_metrics["minimum_loss_scale"],
             "held_out_ndcg_at_10": held_out["ndcg_at_k"],
             "held_out_mrr_at_10": held_out["mrr_at_k"],
             "held_out_hit_rate_at_10": held_out["hit_rate_at_k"],

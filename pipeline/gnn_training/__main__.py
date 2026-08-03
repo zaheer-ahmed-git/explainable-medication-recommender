@@ -77,6 +77,14 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--early-stopping-patience", type=int, default=None)
     parser.add_argument("--auxiliary-bce-weight", type=float, default=None)
     parser.add_argument("--primary-positive-weight", type=float, default=None)
+    parser.add_argument(
+        "--no-mixed-precision",
+        action="store_true",
+        help=(
+            "Disable CUDA mixed precision as a reviewed numerical-debugging "
+            "fallback; the pre-registered default remains enabled."
+        ),
+    )
 
     parser.add_argument("--duckdb-temp-dir", type=Path, default=DUCKDB_TEMP_DIR)
     parser.add_argument("--duckdb-memory-limit", default=DUCKDB_MEMORY_LIMIT)
@@ -123,6 +131,8 @@ def build_config(args: argparse.Namespace) -> GNNTrainingConfig:
     )
 
     optimization_overrides: dict[str, Any] = {}
+    if args.no_mixed_precision:
+        optimization_overrides["mixed_precision"] = False
     for argument_name, field_name in (
         ("batch_ranking_groups", "batch_ranking_groups"),
         ("max_epochs", "max_epochs"),

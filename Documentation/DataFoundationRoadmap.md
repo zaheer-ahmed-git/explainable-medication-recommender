@@ -36,10 +36,10 @@ XGBoost recovery runner and Stage 2 Transformer patient/context branch are
 implemented. Phase D relation modeling and frozen-Transformer fusion are also
 implemented as fail-closed code in `pipeline.gnn_training`, with focused
 synthetic end-to-end verification and Calculco wrappers. Protected Phase D
-cache construction completed; development job 8825 failed in the graph-shard
-loader before training, and the loader has since been corrected to assemble
-multi-file DuckDB partitions. Training, scoring, and metric review remain
-pending. The
+cache construction completed. Development job 8825 led to multi-file DuckDB
+partition support. Job 10962 passed loading but failed during mixed-precision
+backpropagation; bounded loss-scale backoff and same-batch retry are now
+implemented. Training, scoring, and metric review remain pending. The
 ignored `DepreciatedCode/` prototype supplies historical conventions
 for candidate generation, patient-level splitting, baseline ranking, and ranking
 metrics.
@@ -801,7 +801,8 @@ guardrails. Protected Transformer v1/v2 development runs completed and did not
 clear the neural gate; the v3 implementation is the current code. The GNN
 relation branch and joint fusion workflow are implemented and synthetically
 verified. Protected GNN preparation completed, while training and metric
-review remain pending after the pre-training loader failure in job 8825.
+review remain pending after job 10962 exposed mixed-precision gradient
+overflow following the earlier loader correction.
 
 - `pipeline.training_contract` writes an aggregate lock for the four pinned
   versions, completed upstream manifests, file/schema/count metadata,

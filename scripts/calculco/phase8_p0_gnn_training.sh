@@ -27,6 +27,7 @@ fi
 : "${GNN_FOLD_COUNT:=5}"
 : "${GNN_SHARD_COUNT:=256}"
 : "${GNN_DEVICE:=cuda}"
+: "${GNN_MIXED_PRECISION:=1}"
 : "${DUCKDB_THREADS:=8}"
 : "${DUCKDB_MEMORY_LIMIT:=24GB}"
 
@@ -49,6 +50,11 @@ if [[ "$GNN_MODE" == "final" ]]; then
   fi
 elif [[ "$GNN_MODE" != "development" ]]; then
   echo "GNN_MODE must be development or final." >&2
+  exit 2
+fi
+
+if [[ "$GNN_MIXED_PRECISION" != "0" && "$GNN_MIXED_PRECISION" != "1" ]]; then
+  echo "GNN_MIXED_PRECISION must be 0 or 1." >&2
   exit 2
 fi
 
@@ -102,6 +108,9 @@ if [[ -n "${GNN_MAX_EPOCHS:-}" ]]; then
 fi
 if [[ -n "${GNN_EARLY_STOPPING_PATIENCE:-}" ]]; then
   common_args+=(--early-stopping-patience "$GNN_EARLY_STOPPING_PATIENCE")
+fi
+if [[ "$GNN_MIXED_PRECISION" == "0" ]]; then
+  common_args+=(--no-mixed-precision)
 fi
 if [[ -n "${GNN_LEARNING_RATE:-}" ]]; then
   common_args+=(--learning-rate "$GNN_LEARNING_RATE")

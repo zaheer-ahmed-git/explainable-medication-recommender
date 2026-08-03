@@ -46,7 +46,8 @@ contracts and exact hash locks, fold-excluded support/vocabulary fitting,
 future-event exclusion beyond 24 hours, compact graph loading and batching,
 relation expansion/normalization, R-GCN and fusion behavior, frozen
 Transformer immutability/alignment, canonical score reconciliation,
-non-finite-value rejection, atomic final-run claims, and the complete
+non-finite-value rejection, mixed-precision gradient-overflow backoff,
+full-precision gradient failure, atomic final-run claims, and the complete
 five-stage synthetic smoke workflow.
 The Phase 4-9 visualization generator has a focused synthetic test that verifies
 aggregate-only meeting-pack generation without raw clinical rows.

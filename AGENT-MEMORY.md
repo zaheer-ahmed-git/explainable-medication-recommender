@@ -151,9 +151,11 @@ task context, source-code inspection, or local agent memory.
   the separate validation gate. Focused synthetic tests pass, including the
   complete workflow. Protected preparation and cross-fit caches completed.
   Development job 8825 failed before optimization because edge partitions can
-  contain multiple DuckDB Parquet fragments; the loader now assembles all
-  fragments deterministically. A replacement training/scoring run and all
-  protected GNN/fusion metrics remain pending.
+  contain multiple DuckDB Parquet fragments; the loader now assembles them
+  deterministically. Job 10962 passed loading but failed when clipping saw
+  non-finite mixed-precision gradients. AMP overflow now triggers bounded
+  loss-scale backoff and same-batch retry; full precision remains an explicit
+  fallback. A replacement run and all protected metrics remain pending.
   CPU prepare and GPU train/score wrappers are
   `scripts/calculco/phase8_p0_gnn_prepare.sh` and
   `scripts/calculco/phase8_p0_gnn_training.sh`; prepare requires

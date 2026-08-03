@@ -227,9 +227,11 @@ schema, and runs only when the structured recovery gate records
 `neural_training_authorized`. Its validation bar is the Stage 1 recovery
 winner (`xgboost_rank_ndcg_oof_late_fusion`), not Milestone 8B
 `xgboost_frozen_reference`. The separate Phase D GNN and fusion package is
-implemented. Protected preparation completed, but its first training attempt
-(job 8825) failed in shard loading before model optimization; the corrected
-loader has not yet been exercised by a replacement training job.
+implemented. Protected preparation completed. Job 8825 failed in shard loading
+and led to multi-file partition support; job 10962 passed loading but failed on
+a mixed-precision gradient overflow before producing a model. The optimizer
+now performs bounded loss-scale backoff and same-batch retry, but successful
+protected training remains pending.
 
 ### GNN Branch
 

@@ -36,9 +36,11 @@ from pipeline.gnn_training.fusion import (
 )
 from pipeline.gnn_training.model import GNNRecommender, build_model
 from pipeline.gnn_training.runtime import (
+    MAX_AMP_OVERFLOW_RETRIES_PER_BATCH,
     FrozenTransformerCache,
     TemperatureGrid,
     atomic_torch_save,
+    backward_optimizer_step,
     feature_layout_snapshot,
     iter_gnn_batches,
     load_feature_spec,
@@ -337,8 +339,9 @@ def _refit_residual(
         hidden_dim=config.architecture.fusion_hidden_dim,
         dropout=config.architecture.dropout,
     ).to(device)
+    trainable_model = nn.ModuleList((gnn, head))
     optimizer = torch.optim.AdamW(
-        [*gnn.parameters(), *head.parameters()],
+        trainable_model.parameters(),
         lr=config.optimization.learning_rate,
         weight_decay=config.optimization.weight_decay,
     )
@@ -360,49 +363,54 @@ def _refit_residual(
         ):
             moved = batch.to(device)
             frozen = frozen_cache.align(batch, device=device)
-            optimizer.zero_grad(set_to_none=True)
-            with torch.autocast(device_type=device.type, enabled=amp_enabled):
-                output = gnn.forward_batch(moved)
-                logits = head(
-                    frozen_logits=frozen.logits,
-                    transformer_context=frozen.context,
-                    gnn_candidate_representations=(output.candidate_representations),
-                    candidate_mask=moved.candidate_mask,
-                )
-                loss = combined_loss(
+            batch_overflow_retries = 0
+            while True:
+                optimizer.zero_grad(set_to_none=True)
+                with torch.autocast(device_type=device.type, enabled=amp_enabled):
+                    output = gnn.forward_batch(moved)
+                    logits = head(
+                        frozen_logits=frozen.logits,
+                        transformer_context=frozen.context,
+                        gnn_candidate_representations=(
+                            output.candidate_representations
+                        ),
+                        candidate_mask=moved.candidate_mask,
+                    )
+                    loss = combined_loss(
+                        logits,
+                        moved.labels,
+                        moved.candidate_mask,
+                        auxiliary_weight=(config.optimization.auxiliary_bce_weight),
+                        primary_positive_weight=(
+                            config.optimization.primary_positive_weight
+                        ),
+                        candidate_ranks=moved.candidate_rank,
+                    )
+                require_finite_tensor(
                     logits,
-                    moved.labels,
-                    moved.candidate_mask,
-                    auxiliary_weight=config.optimization.auxiliary_bce_weight,
-                    primary_positive_weight=(
-                        config.optimization.primary_positive_weight
-                    ),
-                    candidate_ranks=moved.candidate_rank,
+                    name="residual-fusion training logits",
+                    mask=moved.candidate_mask,
                 )
-            require_finite_tensor(
-                logits,
-                name="residual-fusion training logits",
-                mask=moved.candidate_mask,
-            )
-            require_finite_loss(loss)
-            if scaler is not None:
-                scaler.scale(loss.total).backward()
-                scaler.unscale_(optimizer)
-                nn.utils.clip_grad_norm_(
-                    [*gnn.parameters(), *head.parameters()],
-                    config.optimization.gradient_clip_norm,
-                    error_if_nonfinite=True,
+                require_finite_loss(loss)
+                step_result = backward_optimizer_step(
+                    loss=loss.total,
+                    model=trainable_model,
+                    optimizer=optimizer,
+                    scaler=scaler,
+                    gradient_clip_norm=config.optimization.gradient_clip_norm,
                 )
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                loss.total.backward()
-                nn.utils.clip_grad_norm_(
-                    [*gnn.parameters(), *head.parameters()],
-                    config.optimization.gradient_clip_norm,
-                    error_if_nonfinite=True,
-                )
-                optimizer.step()
+                if step_result.optimizer_step_applied:
+                    break
+                batch_overflow_retries += 1
+                if batch_overflow_retries >= MAX_AMP_OVERFLOW_RETRIES_PER_BATCH:
+                    names = ", ".join(step_result.nonfinite_parameter_names[:8])
+                    detail = f"; parameters={names}" if names else ""
+                    raise FloatingPointError(
+                        "residual-fusion mixed-precision gradients remained "
+                        "non-finite after "
+                        f"{MAX_AMP_OVERFLOW_RETRIES_PER_BATCH} loss-scale "
+                        f"backoffs for one batch{detail}"
+                    )
             batch_count += 1
         if batch_count == 0:
             raise ValueError("residual full refit has no positive train groups")

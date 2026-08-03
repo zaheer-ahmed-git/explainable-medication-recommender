@@ -67,11 +67,13 @@ pending.
   full-train refit, canonical standalone scoring, late/residual fusion, and
   fail-closed development/final gates. Focused synthetic tests pass, including
   the complete five-stage smoke workflow. Protected `prepare` and cross-fit
-  cache construction completed. The first development GPU run (job 8825)
-  stopped in `train-gnn` before optimization because DuckDB had emitted
-  multiple Parquet fragments per logical edge partition; the loader now
-  accepts those fragments deterministically. No protected GNN/fusion model or
-  performance result is claimed until training and scoring are rerun.
+  cache construction completed. Development job 8825 exposed and led to a fix
+  for multi-file DuckDB edge partitions. Job 10962 passed that loader boundary
+  but failed during mixed-precision backpropagation when gradient clipping
+  rejected an AMP overflow. Training now backs off the loss scale and retries
+  the same batch, with a bounded fail-closed limit and an explicit reviewed
+  full-precision fallback. No protected GNN/fusion model or performance result
+  is claimed until training and scoring are rerun successfully.
 - Focused synthetic tests cover the current source-inventory, cohort,
   profiling, EDA-summary, extraction, and Milestone 5 harmonization contracts.
   Additional synthetic tests cover Milestone 6 temporal cutoffs, censoring,
