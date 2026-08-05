@@ -449,6 +449,7 @@ def score_gnn(config: GNNTrainingConfig) -> dict[str, Any]:
             config.gnn_calibration_path,
             expected_schema_version=GNN_TRAINING_SCHEMA_VERSION,
             allowed_methods=frozenset({"bounded_log_grid_single_temperature_bce"}),
+            allowed_fit_splits=frozenset({"mimiciv_train_patient_grouped_oof"}),
             training_state_path=config.gnn_training_state_path,
         )
         prediction_path = config.gnn_score_root / "_gnn_predictions.parquet"

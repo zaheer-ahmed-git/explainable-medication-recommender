@@ -13,6 +13,7 @@ import copy
 import json
 import math
 import random
+import time
 import uuid
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
@@ -20,6 +21,7 @@ from typing import Any, Callable, Iterator
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import torch
 import torch.nn.functional as functional
 from torch import nn
@@ -127,6 +129,32 @@ def backward_optimizer_step(
 
     if gradient_clip_norm <= 0:
         raise ValueError("gradient_clip_norm must be positive")
+    loss_scale_before = float(scaler.get_scale()) if scaler is not None else None
+    if scaler is not None:
+        scaler.scale(loss).backward()
+    else:
+        loss.backward()
+    return _finish_optimizer_step(
+        model=model,
+        optimizer=optimizer,
+        scaler=scaler,
+        gradient_clip_norm=gradient_clip_norm,
+        loss_scale_before=loss_scale_before,
+    )
+
+
+def _finish_optimizer_step(
+    *,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scaler: torch.amp.GradScaler | None,
+    gradient_clip_norm: float,
+    loss_scale_before: float | None,
+) -> OptimizerStepResult:
+    """Clip and apply gradients accumulated by one or more microbatches."""
+
+    if gradient_clip_norm <= 0:
+        raise ValueError("gradient_clip_norm must be positive")
     named_parameters = tuple(
         (name, parameter)
         for name, parameter in model.named_parameters()
@@ -136,12 +164,8 @@ def backward_optimizer_step(
     if not parameters:
         raise ValueError("optimizer step requires trainable model parameters")
 
-    loss_scale_before = float(scaler.get_scale()) if scaler is not None else None
     if scaler is not None:
-        scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
-    else:
-        loss.backward()
 
     total_norm = nn.utils.clip_grad_norm_(
         parameters,
@@ -202,6 +226,32 @@ def backward_optimizer_step(
     )
 
 
+def _iter_accumulation_windows(
+    batches: Iterator[GNNBatch],
+    *,
+    target_groups: int,
+) -> Iterator[tuple[GNNBatch, ...]]:
+    """Collect bounded microbatches up to the registered optimizer group count."""
+
+    if target_groups < 1:
+        raise ValueError("gradient_accumulation_groups must be positive")
+    pending: list[GNNBatch] = []
+    group_count = 0
+    for batch in batches:
+        if pending and group_count + batch.num_groups > target_groups:
+            yield tuple(pending)
+            pending = []
+            group_count = 0
+        pending.append(batch)
+        group_count += batch.num_groups
+        if group_count >= target_groups:
+            yield tuple(pending)
+            pending = []
+            group_count = 0
+    if pending:
+        yield tuple(pending)
+
+
 def resolve_device(config: GNNTrainingConfig) -> torch.device:
     """Resolve the configured device with a CUDA-first default."""
 
@@ -211,7 +261,49 @@ def resolve_device(config: GNNTrainingConfig) -> torch.device:
 
 
 def use_amp(config: GNNTrainingConfig, device: torch.device) -> bool:
-    return bool(config.optimization.mixed_precision and device.type == "cuda")
+    return precision_mode(config, device) != "fp32"
+
+
+def precision_mode(config: GNNTrainingConfig, device: torch.device) -> str:
+    """Resolve the effective precision without silently changing CUDA modes."""
+
+    configured = config.optimization.precision
+    if configured not in {"fp32", "bf16", "fp16"}:
+        raise ValueError(f"unsupported training precision: {configured}")
+    if (
+        device.type != "cuda"
+        or not config.optimization.mixed_precision
+        or configured == "fp32"
+    ):
+        return "fp32"
+    if configured == "bf16" and not torch.cuda.is_bf16_supported():
+        raise RuntimeError(
+            "BF16 was requested but this CUDA device does not support it; "
+            "select --precision fp16 or --precision fp32 explicitly"
+        )
+    return configured
+
+
+def autocast_dtype(config: GNNTrainingConfig, device: torch.device) -> torch.dtype:
+    """Return the configured autocast dtype for a CUDA mixed-precision run."""
+
+    mode = precision_mode(config, device)
+    if mode == "bf16":
+        return torch.bfloat16
+    if mode == "fp16":
+        return torch.float16
+    return torch.float32
+
+
+def make_grad_scaler(
+    config: GNNTrainingConfig,
+    device: torch.device,
+) -> torch.amp.GradScaler | None:
+    """Use dynamic loss scaling only for FP16; BF16 does not require it."""
+
+    if precision_mode(config, device) != "fp16":
+        return None
+    return torch.amp.GradScaler("cuda", enabled=True)
 
 
 def fold_shards_root(config: GNNTrainingConfig, fold_index: int) -> Path:
@@ -262,6 +354,8 @@ def feature_layout_snapshot(spec: GNNFeatureLayoutSpec) -> dict[str, Any]:
         "node_type_vocabulary": list(spec.node_type_vocabulary),
         "node_role_vocabulary": list(spec.node_role_vocabulary),
         "relation_vocabulary": list(spec.relation_vocabulary),
+        "node_continuous_features": list(spec.node_continuous_features),
+        "time_bin_count": spec.time_bin_count,
         "pad_index": spec.pad_index,
         "unk_index": spec.unk_index,
         "scope": spec.scope,
@@ -456,15 +550,24 @@ def _train_gnn_epoch(
     epoch: int,
     shards_root: Path,
     exclude_fold_ids: frozenset[int] | None,
+    progress_label: str,
+    ablation_variant: str,
+    held_out_fold: int | None,
 ) -> dict[str, float | int]:
     model.train()
     totals = dict.fromkeys(TRAIN_LOSS_NAMES, 0.0)
     batch_count = 0
+    optimizer_step_count = 0
     amp_overflow_retries = 0
     max_gradient_norm = 0.0
     minimum_loss_scale = float(scaler.get_scale()) if scaler is not None else 1.0
-    amp_enabled = scaler is not None
-    for batch in iter_batches(
+    amp_enabled = use_amp(config, device)
+    amp_dtype = autocast_dtype(config, device)
+    group_count = 0
+    node_count = 0
+    edge_count = 0
+    started = time.monotonic()
+    batches = iter_batches(
         config,
         spec,
         split="train",
@@ -475,15 +578,42 @@ def _train_gnn_epoch(
         shards_root=shards_root,
         exclude_fold_ids=exclude_fold_ids,
         require_positive=True,
-    ):
-        moved = batch.to(device)
-        batch_overflow_retries = 0
+    )
+    windows = _iter_accumulation_windows(
+        batches,
+        target_groups=config.optimization.gradient_accumulation_groups,
+    )
+    next_heartbeat = config.optimization.progress_interval_batches
+    for window in windows:
+        window_groups = sum(batch.num_groups for batch in window)
+        window_overflow_retries = 0
+        cpu_rng_state = torch.random.get_rng_state()
+        cuda_rng_state = (
+            torch.cuda.get_rng_state(device) if device.type == "cuda" else None
+        )
         while True:
+            if window_overflow_retries:
+                torch.random.set_rng_state(cpu_rng_state)
+                if cuda_rng_state is not None:
+                    torch.cuda.set_rng_state(cuda_rng_state, device)
             optimizer.zero_grad(set_to_none=True)
-            with torch.autocast(device_type=device.type, enabled=amp_enabled):
-                output = model.forward_batch(moved)
+            loss_scale_before = (
+                float(scaler.get_scale()) if scaler is not None else None
+            )
+            window_losses: list[dict[str, float]] = []
+            for batch in window:
+                moved = batch.to(device)
+                with torch.autocast(
+                    device_type=device.type,
+                    dtype=amp_dtype,
+                    enabled=amp_enabled,
+                ):
+                    output = model.forward_batch(moved)
+                # Losses and calibration-sensitive logits are always evaluated
+                # in FP32, independently of the encoder precision.
+                logits = output.logits.float()
                 loss = combined_loss(
-                    output.logits,
+                    logits,
                     moved.labels,
                     moved.candidate_mask,
                     auxiliary_weight=config.optimization.auxiliary_bce_weight,
@@ -492,18 +622,29 @@ def _train_gnn_epoch(
                     ),
                     candidate_ranks=moved.candidate_rank,
                 )
-            require_finite_tensor(
-                output.logits,
-                name="GNN training logits",
-                mask=moved.candidate_mask,
-            )
-            require_finite_loss(loss)
-            step_result = backward_optimizer_step(
-                loss=loss.total,
+                require_finite_tensor(
+                    logits,
+                    name="GNN training logits",
+                    mask=moved.candidate_mask,
+                )
+                require_finite_loss(loss)
+                weighted_loss = loss.total * (batch.num_groups / window_groups)
+                if scaler is not None:
+                    scaler.scale(weighted_loss).backward()
+                else:
+                    weighted_loss.backward()
+                window_losses.append(
+                    {
+                        name: float(getattr(loss, name).detach())
+                        for name in TRAIN_LOSS_NAMES
+                    }
+                )
+            step_result = _finish_optimizer_step(
                 model=model,
                 optimizer=optimizer,
                 scaler=scaler,
                 gradient_clip_norm=config.optimization.gradient_clip_norm,
+                loss_scale_before=loss_scale_before,
             )
             if step_result.optimizer_step_applied:
                 assert step_result.gradient_norm is not None
@@ -517,29 +658,69 @@ def _train_gnn_epoch(
                         step_result.loss_scale_after,
                     )
                 break
-            batch_overflow_retries += 1
+            window_overflow_retries += 1
             amp_overflow_retries += 1
             if step_result.loss_scale_after is not None:
                 minimum_loss_scale = min(
                     minimum_loss_scale,
                     step_result.loss_scale_after,
                 )
-            if batch_overflow_retries >= MAX_AMP_OVERFLOW_RETRIES_PER_BATCH:
+            if window_overflow_retries >= MAX_AMP_OVERFLOW_RETRIES_PER_BATCH:
                 names = ", ".join(step_result.nonfinite_parameter_names[:8])
                 detail = f"; parameters={names}" if names else ""
                 raise FloatingPointError(
                     "mixed-precision gradients remained non-finite after "
                     f"{MAX_AMP_OVERFLOW_RETRIES_PER_BATCH} loss-scale "
-                    f"backoffs for one batch{detail}"
+                    f"backoffs for one accumulation window{detail}"
                 )
-        for name in totals:
-            totals[name] += float(getattr(loss, name).detach())
-        batch_count += 1
+        optimizer_step_count += 1
+        for batch, batch_losses in zip(window, window_losses, strict=True):
+            for name in totals:
+                totals[name] += batch_losses[name]
+            batch_count += 1
+            group_count += batch.num_groups
+            node_count += batch.num_nodes
+            edge_count += batch.num_edges
+        if batch_count >= next_heartbeat:
+            elapsed = max(time.monotonic() - started, 1e-9)
+            heartbeat: dict[str, Any] = {
+                "event": "gnn_training_heartbeat",
+                "scope": progress_label,
+                "ablation_variant": ablation_variant,
+                "held_out_fold": held_out_fold,
+                "epoch": epoch,
+                "batch_count": batch_count,
+                "ranking_group_count": group_count,
+                "node_count": node_count,
+                "edge_count": edge_count,
+                "optimizer_step_count": optimizer_step_count,
+                "elapsed_seconds": round(elapsed, 1),
+                "ranking_groups_per_second": round(group_count / elapsed, 3),
+                "edges_per_second": round(edge_count / elapsed, 3),
+                "precision": precision_mode(config, device),
+                "loss_scale": (
+                    float(scaler.get_scale()) if scaler is not None else None
+                ),
+                "amp_overflow_retry_count": amp_overflow_retries,
+            }
+            if device.type == "cuda":
+                heartbeat["cuda_memory_allocated_bytes"] = torch.cuda.memory_allocated(
+                    device
+                )
+                heartbeat["cuda_memory_reserved_bytes"] = torch.cuda.memory_reserved(
+                    device
+                )
+                heartbeat["cuda_peak_memory_allocated_bytes"] = (
+                    torch.cuda.max_memory_allocated(device)
+                )
+            print(json.dumps(heartbeat, sort_keys=True), flush=True)
+            while next_heartbeat <= batch_count:
+                next_heartbeat += config.optimization.progress_interval_batches
     if batch_count == 0:
         raise ValueError("GNN fitting scope produced no positive ranking groups")
     return {
         **{name: value / batch_count for name, value in totals.items()},
-        "optimizer_step_count": batch_count,
+        "optimizer_step_count": optimizer_step_count,
         "amp_overflow_retry_count": amp_overflow_retries,
         "max_gradient_norm": max_gradient_norm,
         "minimum_loss_scale": minimum_loss_scale,
@@ -553,6 +734,7 @@ def fit_crossfit_gnn(
     held_out_fold: int,
     ablation_variant: str,
     device: torch.device,
+    crossfit_manifest_sha256: str,
 ) -> FitResult:
     """Fit one ablation against exactly one fold-excluded graph cache."""
 
@@ -569,8 +751,7 @@ def fit_crossfit_gnn(
         lr=config.optimization.learning_rate,
         weight_decay=config.optimization.weight_decay,
     )
-    amp_enabled = use_amp(config, device)
-    scaler = torch.amp.GradScaler("cuda", enabled=True) if amp_enabled else None
+    scaler = make_grad_scaler(config, device)
     shards = fold_shards_root(config, held_out_fold)
     best_metric = float("-inf")
     best_epoch = -1
@@ -578,8 +759,82 @@ def fit_crossfit_gnn(
     best_state: dict[str, torch.Tensor] | None = None
     history: list[dict[str, Any]] = []
     stale_epochs = 0
+    start_epoch = 0
+    resume_path = config.fold_resume_path(held_out_fold, ablation_variant)
+    if resume_path.is_file():
+        try:
+            resume = torch.load(resume_path, map_location=device, weights_only=True)
+            compatible = bool(
+                isinstance(resume, dict)
+                and resume.get("schema_version") == GNN_TRAINING_SCHEMA_VERSION
+                and resume.get("experiment_version") == GNN_EXPERIMENT_VERSION
+                and resume.get("seed") == config.seed
+                and resume.get("held_out_fold_index") == held_out_fold
+                and resume.get("ablation_variant") == ablation_variant
+                and resume.get("architecture") == asdict(config.architecture)
+                and resume.get("optimization") == asdict(config.optimization)
+                and resume.get("feature_layout") == feature_layout_snapshot(spec)
+                and resume.get("crossfit_manifest_sha256") == crossfit_manifest_sha256
+                and isinstance(resume.get("model_state_dict"), dict)
+                and isinstance(resume.get("optimizer_state_dict"), dict)
+                and isinstance(resume.get("history"), list)
+                and isinstance(resume.get("best_state"), dict)
+            )
+            if compatible:
+                model.load_state_dict(resume["model_state_dict"], strict=True)
+                optimizer.load_state_dict(resume["optimizer_state_dict"])
+                if scaler is not None:
+                    scaler_state = resume.get("scaler_state_dict")
+                    if not isinstance(scaler_state, dict):
+                        raise ValueError("FP16 resume state has no loss scaler")
+                    scaler.load_state_dict(scaler_state)
+                history = list(resume["history"])
+                best_metric = float(resume["best_metric"])
+                best_epoch = int(resume["best_epoch"])
+                best_metrics = dict(resume["best_metrics"])
+                best_state = dict(resume["best_state"])
+                stale_epochs = int(resume["stale_epochs"])
+                start_epoch = int(resume["completed_epoch"]) + 1
+                torch.set_rng_state(resume["torch_rng_state"].cpu())
+                if device.type == "cuda" and resume.get("cuda_rng_states"):
+                    torch.cuda.set_rng_state_all(
+                        [state.cpu() for state in resume["cuda_rng_states"]]
+                    )
+                if stale_epochs >= config.optimization.early_stopping_patience:
+                    start_epoch = config.optimization.max_epochs
+                print(
+                    json.dumps(
+                        {
+                            "event": "gnn_epoch_resume",
+                            "scope": f"{ablation_variant}/fold-{held_out_fold}",
+                            "next_epoch": start_epoch,
+                        },
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+        except (OSError, RuntimeError, TypeError, ValueError, KeyError):
+            set_global_seed(config.seed + held_out_fold)
+            model = build_model(
+                spec,
+                config.architecture,
+                ablation_variant=ablation_variant,
+            ).to(device)
+            optimizer = torch.optim.AdamW(
+                model.parameters(),
+                lr=config.optimization.learning_rate,
+                weight_decay=config.optimization.weight_decay,
+            )
+            scaler = make_grad_scaler(config, device)
+            start_epoch = 0
+            history = []
+            best_metric = float("-inf")
+            best_epoch = -1
+            best_metrics = {}
+            best_state = None
+            stale_epochs = 0
 
-    for epoch in range(config.optimization.max_epochs):
+    for epoch in range(start_epoch, config.optimization.max_epochs):
         train_metrics = _train_gnn_epoch(
             model,
             config,
@@ -590,6 +845,9 @@ def fit_crossfit_gnn(
             epoch=epoch,
             shards_root=shards,
             exclude_fold_ids=frozenset({held_out_fold}),
+            progress_label=f"{ablation_variant}/fold-{held_out_fold}",
+            ablation_variant=ablation_variant,
+            held_out_fold=held_out_fold,
         )
         held_out = evaluate_gnn(
             model,
@@ -628,8 +886,36 @@ def fit_crossfit_gnn(
             stale_epochs = 0
         else:
             stale_epochs += 1
-            if stale_epochs >= config.optimization.early_stopping_patience:
-                break
+        atomic_torch_save(
+            {
+                "schema_version": GNN_TRAINING_SCHEMA_VERSION,
+                "experiment_version": GNN_EXPERIMENT_VERSION,
+                "seed": config.seed,
+                "held_out_fold_index": held_out_fold,
+                "ablation_variant": ablation_variant,
+                "architecture": asdict(config.architecture),
+                "optimization": asdict(config.optimization),
+                "feature_layout": feature_layout_snapshot(spec),
+                "crossfit_manifest_sha256": crossfit_manifest_sha256,
+                "completed_epoch": epoch,
+                "model_state_dict": _state_dict_on_cpu(model),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scaler_state_dict": scaler.state_dict() if scaler else None,
+                "history": history,
+                "best_metric": best_metric,
+                "best_epoch": best_epoch,
+                "best_metrics": best_metrics,
+                "best_state": best_state or {},
+                "stale_epochs": stale_epochs,
+                "torch_rng_state": torch.get_rng_state(),
+                "cuda_rng_states": (
+                    torch.cuda.get_rng_state_all() if device.type == "cuda" else []
+                ),
+            },
+            resume_path,
+        )
+        if stale_epochs >= config.optimization.early_stopping_patience:
+            break
     if best_state is None or best_epoch < 0:
         raise ValueError("cross-fit GNN produced no valid held-out metric")
     return FitResult(
@@ -665,8 +951,7 @@ def refit_gnn(
         lr=config.optimization.learning_rate,
         weight_decay=config.optimization.weight_decay,
     )
-    amp_enabled = use_amp(config, device)
-    scaler = torch.amp.GradScaler("cuda", enabled=True) if amp_enabled else None
+    scaler = make_grad_scaler(config, device)
     for epoch in range(epochs):
         _train_gnn_epoch(
             model,
@@ -678,6 +963,9 @@ def refit_gnn(
             epoch=epoch,
             shards_root=config.shards_root,
             exclude_fold_ids=None,
+            progress_label=f"{ablation_variant}/full-refit",
+            ablation_variant=ablation_variant,
+            held_out_fold=None,
         )
     return model
 
@@ -760,6 +1048,35 @@ def fit_gnn_temperature(
         moved = batch.to(device)
         output = model.forward_batch(moved)
         grid.update(output.logits, moved.labels, moved.candidate_mask)
+    return grid.best()
+
+
+@torch.no_grad()
+def fit_oof_temperature(
+    predictions_path: Path,
+    *,
+    device: torch.device,
+    batch_size: int = 100_000,
+) -> float:
+    """Fit temperature on patient-grouped OOF logits in bounded row batches."""
+
+    if batch_size < 1:
+        raise ValueError("OOF calibration batch_size must be positive")
+    grid = TemperatureGrid(device)
+    parquet_file = pq.ParquetFile(predictions_path)
+    for batch in parquet_file.iter_batches(
+        batch_size=batch_size,
+        columns=("gnn_logit", "label_prescribed"),
+    ):
+        payload = batch.to_pydict()
+        logits = torch.tensor(payload["gnn_logit"], dtype=torch.float32, device=device)
+        labels = torch.tensor(
+            payload["label_prescribed"],
+            dtype=torch.float32,
+            device=device,
+        )
+        mask = torch.ones_like(labels, dtype=torch.bool)
+        grid.update(logits, labels, mask)
     return grid.best()
 
 
@@ -892,6 +1209,7 @@ def read_positive_temperature(
     *,
     expected_schema_version: str,
     allowed_methods: frozenset[str],
+    allowed_fit_splits: frozenset[str] = frozenset({"mimiciv_validation"}),
     training_state_path: Path | None = None,
 ) -> float:
     """Read and validate one immutable calibration artifact fail-closed."""
@@ -910,7 +1228,7 @@ def read_positive_temperature(
     if (
         payload.get("schema_version") != expected_schema_version
         or payload.get("method") not in allowed_methods
-        or payload.get("fit_split") != "mimiciv_validation"
+        or payload.get("fit_split") not in allowed_fit_splits
         or not math.isfinite(value)
         or value <= 0
     ):

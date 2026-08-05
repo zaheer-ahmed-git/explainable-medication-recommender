@@ -72,7 +72,7 @@ def _config(tmp_path: Path, *, shard_count: int = 3) -> GNNTrainingConfig:
         mode="final",
         allow_ungated=True,
         shard_count=shard_count,
-        fold_count=3,
+        fold_count=2,
     )
 
 
@@ -243,6 +243,10 @@ def _write_inputs(config: GNNTrainingConfig) -> None:
         "subgraph_id",
         "src_node_index",
         "dst_node_index",
+        "src_id",
+        "dst_id",
+        "src_type",
+        "dst_type",
         "relation_type",
         "support_count",
     )
@@ -256,6 +260,10 @@ def _write_inputs(config: GNNTrainingConfig) -> None:
                 "group-train",
                 10,
                 20,
+                "condition|condition:train",
+                "medication|rxnorm:1",
+                "condition",
+                "medication",
                 FORWARD_RELATION_TYPES[0],
                 3,
             ),
@@ -265,6 +273,10 @@ def _write_inputs(config: GNNTrainingConfig) -> None:
                 "group-train",
                 10,
                 50,
+                "condition|condition:train",
+                "lab|train-lab",
+                "condition",
+                "lab",
                 FORWARD_RELATION_TYPES[1],
                 1,
             ),
@@ -274,6 +286,10 @@ def _write_inputs(config: GNNTrainingConfig) -> None:
                 "group-train",
                 10,
                 60,
+                "condition|condition:train",
+                "vital|train-vital",
+                "condition",
+                "vital",
                 FORWARD_RELATION_TYPES[2],
                 2,
             ),
@@ -283,6 +299,10 @@ def _write_inputs(config: GNNTrainingConfig) -> None:
                 "group-train",
                 10,
                 70,
+                "condition|condition:train",
+                "intervention|train-intervention",
+                "condition",
+                "intervention",
                 FORWARD_RELATION_TYPES[3],
                 4,
             ),
@@ -292,6 +312,10 @@ def _write_inputs(config: GNNTrainingConfig) -> None:
                 "group-train",
                 20,
                 30,
+                "medication|rxnorm:1",
+                "medication|rxnorm:2",
+                "medication",
+                "medication",
                 FORWARD_RELATION_TYPES[4],
                 1,
             ),
@@ -301,6 +325,10 @@ def _write_inputs(config: GNNTrainingConfig) -> None:
                 "group-train",
                 40,
                 30,
+                "medication|rxnorm:3",
+                "medication|rxnorm:2",
+                "medication",
+                "medication",
                 FORWARD_RELATION_TYPES[4],
                 3,
             ),
@@ -397,6 +425,7 @@ def _write_inputs(config: GNNTrainingConfig) -> None:
             "source",
             "split",
             "patient_uid",
+            "stay_uid",
             "ranking_group_id",
             "index_condition_token",
             "candidate_medication_token",
@@ -408,6 +437,7 @@ def _write_inputs(config: GNNTrainingConfig) -> None:
                 "mimiciv",
                 "train",
                 "synthetic-patient-a",
+                "synthetic-stay-a",
                 "group-train",
                 "condition:train",
                 "rxnorm:1",
@@ -418,6 +448,7 @@ def _write_inputs(config: GNNTrainingConfig) -> None:
                 "mimiciv",
                 "train",
                 "synthetic-patient-a",
+                "synthetic-stay-a",
                 "group-train",
                 "condition:train",
                 "rxnorm:2",
@@ -428,6 +459,7 @@ def _write_inputs(config: GNNTrainingConfig) -> None:
                 "mimiciv",
                 "train",
                 "synthetic-patient-a",
+                "synthetic-stay-a",
                 "group-train",
                 "condition:train",
                 "rxnorm:3",
@@ -437,7 +469,8 @@ def _write_inputs(config: GNNTrainingConfig) -> None:
             (
                 "mimiciv",
                 "train",
-                "synthetic-patient-b",
+                "synthetic-patient-d",
+                "synthetic-stay-b",
                 "group-train-zero",
                 "condition:zero",
                 "rxnorm:zero",
@@ -448,6 +481,7 @@ def _write_inputs(config: GNNTrainingConfig) -> None:
                 "mimiciv",
                 "validation",
                 "synthetic-patient-c",
+                "synthetic-stay-c",
                 "group-validation",
                 "condition:validation-only",
                 "rxnorm:validation-only",
@@ -458,11 +492,46 @@ def _write_inputs(config: GNNTrainingConfig) -> None:
                 "mimiciv",
                 "test",
                 "synthetic-patient-d",
+                "synthetic-stay-d",
                 "group-test",
                 "condition:train",
                 "rxnorm:1",
                 1,
                 True,
+            ),
+        ),
+    )
+    write_parquet_rows(
+        config.event_sequences_path,
+        (
+            "source",
+            "split",
+            "stay_uid",
+            "event_type",
+            "event_token",
+            "event_time_hours_from_admit",
+            "value_numeric",
+        ),
+        (
+            ("mimiciv", "train", "synthetic-stay-a", "lab", "train-lab", 8.0, 2.0),
+            ("mimiciv", "train", "synthetic-stay-a", "lab", "train-lab", 16.0, 4.0),
+            (
+                "mimiciv",
+                "train",
+                "synthetic-stay-a",
+                "vital",
+                "train-vital",
+                12.0,
+                80.0,
+            ),
+            (
+                "mimiciv",
+                "validation",
+                "synthetic-stay-c",
+                "lab",
+                "validation-only",
+                10.0,
+                3.0,
             ),
         ),
     )
@@ -495,12 +564,12 @@ def test_prepare_builds_train_vocab_complete_shards_and_safe_manifests(
     assert manifest["preparation_complete"] is False
     assert manifest["components"] == {
         "graph_cache": "completed",
-        "crossfit_graph_caches": "pending",
+        "crossfit_graph_caches": "completed",
         "frozen_transformer_cache": "pending",
     }
     assert manifest["scope"] == FULL_TRAIN_REFIT_SCOPE
     assert manifest["selection_eligible"] is False
-    assert manifest["leakage_policy"]["crossfit_claimed"] is False
+    assert manifest["leakage_policy"]["crossfit_claimed"] is True
     cache_manifest = json.loads(config.cache_manifest_path.read_text(encoding="utf-8"))
     assert cache_manifest["data_safety"] == {
         "contains_row_samples": False,
@@ -524,6 +593,15 @@ def test_prepare_builds_train_vocab_complete_shards_and_safe_manifests(
     assert "condition|condition:validation-only" not in vocab
 
     node_rows = _read_tree(config.shards_root / "nodes")
+    train_lab = next(
+        row
+        for row in node_rows
+        if row["ranking_group_id"] == "group-train" and int(row["node_type_index"]) == 2
+    )
+    assert float(train_lab["value_mask"]) == 1.0
+    assert float(train_lab["value_zscore"]) == pytest.approx(1.0 / math.sqrt(2.0))
+    assert int(train_lab["time_bin_index"]) == 3
+    assert float(train_lab["time_normalized"]) == pytest.approx(16.0 / 24.0)
     validation = [
         row for row in node_rows if row["ranking_group_id"] == "group-validation"
     ]
@@ -561,6 +639,9 @@ FROM (
             assert rows
             shard_sets.append({int(row["shard_id"]) for row in rows})
         assert len({next(iter(values)) for values in shard_sets}) == 1
+    for table_name in ("groups", "nodes", "edges", "candidates"):
+        for partition in (config.shards_root / table_name).glob("split=*/shard_id=*"):
+            assert len(tuple(partition.glob("*.parquet"))) == 1
 
     # Public and local JSON metadata are aggregate/schema-only and never carry
     # the direct patient identifier column or a row value.
@@ -596,8 +677,10 @@ FROM (
     assert examples_by_split["validation"][0].node_concept_index.tolist() == [
         UNK_INDEX,
         UNK_INDEX,
+        UNK_INDEX,
     ]
-    assert examples_by_split["validation"][0].num_edges == 2  # self loops only
+    # Two cached self loops plus stay/condition links and a stay self loop.
+    assert examples_by_split["validation"][0].num_edges == 5
 
 
 def test_prepare_expands_relations_and_normalizes_log_support(
@@ -615,7 +698,14 @@ def test_prepare_expands_relations_and_normalizes_log_support(
     # Six forward edges + six deterministic reverse edges + seven self loops.
     assert len(edges) == 19
     relation_indexes = {int(row["relation_index"]) for row in edges}
-    assert set(range(len(RELATION_TO_INDEX))) <= relation_indexes
+    cached_relation_names = (
+        *FORWARD_RELATION_TYPES[:5],
+        *(f"reverse_{name}" for name in FORWARD_RELATION_TYPES[:5]),
+        SELF_LOOP_RELATION,
+    )
+    assert {
+        RELATION_TO_INDEX[name] for name in cached_relation_names
+    } <= relation_indexes
     assert RELATION_TO_INDEX[SELF_LOOP_RELATION] in relation_indexes
 
     med_relation = RELATION_TO_INDEX[FORWARD_RELATION_TYPES[4]]
@@ -635,6 +725,47 @@ def test_prepare_expands_relations_and_normalizes_log_support(
         key = (int(row["relation_index"]), int(row["dst_node_index"]))
         sums[key] = sums.get(key, 0.0) + float(row["edge_weight"])
     assert all(value == pytest.approx(1.0) for value in sums.values())
+
+
+def test_coerce_single_parquet_partitions_merges_duckdb_fragments(
+    tmp_path: Path,
+) -> None:
+    from pipeline.gnn_training.data import (
+        coerce_single_parquet_partitions,
+        _validate_compact_partitions,
+    )
+
+    partition = tmp_path / "edges" / "split=train" / "shard_id=0"
+    partition.mkdir(parents=True)
+    with duckdb.connect(database=":memory:") as connection:
+        connection.execute(
+            f"""
+COPY (SELECT 1 AS value, 'train' AS split, 0 AS shard_id)
+TO {repr(str(partition / "part_0.parquet"))}
+(FORMAT PARQUET)
+"""
+        )
+        connection.execute(
+            f"""
+COPY (SELECT 2 AS value, 'train' AS split, 0 AS shard_id)
+TO {repr(str(partition / "part_1.parquet"))}
+(FORMAT PARQUET)
+"""
+        )
+    assert len(list(partition.glob("*.parquet"))) == 2
+
+    coerce_single_parquet_partitions(tmp_path / "edges")
+    files = sorted(partition.glob("*.parquet"))
+    assert [path.name for path in files] == ["part_0.parquet"]
+    _validate_compact_partitions([tmp_path / "edges"])
+    with duckdb.connect(database=":memory:") as connection:
+        values = [
+            int(row[0])
+            for row in connection.execute(
+                f"SELECT value FROM read_parquet({repr(str(files[0]))}) ORDER BY value"
+            ).fetchall()
+        ]
+    assert values == [1, 2]
 
 
 def test_stage_owned_promotion_rolls_back_as_one_transaction(
@@ -675,6 +806,7 @@ def test_prepare_rejects_candidate_label_drift_with_matching_group_totals(
             "source",
             "split",
             "patient_uid",
+            "stay_uid",
             "ranking_group_id",
             "index_condition_token",
             "candidate_medication_token",
@@ -686,6 +818,7 @@ def test_prepare_rejects_candidate_label_drift_with_matching_group_totals(
                 "mimiciv",
                 "train",
                 "synthetic-a",
+                "synthetic-stay-a",
                 "group-train",
                 "condition:train",
                 "rxnorm:1",
@@ -696,6 +829,7 @@ def test_prepare_rejects_candidate_label_drift_with_matching_group_totals(
                 "mimiciv",
                 "train",
                 "synthetic-a",
+                "synthetic-stay-a",
                 "group-train",
                 "condition:train",
                 "rxnorm:2",
@@ -706,6 +840,7 @@ def test_prepare_rejects_candidate_label_drift_with_matching_group_totals(
                 "mimiciv",
                 "train",
                 "synthetic-a",
+                "synthetic-stay-a",
                 "group-train",
                 "condition:train",
                 "rxnorm:3",
@@ -716,6 +851,7 @@ def test_prepare_rejects_candidate_label_drift_with_matching_group_totals(
                 "mimiciv",
                 "train",
                 "synthetic-b",
+                "synthetic-stay-b",
                 "group-train-zero",
                 "condition:zero",
                 "rxnorm:zero",
@@ -726,6 +862,7 @@ def test_prepare_rejects_candidate_label_drift_with_matching_group_totals(
                 "mimiciv",
                 "validation",
                 "synthetic-c",
+                "synthetic-stay-c",
                 "group-validation",
                 "condition:validation-only",
                 "rxnorm:validation-only",
@@ -736,6 +873,7 @@ def test_prepare_rejects_candidate_label_drift_with_matching_group_totals(
                 "mimiciv",
                 "test",
                 "synthetic-d",
+                "synthetic-stay-d",
                 "group-test",
                 "condition:train",
                 "rxnorm:1",

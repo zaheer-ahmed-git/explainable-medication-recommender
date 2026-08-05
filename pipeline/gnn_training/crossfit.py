@@ -31,8 +31,9 @@ import json
 import math
 import os
 import shutil
+import time
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,7 @@ from pipeline.gnn_training.data import (
 )
 from pipeline.gnn_training.graph_encode import (
     FORWARD_RELATION_TYPES,
+    NODE_CONTINUOUS_FEATURES,
     NODE_ROLE_TO_INDEX,
     NODE_ROLE_VOCABULARY,
     NODE_TYPE_TO_INDEX,
@@ -72,6 +74,7 @@ from pipeline.gnn_training.graph_encode import (
     RELATION_TYPES,
     RESERVED_TOKEN_COUNT,
     SELF_LOOP_RELATION,
+    TIME_BIN_COUNT,
     UNK_INDEX,
     UNK_TOKEN,
 )
@@ -80,9 +83,10 @@ from pipeline.training_contract import load_json, schema_columns, sha256_file
 DEVELOPMENT_SOURCE = "mimiciv"
 CROSS_FIT_CAPACITY_ENV = "GNN_CROSSFIT_MIN_FREE_GIB"
 GIBIBYTE = 1024**3
-CROSS_FIT_GRAPH_SCHEMA_VERSION = "phase8-p0-gnn-crossfit-graph-v1"
-CROSS_FIT_CACHE_SCHEMA_VERSION = "phase8-p0-gnn-crossfit-cache-v1"
+CROSS_FIT_GRAPH_SCHEMA_VERSION = "phase8-p1-gnn-crossfit-graph-v2"
+CROSS_FIT_CACHE_SCHEMA_VERSION = "phase8-p1-gnn-crossfit-cache-v2"
 CROSS_FIT_ARTIFACT_LOCK_VERSION = "phase8-p0-gnn-crossfit-artifact-lock-v1"
+PREFLIGHT_ATTESTATION_VERSION = "phase8-p0-crossfit-preflight-attestation-v1"
 GRAPH_MANIFEST_NAME = "graph_manifest.json"
 
 _INPUT_COLUMNS: dict[str, tuple[str, ...]] = {
@@ -142,6 +146,7 @@ _INPUT_COLUMNS: dict[str, tuple[str, ...]] = {
         "event_type",
         "event_token",
         "event_time_hours_from_admit",
+        "value_numeric",
     ),
 }
 
@@ -302,9 +307,14 @@ def _artifact_hashes(
     root: Path,
     *,
     excluded_relative_paths: Sequence[str] = (),
+    progress_interval_files: int | None = None,
+    progress_label: str = "artifact_tree",
 ) -> dict[str, str]:
+    """Hash an artifact tree once, with optional aggregate-only progress."""
+
     excluded = set(excluded_relative_paths)
     hashes: dict[str, str] = {}
+    started = time.monotonic()
     for path in sorted(
         candidate for candidate in root.rglob("*") if candidate.is_file()
     ):
@@ -312,6 +322,22 @@ def _artifact_hashes(
         if relative in excluded:
             continue
         hashes[relative] = sha256_file(path)
+        if (
+            progress_interval_files is not None
+            and len(hashes) % progress_interval_files == 0
+        ):
+            print(
+                json.dumps(
+                    {
+                        "event": "artifact_integrity_heartbeat",
+                        "scope": progress_label,
+                        "file_count": len(hashes),
+                        "elapsed_seconds": round(time.monotonic() - started, 1),
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
     return hashes
 
 
@@ -325,6 +351,99 @@ def artifact_tree_digest(hashes: Mapping[str, str]) -> str:
         digest.update(file_hash.encode("ascii"))
         digest.update(b"\n")
     return digest.hexdigest()
+
+
+def _artifact_stat_digest(root: Path) -> tuple[int, str]:
+    """Return a cheap allocation-local fingerprint without rereading bodies."""
+
+    digest = hashlib.sha256()
+    count = 0
+    for path in sorted(
+        candidate for candidate in root.rglob("*") if candidate.is_file()
+    ):
+        stat = path.stat()
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(stat.st_size).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(str(stat.st_mtime_ns).encode("ascii"))
+        digest.update(b"\n")
+        count += 1
+    return count, digest.hexdigest()
+
+
+def _preflight_attestation_path(config: GNNTrainingConfig) -> Path | None:
+    """Resolve a per-OAR-allocation attestation below WORK_SCRATCH."""
+
+    allocation_id = os.environ.get("OAR_JOB_ID")
+    scratch = os.environ.get("WORK_SCRATCH")
+    if not allocation_id or not scratch:
+        return None
+    scratch_root = Path(scratch).expanduser().resolve()
+    configured = os.environ.get("GNN_PREFLIGHT_ATTESTATION_PATH")
+    path = (
+        Path(configured).expanduser().resolve()
+        if configured
+        else scratch_root / "gnn-preflight" / f"oar-{allocation_id}.json"
+    )
+    if not _is_under(path, scratch_root):
+        raise ValueError("GNN preflight attestation must remain below WORK_SCRATCH")
+    if _is_under(path, config.crossfit_root):
+        raise ValueError("GNN preflight attestation must be outside immutable caches")
+    return path
+
+
+def _attestation_is_current(
+    config: GNNTrainingConfig,
+    *,
+    payload: Mapping[str, Any],
+    stat_file_count: int,
+    stat_digest: str,
+) -> bool:
+    path = _preflight_attestation_path(config)
+    if path is None or not path.is_file():
+        return False
+    try:
+        attestation = load_json(path)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return False
+    return (
+        attestation.get("schema_version") == PREFLIGHT_ATTESTATION_VERSION
+        and attestation.get("allocation_id") == os.environ.get("OAR_JOB_ID")
+        and attestation.get("crossfit_root") == str(config.crossfit_root.resolve())
+        and attestation.get("manifest_sha256")
+        == sha256_file(config.crossfit_graph_manifest_path)
+        and attestation.get("crossfit_tree_digest")
+        == payload.get("crossfit_tree_digest")
+        and attestation.get("stat_file_count") == stat_file_count
+        and attestation.get("stat_digest") == stat_digest
+    )
+
+
+def _write_preflight_attestation(
+    config: GNNTrainingConfig,
+    *,
+    payload: Mapping[str, Any],
+    stat_file_count: int,
+    stat_digest: str,
+) -> None:
+    path = _preflight_attestation_path(config)
+    if path is None:
+        return
+    _write_json(
+        path,
+        {
+            "schema_version": PREFLIGHT_ATTESTATION_VERSION,
+            "allocation_id": os.environ["OAR_JOB_ID"],
+            "crossfit_root": str(config.crossfit_root.resolve()),
+            "manifest_sha256": sha256_file(config.crossfit_graph_manifest_path),
+            "crossfit_tree_digest": payload.get("crossfit_tree_digest"),
+            "stat_file_count": stat_file_count,
+            "stat_digest": stat_digest,
+            "verified_at": _utc_now(),
+        },
+    )
+    path.chmod(0o600)
 
 
 def _contract_digest(config: GNNTrainingConfig) -> str | None:
@@ -766,6 +885,8 @@ def _copy_partitioned(
     query: str,
     output_root: Path,
 ) -> int:
+    from pipeline.gnn_training.data import coerce_single_parquet_partitions
+
     output_root.mkdir(parents=True, exist_ok=True)
     row = connection.execute(
         f"""
@@ -776,12 +897,26 @@ TO {sql_string(output_root)}
     COMPRESSION ZSTD,
     PARTITION_BY (split, shard_id),
     WRITE_PARTITION_COLUMNS TRUE,
+    PER_THREAD_OUTPUT FALSE,
     FILENAME_PATTERN 'part_{{i}}',
     OVERWRITE_OR_IGNORE TRUE
 )
 """
     ).fetchone()
+    coerce_single_parquet_partitions(output_root)
     return int(row[0]) if row is not None and row[0] is not None else 0
+
+
+def _validate_compact_partitions(table_roots: Iterable[Path]) -> None:
+    """Require at most one Parquet fragment per table/split/shard partition."""
+
+    for table_root in table_roots:
+        for shard_directory in table_root.glob("split=*/shard_id=*"):
+            if len(tuple(shard_directory.glob("*.parquet"))) > 1:
+                raise RuntimeError(
+                    "cross-fit cache compaction invariant failed: a "
+                    "table/split/shard partition contains multiple fragments"
+                )
 
 
 def _case_index(expression: str, mapping: Mapping[str, int], *, kind: str) -> str:
@@ -809,6 +944,7 @@ WITH scoped_nodes AS MATERIALIZED (
     SELECT
         nodes.source,
         nodes.split,
+        groups.stay_uid,
         nodes.subgraph_id AS ranking_group_id,
         nodes.node_index AS old_node_index,
         nodes.node_id,
@@ -871,6 +1007,7 @@ numbered AS (
 SELECT
     source,
     split,
+    stay_uid,
     ranking_group_id,
     patient_fold_id,
     shard_id,
@@ -933,9 +1070,11 @@ FROM numbered
 
 
 def _nodes_cache_query(
+    config: GNNTrainingConfig,
     *,
     raw_nodes_path: Path,
     vocabulary_path: Path,
+    fold_index: int,
 ) -> str:
     nodes = parquet_scan(raw_nodes_path)
     vocabulary = parquet_scan(vocabulary_path)
@@ -949,7 +1088,112 @@ def _nodes_cache_query(
         NODE_ROLE_TO_INDEX,
         kind="node role",
     )
+    events = parquet_scan(config.event_sequences_path)
+    finite_value = (
+        "CASE WHEN events.value_numeric IS NOT NULL "
+        "AND isfinite(CAST(events.value_numeric AS DOUBLE)) "
+        "AND ABS(CAST(events.value_numeric AS DOUBLE)) <= 1e100 "
+        "THEN CAST(events.value_numeric AS DOUBLE) ELSE NULL END"
+    )
     return f"""
+WITH fit_stays AS MATERIALIZED (
+    SELECT DISTINCT source, split, stay_uid
+    FROM {nodes}
+    WHERE patient_fold_id <> {int(fold_index)}
+),
+fit_numeric_events AS MATERIALIZED (
+    SELECT
+        events.event_type,
+        events.event_token,
+        {finite_value} AS numeric_value
+    FROM {events} AS events
+    INNER JOIN fit_stays
+        USING (source, split, stay_uid)
+    WHERE events.event_type IN ('lab', 'vital')
+        AND events.event_token IS NOT NULL
+        AND events.event_time_hours_from_admit >= 0
+        AND events.event_time_hours_from_admit <= 24.0
+),
+fit_stats AS MATERIALIZED (
+    SELECT
+        event_type,
+        event_token,
+        AVG(numeric_value) AS value_mean,
+        STDDEV_SAMP(numeric_value) AS value_std
+    FROM fit_numeric_events
+    WHERE numeric_value IS NOT NULL
+    GROUP BY event_type, event_token
+),
+node_event_summary AS MATERIALIZED (
+    SELECT
+        events.source,
+        events.split,
+        events.stay_uid,
+        events.event_type,
+        events.event_token,
+        MAX(events.event_time_hours_from_admit) AS last_time,
+        ARG_MAX(
+            {finite_value},
+            events.event_time_hours_from_admit
+        ) FILTER (WHERE {finite_value} IS NOT NULL) AS last_value,
+        REGR_SLOPE(
+            {finite_value},
+            events.event_time_hours_from_admit
+        ) FILTER (WHERE {finite_value} IS NOT NULL) AS value_slope
+    FROM {events} AS events
+    INNER JOIN (
+        SELECT DISTINCT source, split, stay_uid FROM {nodes}
+    ) AS scoped_stays
+        USING (source, split, stay_uid)
+    WHERE events.event_type IN ('lab', 'vital', 'intervention')
+        AND events.event_token IS NOT NULL
+        AND events.event_time_hours_from_admit >= 0
+        AND events.event_time_hours_from_admit <= 24.0
+    GROUP BY
+        events.source,
+        events.split,
+        events.stay_uid,
+        events.event_type,
+        events.event_token
+),
+attributes AS (
+    SELECT
+        summary.*,
+        CASE
+            WHEN summary.last_value IS NOT NULL
+                AND stats.value_std IS NOT NULL
+                AND stats.value_std > 1e-12
+            THEN GREATEST(-10.0, LEAST(
+                10.0,
+                (summary.last_value - stats.value_mean) / stats.value_std
+            ))
+            ELSE 0.0
+        END AS value_zscore,
+        CASE WHEN summary.last_value IS NULL THEN 0.0 ELSE 1.0 END AS value_mask,
+        CASE
+            WHEN summary.last_value IS NULL
+                OR stats.value_std IS NULL
+                OR stats.value_std <= 1e-12 THEN 0.0
+            WHEN (summary.last_value - stats.value_mean) / stats.value_std <= -2.0
+                THEN -1.0
+            WHEN (summary.last_value - stats.value_mean) / stats.value_std >= 2.0
+                THEN 1.0
+            ELSE 0.0
+        END AS abnormal_direction,
+        CASE
+            WHEN summary.value_slope IS NOT NULL
+                AND stats.value_std IS NOT NULL
+                AND stats.value_std > 1e-12
+            THEN GREATEST(-10.0, LEAST(
+                10.0,
+                summary.value_slope * 24.0 / stats.value_std
+            ))
+            ELSE 0.0
+        END AS trend_zscore_per_window
+    FROM node_event_summary AS summary
+    LEFT JOIN fit_stats AS stats
+        USING (event_type, event_token)
+)
 SELECT
     nodes.source,
     nodes.split,
@@ -961,10 +1205,29 @@ SELECT
     CAST({node_type} AS INTEGER) AS node_type_index,
     CAST({node_role} AS INTEGER) AS node_role_index,
     nodes.observed_predecision,
-    nodes.cold_start
+    nodes.cold_start,
+    CAST(COALESCE(attributes.value_zscore, 0.0) AS REAL) AS value_zscore,
+    CAST(COALESCE(attributes.value_mask, 0.0) AS REAL) AS value_mask,
+    CAST(COALESCE(attributes.abnormal_direction, 0.0) AS REAL)
+        AS abnormal_direction,
+    CAST(COALESCE(attributes.trend_zscore_per_window, 0.0) AS REAL)
+        AS trend_zscore_per_window,
+    CAST(COALESCE(attributes.last_time / 24.0, 0.0) AS REAL)
+        AS time_normalized,
+    CAST(
+        CASE
+            WHEN attributes.last_time IS NULL THEN 0
+            ELSE LEAST(4, FLOOR(attributes.last_time / 6.0) + 1)
+        END AS INTEGER
+    ) AS time_bin_index
 FROM {nodes} AS nodes
 LEFT JOIN {vocabulary} AS vocab
     ON nodes.node_id = vocab.node_id
+LEFT JOIN attributes
+    ON nodes.source = attributes.source
+    AND nodes.split = attributes.split
+    AND nodes.stay_uid = attributes.stay_uid
+    AND nodes.node_id = attributes.event_type || '|' || attributes.event_token
 """
 
 
@@ -1487,6 +1750,10 @@ def _feature_layout(
         "relation_to_index": {
             name: int(index) for name, index in RELATION_TO_INDEX.items()
         },
+        "node_continuous_features": list(NODE_CONTINUOUS_FEATURES),
+        "time_bin_count": TIME_BIN_COUNT,
+        "time_bin_policy": "missing_or_four_six_hour_predecision_bins",
+        "numeric_attribute_fit_scope": "mimiciv_train_excluding_held_out_fold",
         "shard_count": int(config.shard_count),
         "shard_key": ["source", "ranking_group_id"],
         "edge_support_transform": "log1p",
@@ -1652,8 +1919,10 @@ def _build_fold(
     table_counts[NODE_TABLE] = _copy_partitioned(
         connection,
         _nodes_cache_query(
+            config,
             raw_nodes_path=raw_nodes_path,
             vocabulary_path=concept_vocabulary_path,
+            fold_index=fold_index,
         ),
         shards_root / NODE_TABLE,
     )
@@ -1678,6 +1947,10 @@ def _build_fold(
             candidate_cache_root=shards_root / CANDIDATE_TABLE,
         ),
         shards_root / GROUP_TABLE,
+    )
+    _validate_compact_partitions(
+        shards_root / table_name
+        for table_name in (GROUP_TABLE, NODE_TABLE, EDGE_TABLE, CANDIDATE_TABLE)
     )
 
     _validate_complete_cache(connection, cache_root=shards_root)
@@ -2070,7 +2343,37 @@ def crossfit_artifact_lock_errors(
             )
         ]
 
+    if config.crossfit_root.is_dir():
+        stat_file_count, stat_digest = _artifact_stat_digest(config.crossfit_root)
+        if _attestation_is_current(
+            config,
+            payload=payload,
+            stat_file_count=stat_file_count,
+            stat_digest=stat_digest,
+        ):
+            print(
+                json.dumps(
+                    {
+                        "event": "crossfit_preflight_attestation_reused",
+                        "file_count": stat_file_count,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            return []
+    else:
+        stat_file_count, stat_digest = 0, ""
+
     errors: list[dict[str, Any]] = []
+    if config.crossfit_root.is_dir():
+        complete_tree_hashes = _artifact_hashes(
+            config.crossfit_root,
+            progress_interval_files=10_000,
+            progress_label="crossfit_preflight",
+        )
+    else:
+        complete_tree_hashes = {}
     by_index = {
         row.get("fold_index"): row
         for row in folds
@@ -2107,12 +2410,12 @@ def crossfit_artifact_lock_errors(
         for artifact_name, path in expected_paths.items():
             lock = locks.get(artifact_name)
             expected_relative = path.relative_to(fold_root).as_posix()
+            tree_relative = path.relative_to(config.crossfit_root).as_posix()
             if (
                 not isinstance(lock, dict)
                 or lock.get("relative_path") != expected_relative
                 or not isinstance(lock.get("sha256"), str)
-                or not path.is_file()
-                or sha256_file(path) != lock["sha256"]
+                or complete_tree_hashes.get(tree_relative) != lock["sha256"]
             ):
                 errors.append(
                     _lock_error(
@@ -2161,7 +2464,8 @@ def crossfit_artifact_lock_errors(
                     )
                 )
                 continue
-            if not path.is_file() or sha256_file(path) != expected_hash:
+            tree_relative = path.relative_to(config.crossfit_root).as_posix()
+            if complete_tree_hashes.get(tree_relative) != expected_hash:
                 errors.append(
                     _lock_error(
                         "crossfit_artifact_hash_mismatch",
@@ -2170,14 +2474,15 @@ def crossfit_artifact_lock_errors(
                         artifact_name=relative,
                     )
                 )
-        actual_tree = artifact_tree_digest(
-            _artifact_hashes(
-                fold_root,
-                excluded_relative_paths=(
-                    cache_manifest_path.relative_to(fold_root).as_posix(),
-                ),
-            )
-        )
+        fold_prefix = fold_root.relative_to(config.crossfit_root).as_posix() + "/"
+        excluded_manifest = cache_manifest_path.relative_to(fold_root).as_posix()
+        fold_hashes = {
+            tree_relative.removeprefix(fold_prefix): file_hash
+            for tree_relative, file_hash in complete_tree_hashes.items()
+            if tree_relative.startswith(fold_prefix)
+            and tree_relative.removeprefix(fold_prefix) != excluded_manifest
+        }
+        actual_tree = artifact_tree_digest(fold_hashes)
         if (
             cache_manifest.get("artifact_tree_digest") != actual_tree
             or locks.get("artifact_tree_digest") != actual_tree
@@ -2191,9 +2496,7 @@ def crossfit_artifact_lock_errors(
             )
 
     if config.crossfit_root.is_dir():
-        actual_crossfit_tree = artifact_tree_digest(
-            _artifact_hashes(config.crossfit_root)
-        )
+        actual_crossfit_tree = artifact_tree_digest(complete_tree_hashes)
         if payload.get("crossfit_tree_digest") != actual_crossfit_tree:
             errors.append(
                 _lock_error(
@@ -2207,6 +2510,13 @@ def crossfit_artifact_lock_errors(
                 "missing_crossfit_artifact_tree",
                 "promoted cross-fit artifact tree is missing",
             )
+        )
+    if not errors:
+        _write_preflight_attestation(
+            config,
+            payload=payload,
+            stat_file_count=stat_file_count,
+            stat_digest=stat_digest,
         )
     return errors
 

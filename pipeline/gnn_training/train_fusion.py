@@ -39,12 +39,15 @@ from pipeline.gnn_training.runtime import (
     MAX_AMP_OVERFLOW_RETRIES_PER_BATCH,
     FrozenTransformerCache,
     TemperatureGrid,
+    autocast_dtype,
     atomic_torch_save,
     backward_optimizer_step,
     feature_layout_snapshot,
     iter_gnn_batches,
     load_feature_spec,
     load_gnn_checkpoint,
+    make_grad_scaler,
+    precision_mode,
     require_finite_loss,
     require_finite_tensor,
     resolve_device,
@@ -346,7 +349,8 @@ def _refit_residual(
         weight_decay=config.optimization.weight_decay,
     )
     amp_enabled = use_amp(config, device)
-    scaler = torch.amp.GradScaler("cuda", enabled=True) if amp_enabled else None
+    amp_dtype = autocast_dtype(config, device)
+    scaler = make_grad_scaler(config, device)
     frozen_cache = FrozenTransformerCache(config)
     for epoch in range(epochs):
         gnn.train()
@@ -364,9 +368,21 @@ def _refit_residual(
             moved = batch.to(device)
             frozen = frozen_cache.align(batch, device=device)
             batch_overflow_retries = 0
+            cpu_rng_state = torch.random.get_rng_state()
+            cuda_rng_state = (
+                torch.cuda.get_rng_state(device) if device.type == "cuda" else None
+            )
             while True:
+                if batch_overflow_retries:
+                    torch.random.set_rng_state(cpu_rng_state)
+                    if cuda_rng_state is not None:
+                        torch.cuda.set_rng_state(cuda_rng_state, device)
                 optimizer.zero_grad(set_to_none=True)
-                with torch.autocast(device_type=device.type, enabled=amp_enabled):
+                with torch.autocast(
+                    device_type=device.type,
+                    dtype=amp_dtype,
+                    enabled=amp_enabled,
+                ):
                     output = gnn.forward_batch(moved)
                     logits = head(
                         frozen_logits=frozen.logits,
@@ -376,16 +392,17 @@ def _refit_residual(
                         ),
                         candidate_mask=moved.candidate_mask,
                     )
-                    loss = combined_loss(
-                        logits,
-                        moved.labels,
-                        moved.candidate_mask,
-                        auxiliary_weight=(config.optimization.auxiliary_bce_weight),
-                        primary_positive_weight=(
-                            config.optimization.primary_positive_weight
-                        ),
-                        candidate_ranks=moved.candidate_rank,
-                    )
+                logits = logits.float()
+                loss = combined_loss(
+                    logits,
+                    moved.labels,
+                    moved.candidate_mask,
+                    auxiliary_weight=(config.optimization.auxiliary_bce_weight),
+                    primary_positive_weight=(
+                        config.optimization.primary_positive_weight
+                    ),
+                    candidate_ranks=moved.candidate_rank,
+                )
                 require_finite_tensor(
                     logits,
                     name="residual-fusion training logits",
@@ -635,6 +652,7 @@ def train_fusion(config: GNNTrainingConfig) -> dict[str, Any]:
                 "status": "completed",
                 "device": str(device),
                 "mixed_precision": use_amp(config, device),
+                "precision": precision_mode(config, device),
                 "selected_gnn_variant": selected_variant,
                 "late_fusion_train_meta_fit": late_meta_fit,
                 "residual_training_protocol": (

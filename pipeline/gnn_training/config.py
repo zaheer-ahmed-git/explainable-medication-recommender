@@ -31,9 +31,9 @@ GNN_TRAINING_SCHEMA_VERSION = "phase8-p0-gnn-training-evaluation-v1"
 GNN_SELECTION_SCHEMA_VERSION = "phase8-p0-gnn-training-selection-v1"
 FUSION_TRAINING_SCHEMA_VERSION = "phase8-p0-fusion-training-evaluation-v1"
 FUSION_SELECTION_SCHEMA_VERSION = "phase8-p0-fusion-training-selection-v1"
-FEATURE_LAYOUT_VERSION = "phase8-p0-gnn-feature-layout-v1"
-RELATION_VOCABULARY_VERSION = "phase8-p0-gnn-relation-vocabulary-v1"
-GNN_EXPERIMENT_VERSION = "phase8-p0-native-rgcn-v1"
+FEATURE_LAYOUT_VERSION = "phase8-p1-gnn-feature-layout-v2"
+RELATION_VOCABULARY_VERSION = "phase8-p1-gnn-relation-vocabulary-v2"
+GNN_EXPERIMENT_VERSION = "phase8-p1-native-rgcn-v2"
 FUSION_EXPERIMENT_VERSION = "phase8-p0-frozen-transformer-fusion-v1"
 PREPARE_PENDING_STATUS = "pending_required_component"
 FULL_TRAIN_REFIT_SCOPE = "full_train_refit_only"
@@ -45,9 +45,14 @@ LATE_FUSION_BASELINE_NAME = "hybrid_late_fusion"
 RESIDUAL_FUSION_BASELINE_NAME = "hybrid_residual"
 GRAPH_REFERENCE_BASELINE_NAME = "graph_only_xgboost"
 
-NODE_TYPES = ("condition", "medication", "lab", "vital", "intervention")
+NODE_TYPES = ("condition", "medication", "lab", "vital", "intervention", "stay")
 NODE_TYPE_TO_INDEX = {name: index for index, name in enumerate(NODE_TYPES)}
-NODE_ROLES = ("query_condition", "candidate_medication", "observed_context")
+NODE_ROLES = (
+    "query_condition",
+    "candidate_medication",
+    "observed_context",
+    "stay_query",
+)
 NODE_ROLE_TO_INDEX = {name: index for index, name in enumerate(NODE_ROLES)}
 PAD_INDEX = 0
 UNK_INDEX = 1
@@ -59,6 +64,8 @@ FORWARD_RELATION_TYPES = (
     "condition_vital_predecision",
     "condition_intervention_predecision",
     "medication_medication_train_coprescribed",
+    "stay_index_condition",
+    "stay_context_observed",
 )
 REVERSE_RELATION_TYPES = tuple(
     f"reverse_{relation}" for relation in FORWARD_RELATION_TYPES
@@ -119,10 +126,14 @@ class GNNArchitecture:
     concept_embedding_dim: int = 128
     node_type_embedding_dim: int = 16
     node_role_embedding_dim: int = 16
+    time_bin_embedding_dim: int = 8
+    node_continuous_dim: int = 5
+    time_bin_count: int = 5
     hidden_dim: int = 128
     relation_layers: int = 2
     relation_count: int = len(RELATION_TYPES)
     dropout: float = 0.2
+    relation_dropout: float = 0.1
     scorer_hidden_dim: int = 128
     transformer_context_dim: int = DEFAULT_TRANSFORMER_CONTEXT_DIM
     fusion_hidden_dim: int = 128
@@ -146,9 +157,14 @@ class GNNOptimization:
     early_stopping_patience: int = 3
     early_stopping_min_delta: float = 1e-4
     batch_ranking_groups: int = 32
+    gradient_accumulation_groups: int = 32
+    max_edges_per_batch: int | None = 100_000
+    max_nodes_per_batch: int | None = 8_192
+    progress_interval_batches: int = 100
     primary_positive_weight: float = 0.5
     auxiliary_bce_weight: float = 0.05
     mixed_precision: bool = True
+    precision: str = "bf16"
 
 
 @dataclass(frozen=True)
@@ -314,10 +330,35 @@ class GNNTrainingConfig:
         )
 
     def fold_checkpoint_path(self, fold_index: int, variant: str) -> Path:
-        return self.fold_graph_root(fold_index) / "checkpoints" / f"{variant}.pt"
+        return (
+            self.checkpoints_root
+            / "crossfit"
+            / f"fold_{fold_index:02d}"
+            / f"{variant}.pt"
+        )
+
+    def fold_completion_manifest_path(self, fold_index: int, variant: str) -> Path:
+        """Return the aggregate-safe completed-fold sidecar manifest."""
+
+        return self.fold_checkpoint_path(fold_index, variant).with_suffix(".json")
 
     def fold_residual_checkpoint_path(self, fold_index: int) -> Path:
-        return self.fold_graph_root(fold_index) / "checkpoints" / "residual_fusion.pt"
+        return (
+            self.checkpoints_root
+            / "crossfit"
+            / f"fold_{fold_index:02d}"
+            / "residual_fusion.pt"
+        )
+
+    def fold_resume_path(self, fold_index: int, variant: str) -> Path:
+        """Return the mutable epoch-resume state outside immutable caches."""
+
+        return (
+            self.checkpoints_root
+            / "resume"
+            / f"fold_{fold_index:02d}"
+            / f"{variant}.pt"
+        )
 
     # ---- checkpoints --------------------------------------------------------
     @property
@@ -335,6 +376,10 @@ class GNNTrainingConfig:
     @property
     def gnn_training_state_path(self) -> Path:
         return self.checkpoints_root / "gnn_training_state.json"
+
+    @property
+    def gnn_crossfit_selection_path(self) -> Path:
+        return self.checkpoints_root / "gnn_crossfit_selection.json"
 
     @property
     def gnn_final_score_completion_path(self) -> Path:
@@ -443,6 +488,7 @@ class GNNTrainingConfig:
             self.gnn_checkpoint_path,
             self.gnn_calibration_path,
             self.gnn_training_state_path,
+            self.gnn_crossfit_selection_path,
             self.gnn_final_score_completion_path,
             self.fusion_checkpoint_path,
             self.fusion_calibration_path,

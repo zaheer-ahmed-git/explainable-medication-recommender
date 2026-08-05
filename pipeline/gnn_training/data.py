@@ -25,6 +25,7 @@ import json
 import os
 import shutil
 import uuid
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Sequence
@@ -49,6 +50,7 @@ from pipeline.gnn_training.config import (
 )
 from pipeline.gnn_training.graph_encode import (
     FORWARD_RELATION_TYPES,
+    NODE_CONTINUOUS_FEATURES,
     NODE_ROLE_TO_INDEX,
     NODE_ROLE_VOCABULARY,
     NODE_TYPE_TO_INDEX,
@@ -59,6 +61,7 @@ from pipeline.gnn_training.graph_encode import (
     RELATION_TYPES,
     RESERVED_TOKEN_COUNT,
     SELF_LOOP_RELATION,
+    TIME_BIN_COUNT,
     UNK_INDEX,
     UNK_TOKEN,
 )
@@ -69,7 +72,7 @@ from pipeline.training_contract import (
 )
 
 DEVELOPMENT_SOURCE = "mimiciv"
-GRAPH_CACHE_SCHEMA_VERSION = "phase8-p0-gnn-graph-cache-v1"
+GRAPH_CACHE_SCHEMA_VERSION = "phase8-p1-gnn-graph-cache-v2"
 GRAPH_CACHE_ARTIFACT_LOCK_VERSION = "phase8-p0-gnn-graph-cache-lock-v1"
 FROZEN_TRANSFORMER_CACHE_SCHEMA_VERSION = "phase8-p0-gnn-frozen-transformer-cache-v1"
 FROZEN_TRANSFORMER_CACHE_ARTIFACT_LOCK_VERSION = (
@@ -468,7 +471,9 @@ SELECT
     pcm.split,
     pcm.ranking_group_id,
     MIN(pcm.patient_uid) AS patient_uid,
+    MIN(pcm.stay_uid) AS stay_uid,
     COUNT(DISTINCT pcm.patient_uid) AS patient_count,
+    COUNT(DISTINCT pcm.stay_uid) AS stay_count,
     COUNT(*) AS candidate_count,
     COUNT(pcm.label_prescribed) AS labelled_candidate_count,
     SUM(CASE WHEN pcm.label_prescribed THEN 1 ELSE 0 END) AS positive_count
@@ -483,6 +488,7 @@ GROUP BY pcm.source, pcm.split, pcm.ranking_group_id
 SELECT COUNT(*)
 FROM gnn_pcm_groups
 WHERE patient_count <> 1
+    OR stay_count <> 1
     OR candidate_count <> labelled_candidate_count
 """
     ).fetchone()
@@ -684,6 +690,7 @@ SELECT
     subgraphs.source,
     subgraphs.split,
     subgraphs.subgraph_id AS ranking_group_id,
+    pcm_groups.stay_uid,
     CAST({fold} AS INTEGER) AS patient_fold_id,
     CAST(subgraphs.node_count AS BIGINT) AS node_count,
     CAST(subgraphs.edge_count AS BIGINT) AS forward_edge_count,
@@ -795,7 +802,105 @@ def nodes_cache_query(
     vocabulary = parquet_scan(vocabulary_path)
     node_type = _case_index("nodes.node_type", NODE_TYPE_TO_INDEX, kind="node type")
     node_role = _case_index("nodes.node_role", NODE_ROLE_TO_INDEX, kind="node role")
+    events = parquet_scan(config.event_sequences_path)
+    finite_value = (
+        "CASE WHEN events.value_numeric IS NOT NULL "
+        "AND isfinite(CAST(events.value_numeric AS DOUBLE)) "
+        "AND ABS(CAST(events.value_numeric AS DOUBLE)) <= 1e100 "
+        "THEN CAST(events.value_numeric AS DOUBLE) ELSE NULL END"
+    )
     return f"""
+WITH fit_numeric_events AS MATERIALIZED (
+    SELECT
+        events.event_type,
+        events.event_token,
+        {finite_value} AS numeric_value
+    FROM {events} AS events
+    WHERE events.source = 'mimiciv'
+        AND events.split = 'train'
+        AND events.event_type IN ('lab', 'vital')
+        AND events.event_token IS NOT NULL
+        AND events.event_time_hours_from_admit >= 0
+        AND events.event_time_hours_from_admit <= 24.0
+),
+fit_stats AS MATERIALIZED (
+    SELECT
+        event_type,
+        event_token,
+        AVG(numeric_value) AS value_mean,
+        STDDEV_SAMP(numeric_value) AS value_std
+    FROM fit_numeric_events
+    WHERE numeric_value IS NOT NULL
+    GROUP BY event_type, event_token
+),
+node_event_summary AS MATERIALIZED (
+    SELECT
+        events.source,
+        events.split,
+        events.stay_uid,
+        events.event_type,
+        events.event_token,
+        MAX(events.event_time_hours_from_admit) AS last_time,
+        ARG_MAX(
+            {finite_value},
+            events.event_time_hours_from_admit
+        ) FILTER (WHERE {finite_value} IS NOT NULL) AS last_value,
+        REGR_SLOPE(
+            {finite_value},
+            events.event_time_hours_from_admit
+        ) FILTER (WHERE {finite_value} IS NOT NULL) AS value_slope
+    FROM {events} AS events
+    WHERE events.event_type IN ('lab', 'vital', 'intervention')
+        AND events.event_token IS NOT NULL
+        AND events.event_time_hours_from_admit >= 0
+        AND events.event_time_hours_from_admit <= 24.0
+    GROUP BY
+        events.source,
+        events.split,
+        events.stay_uid,
+        events.event_type,
+        events.event_token
+),
+attributes AS (
+    SELECT
+        summary.*,
+        stats.value_mean,
+        stats.value_std,
+        CASE
+            WHEN summary.last_value IS NOT NULL
+                AND stats.value_std IS NOT NULL
+                AND stats.value_std > 1e-12
+            THEN GREATEST(-10.0, LEAST(
+                10.0,
+                (summary.last_value - stats.value_mean) / stats.value_std
+            ))
+            ELSE 0.0
+        END AS value_zscore,
+        CASE WHEN summary.last_value IS NULL THEN 0.0 ELSE 1.0 END AS value_mask,
+        CASE
+            WHEN summary.last_value IS NULL
+                OR stats.value_std IS NULL
+                OR stats.value_std <= 1e-12 THEN 0.0
+            WHEN (summary.last_value - stats.value_mean) / stats.value_std <= -2.0
+                THEN -1.0
+            WHEN (summary.last_value - stats.value_mean) / stats.value_std >= 2.0
+                THEN 1.0
+            ELSE 0.0
+        END AS abnormal_direction,
+        CASE
+            WHEN summary.value_slope IS NOT NULL
+                AND stats.value_std IS NOT NULL
+                AND stats.value_std > 1e-12
+            THEN GREATEST(-10.0, LEAST(
+                10.0,
+                summary.value_slope * 24.0 / stats.value_std
+            ))
+            ELSE 0.0
+        END AS trend_zscore_per_window
+    FROM node_event_summary AS summary
+    LEFT JOIN fit_stats AS stats
+        USING (event_type, event_token)
+)
 SELECT
     nodes.source,
     nodes.split,
@@ -808,6 +913,20 @@ SELECT
     CAST({node_role} AS INTEGER) AS node_role_index,
     CAST(nodes.observed_predecision AS BOOLEAN) AS observed_predecision,
     CAST(nodes.cold_start AS BOOLEAN) AS cold_start
+    ,CAST(COALESCE(attributes.value_zscore, 0.0) AS REAL) AS value_zscore
+    ,CAST(COALESCE(attributes.value_mask, 0.0) AS REAL) AS value_mask
+    ,CAST(COALESCE(attributes.abnormal_direction, 0.0) AS REAL)
+        AS abnormal_direction
+    ,CAST(COALESCE(attributes.trend_zscore_per_window, 0.0) AS REAL)
+        AS trend_zscore_per_window
+    ,CAST(COALESCE(attributes.last_time / 24.0, 0.0) AS REAL)
+        AS time_normalized
+    ,CAST(
+        CASE
+            WHEN attributes.last_time IS NULL THEN 0
+            ELSE LEAST(4, FLOOR(attributes.last_time / 6.0) + 1)
+        END AS INTEGER
+    ) AS time_bin_index
 FROM {nodes} AS nodes
 INNER JOIN gnn_cache_groups AS groups
     ON nodes.source = groups.source
@@ -815,6 +934,11 @@ INNER JOIN gnn_cache_groups AS groups
     AND nodes.subgraph_id = groups.ranking_group_id
 LEFT JOIN {vocabulary} AS vocab
     ON nodes.node_id = vocab.node_id
+LEFT JOIN attributes
+    ON nodes.source = attributes.source
+    AND nodes.split = attributes.split
+    AND groups.stay_uid = attributes.stay_uid
+    AND nodes.node_id = attributes.event_type || '|' || attributes.event_token
 """
 
 
@@ -985,14 +1109,68 @@ COPY ({query})
 TO {sql_string(output_root)}
 (
     FORMAT PARQUET,
+    COMPRESSION ZSTD,
     PARTITION_BY (split, shard_id),
     WRITE_PARTITION_COLUMNS TRUE,
+    PER_THREAD_OUTPUT FALSE,
     FILENAME_PATTERN 'part_{{i}}',
     OVERWRITE_OR_IGNORE TRUE
 )
 """
     ).fetchone()
+    coerce_single_parquet_partitions(output_root)
     return int(row[0]) if row is not None and row[0] is not None else 0
+
+
+def coerce_single_parquet_partitions(table_root: Path) -> None:
+    """Collapse multi-fragment Hive partitions into one Parquet file each.
+
+    DuckDB ``COPY ... PARTITION_BY`` can still emit several ``part_*.parquet``
+    files per ``split=*/shard_id=*`` directory even with
+    ``PER_THREAD_OUTPUT FALSE`` (row-group / size thresholds).  The GNN loader
+    and P1 cache contract require exactly one fragment per logical shard.
+    """
+
+    if not table_root.is_dir():
+        return
+    for shard_directory in sorted(table_root.glob("split=*/shard_id=*")):
+        files = sorted(shard_directory.glob("*.parquet"))
+        if len(files) <= 1:
+            continue
+        merged = shard_directory / f".merged-{uuid.uuid4().hex}.parquet"
+        final = shard_directory / "part_0.parquet"
+        try:
+            with duckdb.connect(database=":memory:") as connection:
+                connection.execute(
+                    f"""
+COPY (
+    SELECT * FROM read_parquet(
+        {sql_string((shard_directory / "*.parquet").as_posix())},
+        union_by_name = TRUE
+    )
+)
+TO {sql_string(merged)}
+(FORMAT PARQUET, COMPRESSION ZSTD)
+"""
+                )
+            for path in files:
+                path.unlink(missing_ok=True)
+            os.replace(merged, final)
+        finally:
+            if merged.exists():
+                merged.unlink(missing_ok=True)
+
+
+def _validate_compact_partitions(table_roots: Iterable[Path]) -> None:
+    """Require at most one Parquet fragment per table/split/shard partition."""
+
+    for table_root in table_roots:
+        for shard_directory in table_root.glob("split=*/shard_id=*"):
+            if len(tuple(shard_directory.glob("*.parquet"))) > 1:
+                raise RuntimeError(
+                    "GNN cache compaction invariant failed: a table/split/shard "
+                    "partition contains multiple Parquet fragments"
+                )
 
 
 def _validate_staged_group_rows(
@@ -1566,6 +1744,10 @@ def _feature_layout(
         "relation_to_index": {
             name: int(index) for name, index in RELATION_TO_INDEX.items()
         },
+        "node_continuous_features": list(NODE_CONTINUOUS_FEATURES),
+        "time_bin_count": TIME_BIN_COUNT,
+        "time_bin_policy": "missing_or_four_six_hour_predecision_bins",
+        "numeric_attribute_fit_scope": "mimiciv_train",
         "shard_count": int(shard_count),
         "shard_key": ["source", "ranking_group_id"],
         "edge_support_transform": "log1p",
@@ -1660,6 +1842,9 @@ def _prepare_graph_stage(
         )
         for table_name, query in table_queries.items()
     }
+    _validate_compact_partitions(
+        staged_shards / table_name for table_name in table_queries
+    )
 
     group_rows = int(table_counts[GROUP_TABLE])
     _validate_staged_group_rows(

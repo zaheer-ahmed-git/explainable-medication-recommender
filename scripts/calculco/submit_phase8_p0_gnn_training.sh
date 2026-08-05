@@ -2,7 +2,7 @@
 # Submit GNN/fusion development training or one explicitly chosen final score.
 #
 # Usage:
-#   scripts/calculco/submit_phase8_p0_gnn_training.sh development
+#   scripts/calculco/submit_phase8_p0_gnn_training.sh development train-gnn
 #   scripts/calculco/submit_phase8_p0_gnn_training.sh final score-fusion
 
 set -euo pipefail
@@ -21,11 +21,12 @@ case "$WORK_SCRATCH" in
 esac
 
 if [[ "$mode" == "development" ]]; then
-  if [[ -n "$stage" ]]; then
-    echo "Development submission does not accept a stage override." >&2
+  stage="${stage:-train-gnn}"
+  if [[ "$stage" != "train-gnn" && "$stage" != "train-gnn-fold" && "$stage" != "select-gnn" && "$stage" != "refit-gnn" && "$stage" != "score-gnn" && "$stage" != "train-fusion" && "$stage" != "score-fusion" ]]; then
+    echo "Development usage: $0 development {train-gnn|train-gnn-fold|select-gnn|refit-gnn|score-gnn|train-fusion|score-fusion}" >&2
     exit 2
   fi
-  stages="train-gnn score-gnn train-fusion score-fusion"
+  stages="$stage"
   final_confirmation=""
 elif [[ "$mode" == "final" ]]; then
   if [[ "$stage" != "score-gnn" && "$stage" != "score-fusion" ]]; then
@@ -40,7 +41,7 @@ elif [[ "$mode" == "final" ]]; then
   stages="$stage"
   final_confirmation="$GNN_FINAL_SCORE_CONFIRM"
 else
-  echo "Usage: $0 {development|final [score-gnn|score-fusion]}" >&2
+  echo "Usage: $0 {development [stage]|final [score-gnn|score-fusion]}" >&2
   exit 2
 fi
 
@@ -55,9 +56,16 @@ GNN_TOP_K=${GNN_TOP_K:-1,3,5,10}
 GNN_FOLD_COUNT=${GNN_FOLD_COUNT:-5}
 GNN_SHARD_COUNT=${GNN_SHARD_COUNT:-256}
 GNN_BATCH_RANKING_GROUPS=${GNN_BATCH_RANKING_GROUPS:-32}
+GNN_GRADIENT_ACCUMULATION_GROUPS=${GNN_GRADIENT_ACCUMULATION_GROUPS:-32}
+GNN_ABLATION_VARIANT=${GNN_ABLATION_VARIANT:-}
+GNN_HELD_OUT_FOLD=${GNN_HELD_OUT_FOLD:-}
+GNN_MAX_EDGES_PER_BATCH=${GNN_MAX_EDGES_PER_BATCH:-100000}
+GNN_MAX_NODES_PER_BATCH=${GNN_MAX_NODES_PER_BATCH:-8192}
+GNN_PROGRESS_INTERVAL_BATCHES=${GNN_PROGRESS_INTERVAL_BATCHES:-100}
 GNN_MAX_EPOCHS=${GNN_MAX_EPOCHS:-30}
 GNN_EARLY_STOPPING_PATIENCE=${GNN_EARLY_STOPPING_PATIENCE:-3}
 GNN_MIXED_PRECISION=${GNN_MIXED_PRECISION:-1}
+GNN_PRECISION=${GNN_PRECISION:-bf16}
 GNN_DEVICE=${GNN_DEVICE:-cuda}
 GNN_FINAL_SCORE_CONFIRM=$final_confirmation
 DUCKDB_THREADS=${DUCKDB_THREADS:-8}
@@ -67,7 +75,16 @@ chmod 600 "$env_file"
 
 mkdir -p "$project_home/scripts/calculco/logs"
 echo "Wrote protected job settings to $env_file"
+dependency_args=()
+if [[ -n "${GNN_AFTER_JOB_ID:-}" ]]; then
+  if [[ ! "$GNN_AFTER_JOB_ID" =~ ^[0-9]+$ ]]; then
+    echo "GNN_AFTER_JOB_ID must be a numeric OAR job identifier." >&2
+    exit 2
+  fi
+  dependency_args=(-a "$GNN_AFTER_JOB_ID")
+fi
 oarsub \
+  "${dependency_args[@]}" \
   -O "$project_home/scripts/calculco/logs/rm_phase8_p0_gnn_training_%jobid%.out" \
   -E "$project_home/scripts/calculco/logs/rm_phase8_p0_gnn_training_%jobid%.err" \
   -S "$script_dir/phase8_p0_gnn_training.sh"

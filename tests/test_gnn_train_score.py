@@ -15,6 +15,8 @@ from pipeline.gnn_training.config import (
     GNNTrainingConfig,
 )
 from pipeline.gnn_training.data import prepare_gnn_caches, write_json
+from pipeline.gnn_training.crossfit import crossfit_artifact_lock_errors
+from pipeline.gnn_training.model import ABLATION_VARIANTS
 from pipeline.neural_training.config import NeuralArchitecture, NeuralOptimization
 from pipeline.neural_training.data import prepare_neural_caches
 from tests.milestone6_helpers import write_parquet_rows
@@ -29,7 +31,11 @@ pytest.importorskip("torch")
 from pipeline.gnn_training.score_fusion import score_fusion  # noqa: E402
 from pipeline.gnn_training.score_gnn import score_gnn  # noqa: E402
 from pipeline.gnn_training.train_fusion import train_fusion  # noqa: E402
-from pipeline.gnn_training.train_gnn import train_gnn  # noqa: E402
+from pipeline.gnn_training.train_gnn import (  # noqa: E402
+    refit_selected_gnn,
+    select_gnn,
+    train_gnn,
+)
 from pipeline.neural_training.train import train_transformer  # noqa: E402
 
 
@@ -373,6 +379,21 @@ def test_prepare_train_score_and_fuse_smoke(tmp_path: Path) -> None:
     assert gnn_training["status"] == "completed"
     assert config.gnn_checkpoint_path.is_file()
     assert config.gnn_oof_predictions_path.is_file()
+    assert crossfit_artifact_lock_errors(config) == []
+
+    first_variant = ABLATION_VARIANTS[0]
+    assert config.fold_resume_path(0, first_variant).is_file()
+    assert config.fold_completion_manifest_path(0, first_variant).is_file()
+    config.fold_checkpoint_path(0, first_variant).unlink()
+    resumed_gnn_training = train_gnn(config)
+    assert resumed_gnn_training["status"] == "completed"
+    assert resumed_gnn_training["fold_results"] == gnn_training["fold_results"]
+
+    selection_only = select_gnn(config)
+    assert selection_only["status"] == "completed"
+    assert config.gnn_crossfit_selection_path.is_file()
+    refit_only = refit_selected_gnn(config)
+    assert refit_only["status"] == "completed"
 
     gnn_scoring = score_gnn(config)
     assert gnn_scoring["status"] == "completed"
@@ -390,6 +411,8 @@ def test_prepare_train_score_and_fuse_smoke(tmp_path: Path) -> None:
         {
             "preparation": preparation,
             "gnn_training": gnn_training,
+            "gnn_selection_only": selection_only,
+            "gnn_refit_only": refit_only,
             "gnn_scoring": gnn_scoring,
             "fusion_training": fusion_training,
             "fusion_scoring": fusion_scoring,

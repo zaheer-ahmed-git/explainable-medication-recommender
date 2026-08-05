@@ -30,11 +30,16 @@ from pipeline.training_contract import (
 STAGES = (
     "prepare",
     "train-gnn",
+    "train-gnn-fold",
+    "select-gnn",
+    "refit-gnn",
     "score-gnn",
     "train-fusion",
     "score-fusion",
 )
-GNN_STAGES = frozenset({"train-gnn", "score-gnn"})
+GNN_STAGES = frozenset(
+    {"train-gnn", "train-gnn-fold", "select-gnn", "refit-gnn", "score-gnn"}
+)
 FUSION_STAGES = frozenset({"train-fusion", "score-fusion"})
 CROSS_FIT_REQUIRED_STAGES = GNN_STAGES | FUSION_STAGES
 SCORING_STAGES = frozenset({"score-gnn", "score-fusion"})

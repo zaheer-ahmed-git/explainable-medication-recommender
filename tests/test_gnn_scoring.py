@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 from dataclasses import replace
 from pathlib import Path
 
@@ -14,7 +15,9 @@ from pipeline.gnn_training.config import GNNTrainingConfig
 from pipeline.gnn_training.data import write_json_exclusive
 from pipeline.gnn_training.runtime import (
     TemperatureGrid,
+    _iter_accumulation_windows,
     backward_optimizer_step,
+    fit_oof_temperature,
     read_positive_temperature,
 )
 from pipeline.gnn_training.scoring import materialize_canonical_scores
@@ -95,6 +98,42 @@ def test_temperature_artifact_rejects_non_object_json(tmp_path: Path) -> None:
             expected_schema_version="synthetic-schema",
             allowed_methods=frozenset({"synthetic-method"}),
         )
+
+
+def test_oof_temperature_streams_patient_grouped_predictions(tmp_path: Path) -> None:
+    predictions = tmp_path / "oof.parquet"
+    write_parquet_rows(
+        predictions,
+        ("gnn_logit", "label_prescribed"),
+        ((4.0, True), (-4.0, False), (2.0, True), (-2.0, False)),
+    )
+
+    temperature = fit_oof_temperature(
+        predictions,
+        device=torch.device("cpu"),
+        batch_size=2,
+    )
+
+    assert math.isfinite(temperature)
+    assert temperature > 0
+
+
+def test_accumulation_windows_preserve_effective_group_budget() -> None:
+    batches = iter(
+        [
+            SimpleNamespace(num_groups=8),
+            SimpleNamespace(num_groups=12),
+            SimpleNamespace(num_groups=12),
+            SimpleNamespace(num_groups=20),
+        ]
+    )
+
+    windows = list(_iter_accumulation_windows(batches, target_groups=32))
+
+    assert [[batch.num_groups for batch in window] for window in windows] == [
+        [8, 12, 12],
+        [20],
+    ]
 
 
 def test_temperature_artifact_rejects_missing_temperature(tmp_path: Path) -> None:

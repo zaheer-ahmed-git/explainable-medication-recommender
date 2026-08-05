@@ -17,6 +17,7 @@ from torch import nn
 from pipeline.gnn_training.config import GNNArchitecture
 from pipeline.gnn_training.graph_encode import (
     FORWARD_RELATION_TYPES,
+    NODE_CONTINUOUS_FEATURES,
     NODE_ROLE_TO_INDEX,
     NODE_TYPE_TO_INDEX,
     PAD_INDEX,
@@ -26,8 +27,10 @@ from pipeline.gnn_training.graph_encode import (
 
 ABLATION_VARIANTS = (
     "full",
+    "rank_only",
     "no_message_passing",
     "no_condition_medication",
+    "no_dense_lab_vital",
     "no_lab_vital_intervention",
 )
 
@@ -40,6 +43,8 @@ class GraphBatchProtocol(Protocol):
     node_role_index: torch.Tensor  # (N,) long
     observed_mask: torch.Tensor  # (N,) bool or float
     cold_start_mask: torch.Tensor  # (N,) bool or float
+    node_continuous: torch.Tensor  # (N, F) float
+    node_time_bin_index: torch.Tensor  # (N,) long
     edge_index: torch.Tensor  # (2, E) long
     edge_type: torch.Tensor  # (E,) long
     edge_weight: torch.Tensor  # (E,) float
@@ -57,6 +62,8 @@ class GNNFeatureSpecProtocol(Protocol):
     node_type_vocab_size: int
     node_role_vocab_size: int
     relation_count: int
+    node_continuous_features: tuple[str, ...]
+    time_bin_count: int
 
 
 class GNNOutput(NamedTuple):
@@ -79,13 +86,16 @@ def _excluded_relation_indexes(variant: str) -> frozenset[int]:
     """Return relation indexes removed by a pre-registered ablation."""
 
     _validate_ablation_variant(variant)
-    if variant in {"full", "no_message_passing"}:
+    if variant in {"rank_only", "full", "no_message_passing"}:
         return frozenset()
     if variant == "no_condition_medication":
         names = {
             FORWARD_RELATION_TYPES[0],
             f"reverse_{FORWARD_RELATION_TYPES[0]}",
         }
+    elif variant == "no_dense_lab_vital":
+        forward = FORWARD_RELATION_TYPES[1:3]
+        names = {*forward, *(f"reverse_{name}" for name in forward)}
     else:
         forward = FORWARD_RELATION_TYPES[1:4]
         names = {*forward, *(f"reverse_{name}" for name in forward)}
@@ -93,7 +103,7 @@ def _excluded_relation_indexes(variant: str) -> frozenset[int]:
 
 
 def relation_keep_mask(edge_type: torch.Tensor, variant: str) -> torch.Tensor:
-    """Return the edge mask for one of the four registered variants."""
+    """Return the edge mask for one of the six registered variants."""
 
     excluded = _excluded_relation_indexes(variant)
     if not excluded:
@@ -107,17 +117,29 @@ def relation_keep_mask(edge_type: torch.Tensor, variant: str) -> torch.Tensor:
 class RelationMessagePassingLayer(nn.Module):
     """One relation-specific incoming-message aggregation layer."""
 
-    def __init__(self, hidden_dim: int, relation_count: int, dropout: float):
+    def __init__(
+        self,
+        hidden_dim: int,
+        relation_count: int,
+        dropout: float,
+        relation_dropout: float = 0.0,
+    ):
         super().__init__()
         if hidden_dim <= 0:
             raise ValueError("hidden_dim must be positive")
         if relation_count <= 0:
             raise ValueError("relation_count must be positive")
+        if not 0.0 <= relation_dropout < 1.0:
+            raise ValueError("relation_dropout must be in [0, 1)")
         self.hidden_dim = hidden_dim
         self.relation_count = relation_count
         self.relation_weight = nn.Parameter(
             torch.empty(relation_count, hidden_dim, hidden_dim)
         )
+        # Start mostly open so the gated P1 model is close to the ungated
+        # registered operator while still allowing evidence-driven shrinkage.
+        self.relation_gate_logits = nn.Parameter(torch.full((relation_count,), 2.0))
+        self.relation_dropout = float(relation_dropout)
         self.dropout = nn.Dropout(dropout)
         self.norm = nn.LayerNorm(hidden_dim)
         self.activation = nn.GELU()
@@ -143,8 +165,26 @@ class RelationMessagePassingLayer(nn.Module):
         if edge_type.shape != (edge_count,) or edge_weight.shape != (edge_count,):
             raise ValueError("edge_type and edge_weight must have shape (E,)")
 
-        update = torch.zeros_like(node_states)
-        if edge_count:
+        # Aggregate source states before applying a relation transform.  The
+        # mathematically equivalent per-edge formulation,
+        #
+        #   (source_states @ relation_weight[edge_type]) * edge_weight
+        #
+        # materializes an ``(E, H, H)`` tensor.  At protected scale that was a
+        # multi-GiB allocation even though there are only eleven relation
+        # matrices.  Linearity lets us first accumulate one weighted ``(N, H)``
+        # buffer per relation and apply that relation's matrix once.
+        #
+        # Keep aggregation and relation transforms in FP32 even when the outer
+        # training context uses BF16/FP16.  Repeated incoming-message sums are
+        # the numerically sensitive part of this branch, and returning FP32
+        # states also keeps residual addition and LayerNorm stable.
+        stable_states = node_states.to(dtype=torch.float32)
+        update = torch.zeros_like(stable_states)
+        with torch.autocast(device_type=node_states.device.type, enabled=False):
+            if not edge_count:
+                return self.norm(stable_states)
+
             if bool(((edge_type < 0) | (edge_type >= self.relation_count)).any()):
                 raise ValueError("edge_type contains an unknown relation index")
             if not bool(torch.isfinite(edge_weight).all()):
@@ -159,13 +199,37 @@ class RelationMessagePassingLayer(nn.Module):
             )
             if bool(invalid_node.any()):
                 raise ValueError("edge_index contains a non-local node index")
-            source_states = node_states[source_index]
-            transforms = self.relation_weight[edge_type]
-            messages = torch.einsum("ei,eij->ej", source_states, transforms)
-            messages = messages * edge_weight.to(node_states.dtype).unsqueeze(-1)
-            update.index_add_(0, destination_index, messages)
+            stable_edge_weight = edge_weight.to(dtype=torch.float32)
+            for relation_index in range(self.relation_count):
+                relation_mask = edge_type == relation_index
+                if not bool(relation_mask.any()):
+                    continue
+                relation_source = source_index[relation_mask]
+                relation_destination = destination_index[relation_mask]
+                weighted_sources = stable_states[relation_source] * (
+                    stable_edge_weight[relation_mask].unsqueeze(-1)
+                )
+                aggregated = torch.zeros_like(stable_states)
+                aggregated.index_add_(
+                    0,
+                    relation_destination,
+                    weighted_sources,
+                )
+                relation_gate = torch.sigmoid(self.relation_gate_logits[relation_index])
+                if self.training and self.relation_dropout > 0.0:
+                    keep_relation = torch.rand((), device=node_states.device) >= (
+                        self.relation_dropout
+                    )
+                    relation_gate = (
+                        relation_gate
+                        * keep_relation.to(dtype=relation_gate.dtype)
+                        / (1.0 - self.relation_dropout)
+                    )
+                update.add_(
+                    (aggregated @ self.relation_weight[relation_index]) * relation_gate
+                )
 
-        return self.norm(node_states + self.dropout(self.activation(update)))
+            return self.norm(stable_states + self.dropout(self.activation(update)))
 
 
 # Shorter alias used in architecture descriptions.
@@ -212,10 +276,19 @@ class GNNRecommender(nn.Module):
             node_role_vocab_size,
             architecture.node_role_embedding_dim,
         )
+        self.time_bin_embedding = nn.Embedding(
+            architecture.time_bin_count,
+            architecture.time_bin_embedding_dim,
+            padding_idx=0,
+        )
+        if architecture.node_continuous_dim != len(NODE_CONTINUOUS_FEATURES):
+            raise ValueError("node_continuous_dim does not match the P1 contract")
         input_dim = (
             architecture.concept_embedding_dim
             + architecture.node_type_embedding_dim
             + architecture.node_role_embedding_dim
+            + architecture.time_bin_embedding_dim
+            + architecture.node_continuous_dim
             + 2
         )
         self.node_projection = nn.Sequential(
@@ -229,6 +302,7 @@ class GNNRecommender(nn.Module):
                 architecture.hidden_dim,
                 architecture.relation_count,
                 architecture.dropout,
+                architecture.relation_dropout,
             )
             for _ in range(architecture.relation_layers)
         )
@@ -248,6 +322,8 @@ class GNNRecommender(nn.Module):
             nn.Dropout(architecture.dropout),
             nn.Linear(architecture.scorer_hidden_dim, 1),
         )
+        self.rank_scale_raw = nn.Parameter(torch.zeros(()))
+        self.rank_bias = nn.Parameter(torch.zeros(()))
 
     def encode_nodes(
         self,
@@ -257,6 +333,8 @@ class GNNRecommender(nn.Module):
         node_role_index: torch.Tensor,
         observed_mask: torch.Tensor,
         cold_start_mask: torch.Tensor,
+        node_continuous: torch.Tensor,
+        node_time_bin_index: torch.Tensor,
         edge_index: torch.Tensor,
         edge_type: torch.Tensor,
         edge_weight: torch.Tensor,
@@ -270,13 +348,29 @@ class GNNRecommender(nn.Module):
             ("node_role_index", node_role_index),
             ("observed_mask", observed_mask),
             ("cold_start_mask", cold_start_mask),
+            ("node_time_bin_index", node_time_bin_index),
         ):
             if value.shape != expected:
                 raise ValueError(f"{name} must have shape (N,)")
+        if node_continuous.shape != (
+            node_count,
+            self.architecture.node_continuous_dim,
+        ):
+            raise ValueError("node_continuous must have shape (N, F)")
+        if not bool(torch.isfinite(node_continuous).all()):
+            raise ValueError("node_continuous must be finite")
+        if bool(
+            (
+                (node_time_bin_index < 0)
+                | (node_time_bin_index >= self.architecture.time_bin_count)
+            ).any()
+        ):
+            raise ValueError("node_time_bin_index contains an unknown bin")
 
         concept = self.concept_embedding(node_concept_index)
         node_type = self.node_type_embedding(node_type_index)
         node_role = self.node_role_embedding(node_role_index)
+        time_bin = self.time_bin_embedding(node_time_bin_index)
         flags = torch.stack(
             (
                 observed_mask.to(dtype=concept.dtype),
@@ -285,9 +379,19 @@ class GNNRecommender(nn.Module):
             dim=-1,
         )
         states = self.node_projection(
-            torch.cat((concept, node_type, node_role, flags), dim=-1)
+            torch.cat(
+                (
+                    concept,
+                    node_type,
+                    node_role,
+                    time_bin,
+                    node_continuous.to(dtype=concept.dtype),
+                    flags,
+                ),
+                dim=-1,
+            )
         )
-        if self.ablation_variant == "no_message_passing":
+        if self.ablation_variant in {"rank_only", "no_message_passing"}:
             return states
 
         keep = relation_keep_mask(edge_type, self.ablation_variant)
@@ -421,6 +525,12 @@ class GNNRecommender(nn.Module):
         if not bool(torch.isfinite(valid_ranks).all()) or bool((valid_ranks < 0).any()):
             raise ValueError("valid candidate ranks must be finite and non-negative")
         log_rank = torch.log1p(ranks.clamp_min(0.0)).unsqueeze(-1)
+        if self.ablation_variant == "rank_only":
+            rank_logits = self.rank_bias - torch.nn.functional.softplus(
+                self.rank_scale_raw
+            ) * log_rank.squeeze(-1)
+            rank_logits = rank_logits.masked_fill(~candidate_mask, float("-inf"))
+            return GNNOutput(rank_logits, torch.zeros_like(representations))
         scorer_input = torch.cat((representations, log_rank), dim=-1)
         logits = self.scorer(scorer_input).squeeze(-1)
         logits = logits.masked_fill(~candidate_mask, float("-inf"))
@@ -434,6 +544,8 @@ class GNNRecommender(nn.Module):
         node_role_index: torch.Tensor,
         observed_mask: torch.Tensor,
         cold_start_mask: torch.Tensor,
+        node_continuous: torch.Tensor,
+        node_time_bin_index: torch.Tensor,
         edge_index: torch.Tensor,
         edge_type: torch.Tensor,
         edge_weight: torch.Tensor,
@@ -449,6 +561,8 @@ class GNNRecommender(nn.Module):
             node_role_index=node_role_index,
             observed_mask=observed_mask,
             cold_start_mask=cold_start_mask,
+            node_continuous=node_continuous,
+            node_time_bin_index=node_time_bin_index,
             edge_index=edge_index,
             edge_type=edge_type,
             edge_weight=edge_weight,
@@ -472,6 +586,8 @@ class GNNRecommender(nn.Module):
             node_role_index=batch.node_role_index,
             observed_mask=batch.observed_mask,
             cold_start_mask=batch.cold_start_mask,
+            node_continuous=batch.node_continuous,
+            node_time_bin_index=batch.node_time_bin_index,
             edge_index=batch.edge_index,
             edge_type=batch.edge_type,
             edge_weight=batch.edge_weight,
@@ -498,6 +614,11 @@ def build_model(
         raise ValueError(
             f"feature layout must use the fixed {len(RELATION_TYPES)} relations"
         )
+    architecture = architecture or GNNArchitecture()
+    if architecture.node_continuous_dim != len(spec.node_continuous_features):
+        raise ValueError("architecture and layout continuous features differ")
+    if architecture.time_bin_count != spec.time_bin_count:
+        raise ValueError("architecture and layout time-bin counts differ")
     return GNNRecommender(
         concept_vocab_size=spec.concept_vocab_size,
         node_type_vocab_size=spec.node_type_vocab_size,

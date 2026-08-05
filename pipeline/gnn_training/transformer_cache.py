@@ -308,6 +308,8 @@ def _copy_partitioned(
     query: str,
     path: Path,
 ) -> int:
+    from pipeline.gnn_training.data import coerce_single_parquet_partitions
+
     path.mkdir(parents=True, exist_ok=True)
     row = connection.execute(
         f"""
@@ -315,13 +317,16 @@ COPY ({query})
 TO {sql_string(path)}
 (
     FORMAT PARQUET,
+    COMPRESSION ZSTD,
     PARTITION_BY (split, shard_id),
     WRITE_PARTITION_COLUMNS TRUE,
+    PER_THREAD_OUTPUT FALSE,
     FILENAME_PATTERN 'part_{{i}}',
     OVERWRITE_OR_IGNORE TRUE
 )
 """
     ).fetchone()
+    coerce_single_parquet_partitions(path)
     return int(row[0]) if row and row[0] is not None else 0
 
 

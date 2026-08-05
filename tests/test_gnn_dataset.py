@@ -6,6 +6,7 @@ import math
 from dataclasses import replace
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -16,6 +17,7 @@ from pipeline.gnn_training.dataset import (
     build_shard_examples,
     collate_examples,
     iter_batches,
+    iter_example_batches,
     table_shard_directory,
 )
 from pipeline.gnn_training.graph_encode import (
@@ -198,17 +200,23 @@ def test_build_shard_remaps_local_offsets_and_handles_empty_context_edges() -> N
     )
 
     first, second = examples
-    assert first.query_node_index == 0
+    assert first.query_node_index == 3
     assert first.candidate_node_index.tolist() == [1]
     assert first.context_node_index.tolist() == [2]
-    assert first.edge_index.tolist() == [[0], [1]]
+    assert first.num_nodes == 4
+    assert first.num_edges == 6
+    assert (
+        first.node_role_index[first.query_node_index]
+        == NODE_ROLE_TO_INDEX["stay_query"]
+    )
 
-    assert second.query_node_index == 0
+    assert second.query_node_index == 3
     assert second.candidate_node_index.tolist() == [1, 2]
     assert second.context_node_index.shape == (0,)
-    assert second.edge_index.shape == (2, 0)
+    assert second.edge_index.shape == (2, 3)
     assert second.node_concept_index[-1] == UNK_INDEX
-    assert second.cold_start_mask[-1]
+    assert second.cold_start_mask[2]
+    assert not second.cold_start_mask[second.query_node_index]
     assert not second.has_positive
 
 
@@ -226,11 +234,11 @@ def test_collate_offsets_disjoint_graphs_and_pads_candidates() -> None:
     batch = collate_examples(examples)
 
     assert batch.num_graphs == 2
-    assert batch.num_nodes == 6
-    assert batch.num_edges == 1
-    assert batch.graph_index.tolist() == [0, 0, 0, 1, 1, 1]
-    assert batch.query_node_index.tolist() == [0, 3]
-    assert batch.candidate_node_index.tolist() == [[1, 0], [4, 5]]
+    assert batch.num_nodes == 8
+    assert batch.num_edges == 9
+    assert batch.graph_index.tolist() == [0, 0, 0, 0, 1, 1, 1, 1]
+    assert batch.query_node_index.tolist() == [3, 7]
+    assert batch.candidate_node_index.tolist() == [[1, 0], [5, 6]]
     assert batch.candidate_mask.tolist() == [[True, False], [True, True]]
     assert batch.context_node_index.tolist() == [[2], [0]]
     assert batch.context_mask.tolist() == [[True], [False]]
@@ -264,6 +272,70 @@ def test_collate_offsets_disjoint_graphs_and_pads_candidates() -> None:
     assert output.logits.shape == (2, 2)
     assert torch.isneginf(output.logits[0, 1])
 
+    rank_only = build_model(
+        _spec(),
+        GNNArchitecture(
+            concept_embedding_dim=8,
+            node_type_embedding_dim=4,
+            node_role_embedding_dim=4,
+            hidden_dim=8,
+            relation_layers=1,
+            dropout=0.0,
+            scorer_hidden_dim=8,
+        ),
+        ablation_variant="rank_only",
+    )
+    rank_output = rank_only.forward_batch(batch)
+    assert rank_output.logits[1, 0] > rank_output.logits[1, 1]
+    assert torch.count_nonzero(rank_output.candidate_representations) == 0
+
+
+def test_example_batching_respects_group_edge_and_node_budgets() -> None:
+    groups, nodes, edges, candidates = _frames()
+    first, second = build_shard_examples(
+        _spec(),
+        groups=groups,
+        nodes=nodes,
+        edges=edges,
+        candidates=candidates,
+    )
+
+    def with_edges(example: dataset_module.GNNExample, count: int):
+        return replace(
+            example,
+            edge_index=np.zeros((2, count), dtype=np.int64),
+            edge_type=np.zeros(count, dtype=np.int64),
+            edge_weight=np.ones(count, dtype=np.float32),
+        )
+
+    examples = [
+        with_edges(first, 4),
+        with_edges(second, 4),
+        with_edges(second, 2),
+    ]
+    batches = list(
+        iter_example_batches(
+            examples,
+            max_groups=3,
+            max_edges=8,
+            max_nodes=8,
+        )
+    )
+
+    assert [len(batch) for batch in batches] == [2, 1]
+    assert [sum(item.num_edges for item in batch) for batch in batches] == [8, 2]
+    assert all(sum(item.num_nodes for item in batch) <= 8 for batch in batches)
+
+    with pytest.raises(ValueError, match="single graph exceeds max_edges"):
+        list(
+            iter_example_batches(
+                [with_edges(first, 12)],
+                max_groups=3,
+                max_edges=8,
+                max_nodes=8,
+            )
+        )
+
 
 @pytest.mark.parametrize("dangling_table", ("edges", "candidates"))
 def test_build_shard_rejects_dangling_references(dangling_table: str) -> None:
@@ -290,7 +362,7 @@ def test_build_shard_requires_one_query_and_complete_candidates() -> None:
         NODE_ROLE_TO_INDEX["query_condition"]
     )
 
-    with pytest.raises(ValueError, match="exactly one query"):
+    with pytest.raises(ValueError, match="exactly one condition"):
         build_shard_examples(
             _spec(),
             groups=groups.iloc[[0]],

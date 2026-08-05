@@ -65,11 +65,18 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument("--device", default=None, help="Torch device override.")
+    parser.add_argument("--ablation-variant", default=None)
+    parser.add_argument("--held-out-fold", type=int, default=None)
 
     parser.add_argument("--hidden-dim", type=int, default=None)
     parser.add_argument("--relation-layers", type=int, default=None)
     parser.add_argument("--dropout", type=float, default=None)
+    parser.add_argument("--relation-dropout", type=float, default=None)
     parser.add_argument("--batch-ranking-groups", type=int, default=None)
+    parser.add_argument("--gradient-accumulation-groups", type=int, default=None)
+    parser.add_argument("--max-edges-per-batch", type=int, default=None)
+    parser.add_argument("--max-nodes-per-batch", type=int, default=None)
+    parser.add_argument("--progress-interval-batches", type=int, default=None)
     parser.add_argument("--max-epochs", type=int, default=None)
     parser.add_argument("--learning-rate", type=float, default=None)
     parser.add_argument("--weight-decay", type=float, default=None)
@@ -77,6 +84,12 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--early-stopping-patience", type=int, default=None)
     parser.add_argument("--auxiliary-bce-weight", type=float, default=None)
     parser.add_argument("--primary-positive-weight", type=float, default=None)
+    parser.add_argument(
+        "--precision",
+        choices=("fp32", "bf16", "fp16"),
+        default=None,
+        help="CUDA training precision; BF16 is the Calculco A100 default.",
+    )
     parser.add_argument(
         "--no-mixed-precision",
         action="store_true",
@@ -124,6 +137,10 @@ def build_config(args: argparse.Namespace) -> GNNTrainingConfig:
         if not 0.0 <= args.dropout < 1.0:
             raise ValueError("dropout must be in [0, 1)")
         architecture_overrides["dropout"] = args.dropout
+    if args.relation_dropout is not None:
+        if not 0.0 <= args.relation_dropout < 1.0:
+            raise ValueError("relation-dropout must be in [0, 1)")
+        architecture_overrides["relation_dropout"] = args.relation_dropout
     architecture = (
         replace(defaults.architecture, **architecture_overrides)
         if architecture_overrides
@@ -131,10 +148,16 @@ def build_config(args: argparse.Namespace) -> GNNTrainingConfig:
     )
 
     optimization_overrides: dict[str, Any] = {}
+    if args.precision is not None:
+        optimization_overrides["precision"] = args.precision
     if args.no_mixed_precision:
         optimization_overrides["mixed_precision"] = False
     for argument_name, field_name in (
         ("batch_ranking_groups", "batch_ranking_groups"),
+        ("gradient_accumulation_groups", "gradient_accumulation_groups"),
+        ("max_edges_per_batch", "max_edges_per_batch"),
+        ("max_nodes_per_batch", "max_nodes_per_batch"),
+        ("progress_interval_batches", "progress_interval_batches"),
         ("max_epochs", "max_epochs"),
         ("learning_rate", "learning_rate"),
         ("weight_decay", "weight_decay"),
@@ -147,6 +170,10 @@ def build_config(args: argparse.Namespace) -> GNNTrainingConfig:
         if value is not None:
             if field_name in {
                 "batch_ranking_groups",
+                "gradient_accumulation_groups",
+                "max_edges_per_batch",
+                "max_nodes_per_batch",
+                "progress_interval_batches",
                 "max_epochs",
                 "learning_rate",
                 "gradient_clip_norm",
@@ -220,6 +247,18 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "Train the relation branch with patient-grouped cross-fitting.",
         ),
         (
+            "train-gnn-fold",
+            "Train exactly one array-addressable GNN variant/fold task.",
+        ),
+        (
+            "select-gnn",
+            "Select only from completed GNN variant/fold checkpoints.",
+        ),
+        (
+            "refit-gnn",
+            "Refit the GNN after completed cross-fit selection.",
+        ),
+        (
             "score-gnn",
             "Score and qualify the standalone relation branch.",
         ),
@@ -237,7 +276,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _run(command: str, config: GNNTrainingConfig) -> dict[str, Any]:
+def _run(
+    command: str,
+    config: GNNTrainingConfig,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
     if command == "prepare":
         from pipeline.gnn_training.data import prepare_gnn_caches
 
@@ -246,6 +289,26 @@ def _run(command: str, config: GNNTrainingConfig) -> dict[str, Any]:
         from pipeline.gnn_training.train_gnn import train_gnn
 
         return train_gnn(config)
+    if command == "train-gnn-fold":
+        from pipeline.gnn_training.train_gnn import train_gnn_fold
+
+        if args.ablation_variant is None or args.held_out_fold is None:
+            raise ValueError(
+                "train-gnn-fold requires --ablation-variant and --held-out-fold"
+            )
+        return train_gnn_fold(
+            config,
+            variant=args.ablation_variant,
+            fold_index=args.held_out_fold,
+        )
+    if command == "select-gnn":
+        from pipeline.gnn_training.train_gnn import select_gnn
+
+        return select_gnn(config)
+    if command == "refit-gnn":
+        from pipeline.gnn_training.train_gnn import refit_selected_gnn
+
+        return refit_selected_gnn(config)
     if command == "score-gnn":
         from pipeline.gnn_training.score_gnn import score_gnn
 
@@ -268,7 +331,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError as error:
         print(f"Invalid GNN training arguments: {error}")
         return 2
-    report = _run(args.command, config)
+    try:
+        report = _run(args.command, config, args)
+    except ValueError as error:
+        print(f"Invalid GNN training arguments: {error}")
+        return 2
     status = report.get("status", "unknown")
     print(f"GNN {args.command} finished: status={status}, mode={config.mode}")
     return 0 if status == "completed" else 1

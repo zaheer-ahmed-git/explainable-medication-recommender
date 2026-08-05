@@ -7,6 +7,9 @@
 
 set -euo pipefail
 
+array_variant="${1:-}"
+array_fold="${2:-}"
+
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=common.sh
 source "$script_dir/common.sh"
@@ -18,10 +21,15 @@ if [[ -f "$job_env" ]]; then
   source "$job_env"
   set +a
 fi
+if [[ -n "$array_variant" || -n "$array_fold" ]]; then
+  GNN_STAGES=train-gnn-fold
+  GNN_ABLATION_VARIANT="$array_variant"
+  GNN_HELD_OUT_FOLD="$array_fold"
+fi
 
 : "${WORK_SCRATCH:?WORK_SCRATCH must be exported for GNN jobs}"
 : "${GNN_MODE:=development}"
-: "${GNN_STAGES:=train-gnn score-gnn train-fusion score-fusion}"
+: "${GNN_STAGES:=train-gnn}"
 : "${GNN_SEED:=20260617}"
 : "${GNN_TOP_K:=1,3,5,10}"
 : "${GNN_FOLD_COUNT:=5}"
@@ -50,6 +58,11 @@ if [[ "$GNN_MODE" == "final" ]]; then
   fi
 elif [[ "$GNN_MODE" != "development" ]]; then
   echo "GNN_MODE must be development or final." >&2
+  exit 2
+fi
+
+if [[ "$GNN_STAGES" == *" "* ]]; then
+  echo "Submit exactly one GNN stage per OAR job for restartable boundaries." >&2
   exit 2
 fi
 
@@ -103,6 +116,18 @@ common_args=(
 if [[ -n "${GNN_BATCH_RANKING_GROUPS:-}" ]]; then
   common_args+=(--batch-ranking-groups "$GNN_BATCH_RANKING_GROUPS")
 fi
+if [[ -n "${GNN_GRADIENT_ACCUMULATION_GROUPS:-}" ]]; then
+  common_args+=(--gradient-accumulation-groups "$GNN_GRADIENT_ACCUMULATION_GROUPS")
+fi
+if [[ -n "${GNN_MAX_EDGES_PER_BATCH:-}" ]]; then
+  common_args+=(--max-edges-per-batch "$GNN_MAX_EDGES_PER_BATCH")
+fi
+if [[ -n "${GNN_MAX_NODES_PER_BATCH:-}" ]]; then
+  common_args+=(--max-nodes-per-batch "$GNN_MAX_NODES_PER_BATCH")
+fi
+if [[ -n "${GNN_PROGRESS_INTERVAL_BATCHES:-}" ]]; then
+  common_args+=(--progress-interval-batches "$GNN_PROGRESS_INTERVAL_BATCHES")
+fi
 if [[ -n "${GNN_MAX_EPOCHS:-}" ]]; then
   common_args+=(--max-epochs "$GNN_MAX_EPOCHS")
 fi
@@ -111,6 +136,9 @@ if [[ -n "${GNN_EARLY_STOPPING_PATIENCE:-}" ]]; then
 fi
 if [[ "$GNN_MIXED_PRECISION" == "0" ]]; then
   common_args+=(--no-mixed-precision)
+fi
+if [[ -n "${GNN_PRECISION:-}" ]]; then
+  common_args+=(--precision "$GNN_PRECISION")
 fi
 if [[ -n "${GNN_LEARNING_RATE:-}" ]]; then
   common_args+=(--learning-rate "$GNN_LEARNING_RATE")
@@ -121,7 +149,16 @@ fi
 
 for stage in $GNN_STAGES; do
   echo "=== Phase 8 P0 GNN stage: $stage ($GNN_MODE) ==="
-  uv run python -m pipeline.gnn_training "$stage" "${common_args[@]}"
+  stage_args=("${common_args[@]}")
+  if [[ "$stage" == "train-gnn-fold" ]]; then
+    : "${GNN_ABLATION_VARIANT:?train-gnn-fold requires GNN_ABLATION_VARIANT}"
+    : "${GNN_HELD_OUT_FOLD:?train-gnn-fold requires GNN_HELD_OUT_FOLD}"
+    stage_args+=(
+      --ablation-variant "$GNN_ABLATION_VARIANT"
+      --held-out-fold "$GNN_HELD_OUT_FOLD"
+    )
+  fi
+  uv run python -m pipeline.gnn_training "$stage" "${stage_args[@]}"
 done
 
 echo "Review aggregate reports under $reports_root; restricted artifacts remain under $gnn_root."

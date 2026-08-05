@@ -354,19 +354,34 @@ def test_defaults_and_relation_vocabulary_are_stable() -> None:
     assert config.architecture.relation_layers == 2
     assert config.architecture.hidden_dim == 128
     assert config.architecture.dropout == 0.2
+    assert config.architecture.relation_dropout == 0.1
+    assert config.architecture.node_continuous_dim == 5
+    assert config.architecture.time_bin_count == 5
     assert config.optimization.optimizer_name == "AdamW"
     assert config.optimization.learning_rate == 3e-4
     assert config.optimization.weight_decay == 1e-4
     assert config.optimization.gradient_clip_norm == 1.0
     assert config.optimization.max_epochs == 30
     assert config.optimization.early_stopping_patience == 3
+    assert config.optimization.max_edges_per_batch == 100_000
+    assert config.optimization.max_nodes_per_batch == 8_192
+    assert config.optimization.gradient_accumulation_groups == 32
+    assert config.optimization.progress_interval_batches == 100
     assert config.optimization.mixed_precision is True
-    assert len(FORWARD_RELATION_TYPES) == 5
+    assert config.optimization.precision == "bf16"
+    assert len(FORWARD_RELATION_TYPES) == 7
     assert REVERSE_RELATION_TYPES == tuple(
         f"reverse_{relation}" for relation in FORWARD_RELATION_TYPES
     )
     assert RELATION_TYPES[-1] == SELF_LOOP_RELATION == "self_loop"
-    assert len(RELATION_TO_INDEX) == 11
+    assert len(RELATION_TO_INDEX) == 15
+    assert not config.fold_checkpoint_path(0, "full").is_relative_to(
+        config.crossfit_root
+    )
+    assert not config.fold_resume_path(0, "full").is_relative_to(config.crossfit_root)
+    assert not config.fold_completion_manifest_path(0, "full").is_relative_to(
+        config.crossfit_root
+    )
 
 
 def test_cli_builds_config_without_importing_stage_modules() -> None:
@@ -391,12 +406,53 @@ def test_cli_builds_config_without_importing_stage_modules() -> None:
     assert config.allow_ungated is True
 
 
+def test_cli_addresses_one_gnn_variant_fold_task() -> None:
+    args = parse_args(
+        [
+            "train-gnn-fold",
+            "--ablation-variant",
+            "rank_only",
+            "--held-out-fold",
+            "3",
+            "--gradient-accumulation-groups",
+            "32",
+            "--allow-ungated",
+        ]
+    )
+
+    config = build_config(args)
+
+    assert args.ablation_variant == "rank_only"
+    assert args.held_out_fold == 3
+    assert config.optimization.gradient_accumulation_groups == 32
+
+
 def test_cli_can_disable_mixed_precision_for_numerical_fallback() -> None:
     args = parse_args(["train-gnn", "--no-mixed-precision"])
 
     config = build_config(args)
 
     assert config.optimization.mixed_precision is False
+
+
+def test_cli_selects_explicit_precision_and_graph_size_budgets() -> None:
+    args = parse_args(
+        [
+            "train-gnn",
+            "--precision",
+            "fp16",
+            "--max-edges-per-batch",
+            "64000",
+            "--max-nodes-per-batch",
+            "4096",
+        ]
+    )
+
+    config = build_config(args)
+
+    assert config.optimization.precision == "fp16"
+    assert config.optimization.max_edges_per_batch == 64_000
+    assert config.optimization.max_nodes_per_batch == 4_096
 
 
 def test_prepare_accepts_exact_upstream_locks(tmp_path: Path) -> None:

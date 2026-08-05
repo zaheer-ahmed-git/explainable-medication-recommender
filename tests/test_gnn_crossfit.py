@@ -10,6 +10,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
+import pipeline.gnn_training.crossfit as crossfit_module
 from pipeline.gate_recovery import patient_fold_sql
 from pipeline.gnn_training.config import (
     CROSS_FIT_SELECTION_SCOPE,
@@ -279,8 +280,8 @@ def _write_inputs(config: GNNTrainingConfig) -> dict[int, str]:
                 ),
             )
         )
-        event_rows.append(("mimiciv", "train", stay, "lab", lab, 12.0))
-        event_rows.append(("mimiciv", "train", stay, "lab", f"{lab}-future", 36.0))
+        event_rows.append(("mimiciv", "train", stay, "lab", lab, 12.0, 2.0))
+        event_rows.append(("mimiciv", "train", stay, "lab", f"{lab}-future", 36.0, 3.0))
         # Deliberately stale support values prove the cross-fit cache replaces,
         # rather than reuses, full-train supports.
         edge_rows.extend(
@@ -407,6 +408,7 @@ def _write_inputs(config: GNNTrainingConfig) -> dict[int, str]:
             "event_type",
             "event_token",
             "event_time_hours_from_admit",
+            "value_numeric",
         ),
         tuple(event_rows),
     )
@@ -575,6 +577,51 @@ def test_crossfit_hash_verifier_detects_artifact_drift(tmp_path: Path) -> None:
     codes = {error["code"] for error in errors}
     assert "crossfit_artifact_hash_mismatch" in codes
     assert "crossfit_artifact_tree_mismatch" in codes
+
+
+def test_crossfit_hash_verifier_reads_each_artifact_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    _write_inputs(config)
+    assert prepare_crossfit_graph_caches(config)["status"] == "completed"
+    original = crossfit_module.sha256_file
+    hashed_paths: list[Path] = []
+
+    def tracked_hash(path: Path) -> str:
+        hashed_paths.append(Path(path))
+        return original(path)
+
+    monkeypatch.setattr(crossfit_module, "sha256_file", tracked_hash)
+
+    assert crossfit_artifact_lock_errors(config) == []
+    assert hashed_paths
+    assert len(hashed_paths) == len(set(hashed_paths))
+
+
+def test_crossfit_preflight_reuses_allocation_attestation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    _write_inputs(config)
+    assert prepare_crossfit_graph_caches(config)["status"] == "completed"
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setenv("OAR_JOB_ID", "synthetic-123")
+    monkeypatch.setenv("WORK_SCRATCH", str(scratch))
+
+    assert crossfit_artifact_lock_errors(config) == []
+    attestation = scratch / "gnn-preflight" / "oar-synthetic-123.json"
+    assert attestation.is_file()
+
+    def unexpected_rehash(*args: object, **kwargs: object) -> dict[str, str]:
+        del args, kwargs
+        raise AssertionError("allocation attestation should bypass content rehashing")
+
+    monkeypatch.setattr(crossfit_module, "_artifact_hashes", unexpected_rehash)
+    assert crossfit_artifact_lock_errors(config) == []
 
 
 def test_protected_crossfit_requires_explicit_capacity_review(

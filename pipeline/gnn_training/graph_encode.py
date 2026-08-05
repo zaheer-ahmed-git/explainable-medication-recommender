@@ -27,8 +27,21 @@ PAD_INDEX = 0
 UNK_INDEX = 1
 RESERVED_TOKEN_COUNT = 2
 
-NODE_TYPES = ("condition", "medication", "lab", "vital", "intervention")
-NODE_ROLES = ("query_condition", "candidate_medication", "observed_context")
+NODE_TYPES = ("condition", "medication", "lab", "vital", "intervention", "stay")
+NODE_ROLES = (
+    "query_condition",
+    "candidate_medication",
+    "observed_context",
+    "stay_query",
+)
+NODE_CONTINUOUS_FEATURES = (
+    "value_zscore",
+    "value_mask",
+    "abnormal_direction",
+    "trend_zscore_per_window",
+    "time_normalized",
+)
+TIME_BIN_COUNT = 5  # missing plus four six-hour pre-decision bins
 
 NODE_TYPE_VOCABULARY = NODE_TYPES
 NODE_ROLE_VOCABULARY = NODE_ROLES
@@ -45,6 +58,8 @@ FORWARD_RELATION_TYPES = (
     "condition_vital_predecision",
     "condition_intervention_predecision",
     "medication_medication_train_coprescribed",
+    "stay_index_condition",
+    "stay_context_observed",
 )
 
 

@@ -38,6 +38,7 @@ from pipeline.gnn_training.data import (
 )
 from pipeline.gnn_training.graph_encode import (
     FORWARD_RELATION_TYPES,
+    NODE_CONTINUOUS_FEATURES,
     NODE_ROLE_TO_INDEX,
     NODE_ROLE_VOCABULARY,
     NODE_TYPE_TO_INDEX,
@@ -46,6 +47,7 @@ from pipeline.gnn_training.graph_encode import (
     RELATION_TO_INDEX,
     RELATION_TYPES,
     SELF_LOOP_RELATION,
+    TIME_BIN_COUNT,
     UNK_INDEX,
 )
 
@@ -62,6 +64,8 @@ class GNNFeatureLayoutSpec:
     node_type_vocabulary: tuple[str, ...]
     node_role_vocabulary: tuple[str, ...]
     relation_vocabulary: tuple[str, ...]
+    node_continuous_features: tuple[str, ...] = NODE_CONTINUOUS_FEATURES
+    time_bin_count: int = TIME_BIN_COUNT
     pad_index: int = PAD_INDEX
     unk_index: int = UNK_INDEX
     scope: str = "full_train_refit_only"
@@ -83,6 +87,10 @@ class GNNFeatureLayoutSpec:
 
     @property
     def query_role_index(self) -> int:
+        return self.node_role_vocabulary.index("stay_query")
+
+    @property
+    def condition_role_index(self) -> int:
         return self.node_role_vocabulary.index("query_condition")
 
     @property
@@ -114,6 +122,8 @@ class GNNFeatureLayoutSpec:
             node_type_vocabulary=node_types,
             node_role_vocabulary=node_roles,
             relation_vocabulary=relations,
+            node_continuous_features=tuple(payload.get("node_continuous_features", ())),
+            time_bin_count=int(payload.get("time_bin_count", 0)),
             pad_index=int(payload.get("pad_index", PAD_INDEX)),
             unk_index=int(payload.get("unk_index", UNK_INDEX)),
             scope=str(payload.get("scope", "unknown")),
@@ -159,6 +169,12 @@ class GNNFeatureLayoutSpec:
             )
         if self.relation_vocabulary != tuple(RELATION_TYPES):
             raise ValueError("graph layout relation vocabulary does not match contract")
+        if self.node_continuous_features != tuple(NODE_CONTINUOUS_FEATURES):
+            raise ValueError(
+                "graph layout continuous node features do not match contract"
+            )
+        if self.time_bin_count != TIME_BIN_COUNT:
+            raise ValueError("graph layout time-bin count does not match contract")
 
 
 # Compatibility aliases for model/test callers that use a shorter name.
@@ -175,6 +191,8 @@ class GNNExample:
     node_role_index: np.ndarray  # (N,) int64
     observed_mask: np.ndarray  # (N,) bool
     cold_start_mask: np.ndarray  # (N,) bool
+    node_continuous: np.ndarray  # (N, F) float32
+    node_time_bin_index: np.ndarray  # (N,) int64
     edge_index: np.ndarray  # (2, E) int64
     edge_type: np.ndarray  # (E,) int64
     edge_weight: np.ndarray  # (E,) float32
@@ -393,14 +411,32 @@ def _build_example(
     if (node_role < 0).any() or (node_role >= spec.node_role_vocab_size).any():
         raise ValueError("ranking group has invalid node role indexes")
 
-    query_offsets = np.flatnonzero(node_role == spec.query_role_index)
-    if query_offsets.shape[0] != 1:
-        raise ValueError("ranking group must contain exactly one query node")
-    query_index = int(query_offsets[0])
+    condition_offsets = np.flatnonzero(node_role == spec.condition_role_index)
+    if condition_offsets.shape[0] != 1:
+        raise ValueError("ranking group must contain exactly one condition node")
+    condition_index = int(condition_offsets[0])
 
     # Context pooling uses the explicit temporal-observation flag.  A graph
     # without context remains valid and receives an empty index vector.
     context_index = np.flatnonzero(observed).astype(np.int64, copy=False)
+
+    if all(name in ordered_nodes.columns for name in NODE_CONTINUOUS_FEATURES):
+        node_continuous = ordered_nodes[list(NODE_CONTINUOUS_FEATURES)].to_numpy(
+            dtype=np.float32
+        )
+    else:
+        node_continuous = np.zeros(
+            (len(ordered_nodes), len(NODE_CONTINUOUS_FEATURES)),
+            dtype=np.float32,
+        )
+    if not np.isfinite(node_continuous).all():
+        raise ValueError("ranking group has non-finite continuous node features")
+    if "time_bin_index" in ordered_nodes.columns:
+        node_time_bin = ordered_nodes["time_bin_index"].to_numpy(dtype=np.int64)
+    else:
+        node_time_bin = np.zeros(len(ordered_nodes), dtype=np.int64)
+    if (node_time_bin < 0).any() or (node_time_bin >= TIME_BIN_COUNT).any():
+        raise ValueError("ranking group has invalid node time bins")
 
     ordered_candidates = candidates.sort_values(
         ["candidate_rank", "candidate_medication_token"],
@@ -510,12 +546,66 @@ def _build_example(
     if fold_id < 0:
         raise ValueError("ranking group has an invalid fold")
 
+    # P1 adds one patient-specific stay/query node at load time. This preserves
+    # the immutable concept-cache rows while avoiding a duplicated stay token
+    # in the train-fitted concept vocabulary. The stay is connected to the
+    # index condition and every observed pre-decision context node.
+    query_index = len(concept)
+    concept = np.append(concept, UNK_INDEX).astype(np.int64, copy=False)
+    node_type = np.append(node_type, NODE_TYPE_TO_INDEX["stay"]).astype(
+        np.int64, copy=False
+    )
+    node_role = np.append(node_role, spec.query_role_index).astype(np.int64, copy=False)
+    observed = np.append(observed, False)
+    cold = np.append(cold, False)
+    node_continuous = np.vstack(
+        (
+            node_continuous,
+            np.zeros((1, len(NODE_CONTINUOUS_FEATURES)), dtype=np.float32),
+        )
+    )
+    node_time_bin = np.append(node_time_bin, 0).astype(np.int64, copy=False)
+
+    dynamic_sources = [query_index, condition_index, query_index]
+    dynamic_destinations = [condition_index, query_index, query_index]
+    dynamic_types = [
+        RELATION_TO_INDEX["stay_index_condition"],
+        RELATION_TO_INDEX["reverse_stay_index_condition"],
+        RELATION_TO_INDEX[SELF_LOOP_RELATION],
+    ]
+    dynamic_weights = [1.0, 1.0, 1.0]
+    if context_index.size:
+        reverse_weight = 1.0 / float(context_index.size)
+        for context_node in context_index.tolist():
+            dynamic_sources.extend((query_index, int(context_node)))
+            dynamic_destinations.extend((int(context_node), query_index))
+            dynamic_types.extend(
+                (
+                    RELATION_TO_INDEX["stay_context_observed"],
+                    RELATION_TO_INDEX["reverse_stay_context_observed"],
+                )
+            )
+            dynamic_weights.extend((1.0, reverse_weight))
+    edge_index = np.concatenate(
+        (
+            edge_index,
+            np.asarray((dynamic_sources, dynamic_destinations), dtype=np.int64),
+        ),
+        axis=1,
+    )
+    edge_type = np.concatenate((edge_type, np.asarray(dynamic_types, dtype=np.int64)))
+    edge_weight = np.concatenate(
+        (edge_weight, np.asarray(dynamic_weights, dtype=np.float32))
+    )
+
     return GNNExample(
         node_concept_index=concept,
         node_type_index=node_type,
         node_role_index=node_role,
         observed_mask=observed,
         cold_start_mask=cold,
+        node_continuous=node_continuous,
+        node_time_bin_index=node_time_bin,
         edge_index=edge_index,
         edge_type=edge_type,
         edge_weight=edge_weight,
@@ -660,7 +750,7 @@ def build_shard_examples(
                 key, pd.DataFrame(columns=candidates.columns)
             ),
         )
-        if example.num_nodes != int(row["node_count"]):
+        if example.num_nodes != int(row["node_count"]) + 1:
             raise ValueError("ranking group node set is incomplete")
         examples.append(example)
     return examples
@@ -675,6 +765,8 @@ class GNNBatch:
     node_role_index: "torch.Tensor"
     observed_mask: "torch.Tensor"
     cold_start_mask: "torch.Tensor"
+    node_continuous: "torch.Tensor"
+    node_time_bin_index: "torch.Tensor"
     edge_index: "torch.Tensor"
     edge_type: "torch.Tensor"
     edge_weight: "torch.Tensor"
@@ -729,6 +821,8 @@ class GNNBatch:
             node_role_index=self.node_role_index.to(device),
             observed_mask=self.observed_mask.to(device),
             cold_start_mask=self.cold_start_mask.to(device),
+            node_continuous=self.node_continuous.to(device),
+            node_time_bin_index=self.node_time_bin_index.to(device),
             edge_index=self.edge_index.to(device),
             edge_type=self.edge_type.to(device),
             edge_weight=self.edge_weight.to(device),
@@ -774,6 +868,10 @@ def collate_examples(
     node_role = torch.empty((total_nodes,), dtype=torch.long)
     observed = torch.empty((total_nodes,), dtype=torch.bool)
     cold = torch.empty((total_nodes,), dtype=torch.bool)
+    node_continuous = torch.empty(
+        (total_nodes, len(NODE_CONTINUOUS_FEATURES)), dtype=torch.float32
+    )
+    node_time_bin = torch.empty((total_nodes,), dtype=torch.long)
     graph_index = torch.empty((total_nodes,), dtype=torch.long)
     edge_index = torch.empty((2, total_edges), dtype=torch.long)
     edge_type = torch.empty((total_edges,), dtype=torch.long)
@@ -805,6 +903,12 @@ def collate_examples(
         )
         cold[node_offset:node_end] = torch.tensor(
             example.cold_start_mask, dtype=torch.bool
+        )
+        node_continuous[node_offset:node_end] = torch.tensor(
+            example.node_continuous, dtype=torch.float32
+        )
+        node_time_bin[node_offset:node_end] = torch.tensor(
+            example.node_time_bin_index, dtype=torch.long
         )
         graph_index[node_offset:node_end] = graph
         if example.num_edges:
@@ -844,6 +948,8 @@ def collate_examples(
         node_role_index=node_role,
         observed_mask=observed,
         cold_start_mask=cold,
+        node_continuous=node_continuous,
+        node_time_bin_index=node_time_bin,
         edge_index=edge_index,
         edge_type=edge_type,
         edge_weight=edge_weight,
@@ -991,11 +1097,23 @@ def iter_batches(
     include_fold_ids: frozenset[int] | None = None,
     exclude_fold_ids: frozenset[int] | None = None,
     require_positive: bool = False,
+    max_edges: int | None = None,
+    max_nodes: int | None = None,
 ) -> Iterator[GNNBatch]:
-    """Yield batches while retaining no more than one shard's rows."""
+    """Yield graph-size-bounded batches from no more than one loaded shard."""
 
     if batch_groups < 1:
         raise ValueError("batch_groups must be positive")
+    edge_limit = (
+        config.optimization.max_edges_per_batch if max_edges is None else max_edges
+    )
+    node_limit = (
+        config.optimization.max_nodes_per_batch if max_nodes is None else max_nodes
+    )
+    if edge_limit is not None and edge_limit < 1:
+        raise ValueError("max_edges must be positive when provided")
+    if node_limit is not None and node_limit < 1:
+        raise ValueError("max_nodes must be positive when provided")
     shard_order = list(range(config.shard_count))
     if shuffle:
         shard_rng = np.random.default_rng(seed + epoch)
@@ -1020,8 +1138,65 @@ def iter_batches(
             )
             order = group_rng.permutation(len(examples))
             examples = [examples[index] for index in order]
-        for start in range(0, len(examples), batch_groups):
-            yield collate_examples(
-                examples[start : start + batch_groups],
-                spec,
+        for example_batch in iter_example_batches(
+            examples,
+            max_groups=batch_groups,
+            max_edges=edge_limit,
+            max_nodes=node_limit,
+        ):
+            yield collate_examples(example_batch, spec)
+
+
+def iter_example_batches(
+    examples: Sequence[GNNExample],
+    *,
+    max_groups: int,
+    max_edges: int | None,
+    max_nodes: int | None,
+) -> Iterator[list[GNNExample]]:
+    """Greedily group examples without crossing configured graph-size limits.
+
+    An individual graph that exceeds a limit fails closed without exposing its
+    identifier. Such a graph requires an explicit representation or capacity
+    review rather than silently defeating the configured memory boundary.
+    """
+
+    if max_groups < 1:
+        raise ValueError("max_groups must be positive")
+    if max_edges is not None and max_edges < 1:
+        raise ValueError("max_edges must be positive when provided")
+    if max_nodes is not None and max_nodes < 1:
+        raise ValueError("max_nodes must be positive when provided")
+
+    pending: list[GNNExample] = []
+    pending_edges = 0
+    pending_nodes = 0
+    for example in examples:
+        if max_edges is not None and example.num_edges > max_edges:
+            raise ValueError("single graph exceeds max_edges batch ceiling")
+        if max_nodes is not None and example.num_nodes > max_nodes:
+            raise ValueError("single graph exceeds max_nodes batch ceiling")
+        crosses_limit = bool(
+            pending
+            and (
+                len(pending) >= max_groups
+                or (
+                    max_edges is not None
+                    and pending_edges + example.num_edges > max_edges
+                )
+                or (
+                    max_nodes is not None
+                    and pending_nodes + example.num_nodes > max_nodes
+                )
             )
+        )
+        if crosses_limit:
+            yield pending
+            pending = []
+            pending_edges = 0
+            pending_nodes = 0
+        pending.append(example)
+        pending_edges += example.num_edges
+        pending_nodes += example.num_nodes
+    if pending:
+        yield pending
