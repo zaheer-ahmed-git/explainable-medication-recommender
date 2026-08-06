@@ -44,8 +44,12 @@ PyTorch-dependent tests use `pytest.importorskip("torch")` and skip when the
 optional `neural` group is not installed. GNN tests cover fail-closed
 contracts and exact hash locks, fold-excluded support/vocabulary fitting,
 future-event exclusion beyond 24 hours, compact graph loading and batching,
-relation expansion/normalization, R-GCN and fusion behavior, frozen
-Transformer immutability/alignment, canonical score reconciliation,
+group/node/edge batch ceilings, production-shape grouped relation aggregation
+and gradient equivalence, allocation-attestation reuse, one-fragment cache
+partitions, restart-safe checkpoint placement, stay-query construction,
+numeric/time node attributes, rank-only and dense-relation controls, OOF
+temperature fitting, relation expansion/normalization, R-GCN and fusion
+behavior, frozen Transformer immutability/alignment, canonical score reconciliation,
 non-finite-value rejection, mixed-precision gradient-overflow backoff,
 full-precision gradient failure, atomic final-run claims, and the complete
 five-stage synthetic smoke workflow.
@@ -102,6 +106,7 @@ uv run pytest tests/test_neural_dataset.py tests/test_neural_model.py \
   tests/test_neural_train_score.py tests/test_neural_schedule.py
 uv run pytest tests/test_gnn_contract.py tests/test_gnn_crossfit.py \
   tests/test_gnn_data.py tests/test_gnn_dataset.py \
+  tests/test_gnn_model.py \
   tests/test_gnn_frozen_transformer.py tests/test_gnn_scoring.py \
   tests/test_gnn_train_score.py
 uv run pytest tests/test_phase4_to_9_visualization.py

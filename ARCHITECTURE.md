@@ -231,7 +231,13 @@ implemented. Protected preparation completed. Job 8825 failed in shard loading
 and led to multi-file partition support; job 10962 passed loading but failed on
 a mixed-precision gradient overflow before producing a model. The optimizer
 now performs bounded loss-scale backoff and same-batch retry, but successful
-protected training remains pending.
+protected training remains pending. Job 12214 subsequently reproduced a CUDA
+OOM caused by materializing one dense relation matrix per edge. Relation
+messages now aggregate weighted source states by relation before applying the
+fifteen dense transforms, avoiding the `E×H×H` temporary while preserving the
+registered equation. Training batches have independent group, node, and edge
+ceilings; Calculco A100 jobs default to BF16; and aggregate heartbeats expose
+integrity and epoch progress without logging restricted keys.
 
 ### GNN Branch
 
@@ -240,14 +246,37 @@ medications, laboratory concepts, and curated medical knowledge. Graph
 construction must avoid test-set and future-event leakage.
 
 **Implemented (Phase D code, protected training pending):**
-`pipeline.gnn_training` consumes the locked Milestone 8 patient
-subgraphs and expands five forward relations into five reverses plus a
-self-loop. A native PyTorch R-GCN-style encoder produces query/candidate/context
-representations and medication logits. Patient-grouped model selection uses
+`pipeline.gnn_training` consumes the locked Milestone 8 patient subgraphs,
+expands five cached forward relations into reverses and self-loops, and adds
+two stay-query relations with their reverses at load time. A native PyTorch
+R-GCN-style encoder produces stay-query/candidate/context representations and
+medication logits. Patient-grouped model selection uses
 physical fold-excluded graph caches: held-out patients are removed before
 support counts, coprescription, temporal event edges, vocabulary, cold-start
 state, and edge normalization are fitted. The full-train graph is marked
 `full_train_refit_only` and cannot drive selection.
+
+Cross-fit cache trees are immutable inputs and are hashed exactly once per
+preflight. Mutable epoch and completed-fold checkpoints live under the main
+GNN checkpoint root, never inside those digest-locked trees. A restart reuses
+state only when the seed, feature layout, architecture, optimization settings,
+and cross-fit manifest hash all match.
+
+The versioned P1 representation adds a dedicated stay/query node, six-hour
+time-bin embeddings, and bounded numeric node attributes for value, observed
+value mask, train-fit statistical-deviation direction, trend, and recency.
+Fold selection fits numeric normalization without the held-out patient fold.
+Six registered variants include a rank-only control, the full gated model,
+no-message-passing and relation-removal controls, plus a dense lab/vital
+ablation. Relation gates are learned and relation dropout is applied during
+training. Standalone temperature is fitted from patient-grouped train OOF
+logits, not the validation qualification split.
+
+The alternative fold-global concept-graph encoder remains an explicit future
+experiment rather than the default: incoming normalization is currently
+patient-subgraph-specific, so sharing one encoded global graph would change
+the registered estimand. The compact representation instead avoids physical
+duplication of stay nodes by adding them deterministically in the loader.
 
 ### Fusion
 

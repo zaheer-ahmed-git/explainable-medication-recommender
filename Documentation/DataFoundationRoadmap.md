@@ -802,7 +802,18 @@ clear the neural gate; the v3 implementation is the current code. The GNN
 relation branch and joint fusion workflow are implemented and synthetically
 verified. Protected GNN preparation completed, while training and metric
 review remain pending after job 10962 exposed mixed-precision gradient
-overflow following the earlier loader correction.
+overflow following the earlier loader correction. Job 12214 then reached the
+model and exposed an allocation-heavy per-edge relation transform; it was
+cancelled. The grouped-relation rewrite, graph-size batch ceilings, BF16
+default, single-pass integrity preflight, aggregate heartbeats, and restart
+state are implemented and synthetically verified. Protected rerun and metric
+review remain pending.
+
+The follow-up P1 code contract is also implemented but not yet prepared or
+evaluated on protected data: explicit stay-query representation, fold-safe
+numeric/time attributes, learned relation gates/dropout, rank-only and dense
+lab/vital controls, OOF calibration, compact partitions, and array-addressable
+fold fits. Its version bump requires rebuilding full and cross-fit GNN caches.
 
 - `pipeline.training_contract` writes an aggregate lock for the four pinned
   versions, completed upstream manifests, file/schema/count metadata,

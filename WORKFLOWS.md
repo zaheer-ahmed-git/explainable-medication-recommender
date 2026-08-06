@@ -601,9 +601,10 @@ under `$DATASET_ROOT/processed/phase8_p0/neural/`.
 
 ## Run Phase 8 P0 GNN and Frozen-Transformer Fusion (Phase D)
 
-Phase D code is implemented, but protected preparation/training has not yet
-run. The full-train graph is refit-only; model selection requires five
-patient-fold-excluded graph caches and exact artifact hashes.
+Phase D code and protected preparation are complete, but protected training has
+not completed successfully. The full-train graph is refit-only; model
+selection requires five patient-fold-excluded graph caches and exact artifact
+hashes.
 
 1. Export the Calculco paths and sync the existing optional PyTorch group:
 
@@ -656,30 +657,61 @@ Restricted graph caches, exact hash manifests, frozen Transformer contexts and
 logits, and vocabularies stay under
 `$DATASET_ROOT/processed/phase8_p0/gnn/`.
 
-4. After aggregate review, submit the development GPU chain:
+4. The P1 feature/relation versions invalidate the earlier prepared GNN tree.
+   Rerun and review `prepare` before GPU work. Then submit the restartable
+   `(variant, fold)` OAR array:
 
 ```bash
-scripts/calculco/submit_phase8_p0_gnn_training.sh development
+scripts/calculco/submit_phase8_p0_gnn_fold_array.sh
 ```
 
-It runs, in order:
+After every array task has a compatible completed-fold checkpoint and hash
+sidecar manifest, run
+selection and full-train refit as separate jobs, then submit later stages
+individually:
 
-```text
-train-gnn → score-gnn → train-fusion → score-fusion
+```bash
+scripts/calculco/submit_phase8_p0_gnn_training.sh development select-gnn
+scripts/calculco/submit_phase8_p0_gnn_training.sh development refit-gnn
+scripts/calculco/submit_phase8_p0_gnn_training.sh development score-gnn
+scripts/calculco/submit_phase8_p0_gnn_training.sh development train-fusion
+scripts/calculco/submit_phase8_p0_gnn_training.sh development score-fusion
 ```
 
-`train-gnn` selects four pre-registered relation variants using
-patient-grouped cross-fit graphs, writes selected GNN OOF logits, refits on the
-full train graph, and calibrates on MIMIC validation. `score-gnn`
+Set `GNN_AFTER_JOB_ID=<prior OAR job id>` on each submission to add an OAR
+anterior-job dependency (`oarsub -a`), including selection after the fold
+array, refit after selection, and each reviewed scoring/fusion boundary.
+
+The compatibility `train-gnn` command still performs missing folds, selection,
+and refit serially, but the OAR array is the protected-scale workflow. Six
+pre-registered variants include full, rank-only, no message passing, and three
+relation-removal controls. `select-gnn` writes selected GNN OOF logits and fits
+temperature from those patient-grouped train OOF logits; `refit-gnn` trains the
+selected variant on the full train graph. `score-gnn`
 compares the standalone branch with the locked graph-only XGBoost reference.
 Fusion keeps the Transformer immutable and compares late versus residual
 candidates against the frozen Transformer validation metrics.
 
-CUDA mixed precision remains the default. Recoverable gradient overflow backs
-off the dynamic loss scale and retries the same batch; persistent overflow
-fails closed. For a separately reviewed full-precision diagnostic run, submit
-with `GNN_MIXED_PRECISION=0`. This fallback changes execution precision and
-must be recorded with the run rather than silently enabled.
+Calculco A100 jobs default to BF16 (`GNN_PRECISION=bf16`); FP16 remains an
+explicit option and alone uses dynamic loss scaling and bounded overflow
+retry. Use `GNN_PRECISION=fp32` or the legacy `GNN_MIXED_PRECISION=0` for a
+separately reviewed full-precision diagnostic. Batches are greedily bounded by
+`GNN_BATCH_RANKING_GROUPS=32`, `GNN_MAX_EDGES_PER_BATCH=100000`, and
+`GNN_MAX_NODES_PER_BATCH=8192`. Microbatches accumulate to
+`GNN_GRADIENT_ACCUMULATION_GROUPS=32` before each optimizer step; tune ceilings
+from measured aggregate distributions, not patient examples. New prepared
+caches enforce one Parquet fragment per table/split/shard. The complete tree is
+content-hashed once per allocation; later preflights in that allocation reuse
+a mode-0600 attestation after a metadata fingerprint check. Training reports
+one aggregate-safe heartbeat every
+`GNN_PROGRESS_INTERVAL_BATCHES=100` batches.
+
+The relation layer aggregates edges by relation before applying each dense
+transform and therefore does not materialize an `E×H×H` tensor. Atomic epoch
+resume state and completed-fold checkpoints live under the configured GNN
+checkpoint root, outside the immutable cross-fit cache. Resume is accepted
+only for matching seed, layout, architecture, optimization, and cross-fit
+manifest locks.
 
 The frozen Transformer representations are a full-train refit, not
 Transformer OOF outputs. Late-fusion weight fitting is recorded as train

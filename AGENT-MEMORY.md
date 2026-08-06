@@ -138,10 +138,10 @@ task context, source-code inspection, or local agent memory.
   `scripts/calculco/phase8_p0_neural_training.sh` (installs the `neural` group).
   The first protected development run (v1) completed but failed the neural gate
   (best epoch 0, NDCG@10 ≈ 0.3747 vs Stage 1 ≈ 0.3946).
-- Phase D is implemented in `pipeline.gnn_training`. Its five-stage CLI
+- Phase D is implemented in `pipeline.gnn_training`. Its stage CLI
   prepares a full-train refit cache plus five patient-fold-excluded selection
-  caches, extracts immutable Transformer contexts/logits, selects four native
-  PyTorch R-GCN-style ablations, refits and qualifies a standalone relation
+  caches, extracts immutable Transformer contexts/logits, selects six native
+  PyTorch GNN controls/ablations, refits and qualifies a standalone relation
   branch, and trains/qualifies late and zero-initialized residual fusion. Exact
   artifact hashes, canonical candidate reconciliation, non-finite-value
   rejection, and atomic one-shot final markers fail closed. The full-train
@@ -155,7 +155,16 @@ task context, source-code inspection, or local agent memory.
   deterministically. Job 10962 passed loading but failed when clipping saw
   non-finite mixed-precision gradients. AMP overflow now triggers bounded
   loss-scale backoff and same-batch retry; full precision remains an explicit
-  fallback. A replacement run and all protected metrics remain pending.
+  fallback. Job 12214 then exposed the allocation-heavy per-edge relation
+  transform and was cancelled. Relation aggregation is now relation-grouped,
+  batches have group/node/edge ceilings, A100 precision defaults to BF16,
+  cross-fit hashing is single-pass with aggregate heartbeats, and atomic
+  epoch/completed-fold restart artifacts live outside the immutable cross-fit
+  tree. A replacement run and all protected metrics remain pending.
+  The P1 feature/relation v2 code adds a stay query, numeric/time attributes,
+  relation gates/dropout, rank-only and dense-relation controls, OOF
+  calibration, compact partitions, and array fold tasks. It requires a fresh
+  protected `prepare`; the earlier protected caches are not compatible.
   CPU prepare and GPU train/score wrappers are
   `scripts/calculco/phase8_p0_gnn_prepare.sh` and
   `scripts/calculco/phase8_p0_gnn_training.sh`; prepare requires

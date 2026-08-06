@@ -30,6 +30,30 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ### Fixed
 
+- Implemented the versioned GNN P1 representation/modeling contract: explicit
+  stay-query nodes and relations; fold-safe numeric value, statistical
+  deviation, trend, recency and time-bin attributes; learned relation gates and
+  relation dropout; rank-only and dense lab/vital controls; patient-grouped OOF
+  temperature fitting; one-fragment cache partitions; effective-group gradient
+  accumulation; allocation-local integrity attestations; and independently
+  schedulable `(variant, fold)`, selection, and refit commands. This changes the
+  GNN feature/relation versions and therefore requires a fresh protected
+  `prepare`; no performance claim is made.
+
+- GNN training no longer materializes a dense `E×H×H` relation-weight tensor.
+  Weighted source states are accumulated by relation before each transform,
+  preserving forward/gradient behavior while removing the allocation that
+  requested about 5.5 GiB in protected job 12214. Graph batches now have
+  independent group/node/edge ceilings; A100 jobs default explicitly to BF16;
+  and aggregate CUDA/progress heartbeats make long epochs observable. Exact
+  cross-fit verification hashes each file once per preflight instead of
+  repeatedly traversing fold and global trees. Atomic epoch state and reusable
+  completed-fold checkpoints are stored outside immutable cross-fit caches and
+  accepted only against matching configuration and artifact locks. Calculco
+  submissions now run one development stage per OAR job. Job 12214 was
+  cancelled; a protected-scale validation run and all performance claims are
+  still pending.
+
 - GNN and residual-fusion mixed-precision optimization now treats non-finite
   scaled gradients as recoverable AMP overflow: it skips the unsafe update,
   backs off the loss scale, and retries the same batch up to a bounded limit.

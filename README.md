@@ -63,7 +63,7 @@ pending.
   MRR-oriented primary-positive loss. The Phase D relation branch and frozen-
   Transformer fusion workflow are now implemented in
   `pipeline.gnn_training`: fold-excluded graph preparation, a native
-  PyTorch R-GCN-style ranker, four pre-registered relation ablations,
+  PyTorch R-GCN-style ranker, six pre-registered representation/relation controls,
   full-train refit, canonical standalone scoring, late/residual fusion, and
   fail-closed development/final gates. Focused synthetic tests pass, including
   the complete five-stage smoke workflow. Protected `prepare` and cross-fit
@@ -73,7 +73,21 @@ pending.
   rejected an AMP overflow. Training now backs off the loss scale and retries
   the same batch, with a bounded fail-closed limit and an explicit reviewed
   full-precision fallback. No protected GNN/fusion model or performance result
-  is claimed until training and scoring are rerun successfully.
+  is claimed until training and scoring are rerun successfully. Development
+  job 12214 then exposed the dominant allocation in relation message passing:
+  gathering one `128×128` matrix per edge requested about 5.5 GiB for a single
+  batch. That job was cancelled before later stages. The implementation now
+  aggregates edges by relation before applying its matrix, bounds batches by
+  groups/nodes/edges, defaults A100 work to BF16, verifies the cross-fit tree
+  in one hash pass with progress heartbeats, and writes restart state outside
+  the immutable graph tree. These changes are synthetically verified only;
+  protected-scale rerun and metric review remain pending.
+  The versioned P1 representation is implemented in code: an explicit stay
+  query node, fold-safe numeric value/deviation/trend/recency features, time-bin
+  embeddings, learned relation gates/dropout, a rank-only baseline, dense
+  lab/vital ablations, compact one-fragment cache partitions, array-addressable
+  fold training, and OOF temperature fitting. Existing protected P0 caches are
+  incompatible with this layout and must be rebuilt before training.
 - Focused synthetic tests cover the current source-inventory, cohort,
   profiling, EDA-summary, extraction, and Milestone 5 harmonization contracts.
   Additional synthetic tests cover Milestone 6 temporal cutoffs, censoring,
@@ -91,8 +105,10 @@ pending.
   prepare/train/score smoke test (PyTorch-dependent tests skip when the optional
   `neural` group is not installed). Phase D GNN tests cover
   contract/hash drift, patient-fold graph exclusion, temporal cutoffs,
-  bounded graph loading, model/fusion behavior, canonical scoring, final-run
-  claims, and an end-to-end synthetic workflow.
+  bounded graph loading and graph-size batching, production-shape relation
+  aggregation, exact-hash single-pass verification, restart boundaries,
+  model/fusion behavior, canonical scoring, final-run claims, and an
+  end-to-end synthetic workflow.
 
 Do not interpret the poster's illustrative medication table or planned system
 diagram as a clinically validated implementation.

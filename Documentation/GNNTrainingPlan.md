@@ -5,7 +5,10 @@
 - Use this document as the canonical Phase D implementation and execution
   contract for `pipeline.gnn_training`.
 - Treat Transformer v3 as immutable. Its frozen selection report, checkpoint, feature layout, calibration, and hashes become required inputs; GNN work must never overwrite or update them.
-- Use the existing five node types, five train-fit relations, and patient subgraphs. Defer DDI, ontology, notes, patient-similarity edges, and eICU performance modeling.
+- Use the five source concept-node types plus a loader-created stay/query type,
+  five train-fit source relations plus two stay-query relations, and patient
+  subgraphs. Defer DDI, ontology, notes, patient-similarity edges, and eICU
+  performance modeling.
 - Implement a small native-PyTorch R-GCN-style branch rather than HGT or a new PyG dependency. R-GCN directly models typed relations, while HGT targets substantially larger and more complex heterogeneous graphs. Patient-specific graph pooling follows the relevant GraphCare design pattern. [R-GCN](https://arxiv.org/abs/1703.06103), [HGT](https://arxiv.org/abs/2003.01332), [GraphCare](https://openreview.net/pdf?id=tVTN7Zs0ml)
 - Promotion outcome is binary: freeze a hybrid only if it beats the frozen Transformer gate; otherwise retain the Transformer and publish a negative aggregate result.
 
@@ -14,6 +17,8 @@
 - Add `pipeline.gnn_training` with these commands:
   - `prepare`: audit contracts, build typed vocabularies, compact the large patient-subgraph tables, and cache frozen Transformer representations.
   - `train-gnn` / `score-gnn`: train and qualify the independent relation branch.
+  - `train-gnn-fold`, `select-gnn`, and `refit-gnn`: independently schedule
+    fold fits, selection/OOF calibration, and full-train refit.
   - `train-fusion` / `score-fusion`: fit late-fusion and residual joint-fusion candidates.
   - All scoring commands support `--mode development|final`; final mode requires `--frozen-selection`.
 - Store restricted caches, checkpoints, predictions, and scores under `$DATASET_ROOT/processed/phase8_p0/gnn/`. Write only aggregate manifests and metrics under `$REPORTS_ROOT`.
@@ -23,9 +28,9 @@
   `scripts/calculco/`, both requiring `$WORK_SCRATCH`. No job was submitted as
   part of implementation.
 
-## Implementation Status (2026-08-04)
+## Implementation Status (2026-08-05)
 
-- The five-stage CLI, native PyTorch relation model, fold-excluded graph
+- The stage CLI, native PyTorch relation model, fold-excluded graph
   preparation, frozen-Transformer representation cache, standalone GNN
   selection/refit/scoring, late/residual fusion, canonical scoring, and
   fail-closed development/final gates are implemented.
@@ -43,6 +48,16 @@
   retries the same batch; persistent overflow still fails closed with safe
   parameter-level diagnostics. No protected GNN/fusion model or metric is
   claimed until training and scoring are rerun successfully.
+- Job 12214 was cancelled after exposing the per-edge `E×H×H` relation-matrix
+  allocation. The grouped operator, graph-size ceilings, effective-group
+  accumulation, BF16 default, deterministic retry, compact partitions,
+  allocation attestation, epoch resume, fold OAR array, and aggregate-safe
+  completed-fold hash sidecars, and heartbeat fields are implemented. The
+  versioned P1 representation/model is
+  also implemented: explicit stay query, numeric/time attributes, learned
+  relation gates/dropout, rank-only and dense lab/vital controls, and OOF
+  temperature fitting. It requires a fresh protected `prepare`; no protected
+  P1 model or metric exists yet.
 - Cross-fit preparation currently materializes five physical fold-excluded
   cache trees. Because this is storage-intensive, protected preparation fails
   unless `GNN_CROSSFIT_MIN_FREE_GIB` records a reviewed threshold and the
@@ -68,20 +83,42 @@
 
 2. **Memory-bounded graph preparation**
    - Project only approved fields from nodes, edges, candidates, and the subgraph index; encode strings into train-derived integer vocabularies and omit identifiers from model tensors.
-   - Hash complete ranking groups into 256 compact Parquet shards. Never load or scan the 1.2-billion-edge artifact globally during training.
+   - Hash complete ranking groups into 256 compact Parquet shards with at most
+     one file per table/split/shard. Never load or scan the 1.2-billion-edge
+     artifact globally during training.
    - Preserve every candidate in each group. Exclude zero-positive groups only from fitting; retain and report them during evaluation.
-   - Expand the five relations with deterministic reverse relations and one self-loop relation.
+   - Expand the five source relations with deterministic reverses and one
+     self-loop; add stay-to-condition/context relations and reverses at load
+     time without duplicating physical cache nodes.
    - Transform support as `log1p(support_count)` and normalize incoming weights within each relation and destination node.
    - Cache the frozen 256-dimensional Transformer stay-context vector and frozen candidate logits, keyed locally by restricted group identifiers. Record the Transformer hash in every cache manifest.
 
 3. **Standalone GNN**
-   - Node representation: unified concept identity embedding plus node-type and node-role embeddings and the existing observed/cold-start flags.
+   - Node representation: unified concept identity, node-type, node-role and
+     six-hour time-bin embeddings plus observed/cold-start flags and bounded
+     value, value-mask, statistical-deviation direction, trend and recency
+     attributes. Fit numeric statistics without the held-out patient fold.
    - Encoder: two 128-dimensional relation-aware message-passing layers with residual connections, LayerNorm, GELU, and dropout `0.2`.
-   - Candidate representation: concatenate the query-condition node, candidate-medication node, their elementwise interaction, and attention-pooled observed context nodes.
+   - Candidate representation: concatenate the stay-query node,
+     candidate-medication node, their elementwise interaction, and
+     attention-pooled observed context nodes.
    - Score with a two-layer MLP; include `log1p(candidate_rank)` because the frozen Stage 1 selection retained that prior.
-   - Pre-register four train-fold comparisons: full five relations, no message passing, no direct condition–medication relation, and no lab/vital/intervention relations. Use deterministic patient-grouped MIMIC-train folds. For each held-out fold, exclude its patients before relation support, coprescription, temporal event edges, concept vocabulary, cold-start flags, and normalized edge weights are fitted. The official full-train graph is refit/reference-only.
-   - Optimize the existing multi-positive listwise loss plus primary-positive and auxiliary BCE terms, using AdamW (`3e-4`, weight decay `1e-4`), gradient clipping `1.0`, mixed precision, maximum 30 epochs, patience 3, and seed `20260617`.
-   - Refit the selected variant on all MIMIC train data using the median fold-selected epoch. Evaluate MIMIC validation once.
+   - Pre-register six comparisons: full learned relation gates/dropout,
+     rank-only, no message passing, no direct condition–medication, no dense
+     lab/vital, and no lab/vital/intervention. Use deterministic
+     patient-grouped MIMIC-train folds. For each held-out fold, exclude its
+     patients before relation support, coprescription, temporal event edges,
+     concept vocabulary, numeric normalization, cold-start flags, and edge
+     normalization are fitted. The official full-train graph is refit-only.
+   - Optimize the existing multi-positive listwise loss plus primary-positive
+     and auxiliary BCE terms, using AdamW (`3e-4`, weight decay `1e-4`),
+     gradient clipping `1.0`, BF16 on A100, maximum 30 epochs, patience 3, and
+     seed `20260617`. Bound physical microbatches by nodes/edges and accumulate
+     to 32 ranking groups per optimizer step; calculate aggregation and losses
+     in FP32.
+   - Fit standalone temperature from patient-grouped train OOF logits. Refit
+     the selected variant on all MIMIC train data using the median
+     fold-selected epoch, then evaluate MIMIC validation once.
    - Qualify the branch only if it improves NDCG@10 by at least `0.005` over graph-only XGBoost without reducing MRR@10 or Hit@10 by more than `0.01`.
 
 4. **Frozen-Transformer fusion**
@@ -106,7 +143,8 @@
   - complete-group sharding, bounded shard reads, local-index offsets, reverse edges, self-loops, relation mapping, and support normalization;
   - empty-edge, cold-start, OOV, zero-positive, multi-positive, and variable-size graphs;
   - batched versus single-graph score parity;
-  - relation-ablation behavior and GNN/fusion gradient ownership;
+  - rank-only and relation-ablation behavior, stay/numeric representation,
+    OOF calibration, and GNN/fusion gradient ownership;
   - canonical score-schema and ranking-metric parity;
   - development/final gating and frozen-artifact drift;
   - aggregate-report safety with no patient identifiers, row samples, notes, or raw concepts;
