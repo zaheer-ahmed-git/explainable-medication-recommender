@@ -65,23 +65,21 @@ pending.
   `pipeline.gnn_training`: fold-excluded graph preparation, a native
   PyTorch R-GCN-style ranker, six pre-registered representation/relation controls,
   full-train refit, canonical standalone scoring, late/residual fusion, and
-  fail-closed development/final gates. Focused synthetic tests pass, including
-  the complete five-stage smoke workflow. Protected `prepare` and cross-fit
-  cache construction completed. Development job 8825 exposed and led to a fix
-  for multi-file DuckDB edge partitions. Job 10962 passed that loader boundary
-  but failed during mixed-precision backpropagation when gradient clipping
-  rejected an AMP overflow. Training now backs off the loss scale and retries
-  the same batch, with a bounded fail-closed limit and an explicit reviewed
-  full-precision fallback. No protected GNN/fusion model or performance result
-  is claimed until training and scoring are rerun successfully. Development
-  job 12214 then exposed the dominant allocation in relation message passing:
-  gathering one `128×128` matrix per edge requested about 5.5 GiB for a single
-  batch. That job was cancelled before later stages. The implementation now
-  aggregates edges by relation before applying its matrix, bounds batches by
-  groups/nodes/edges, defaults A100 work to BF16, verifies the cross-fit tree
-  in one hash pass with progress heartbeats, and writes restart state outside
-  the immutable graph tree. These changes are synthetically verified only;
-  protected-scale rerun and metric review remain pending.
+  fail-closed development/final gates. Protected training and development
+  scoring completed: the standalone GNN qualified for its graph-model track,
+  while late fusion improved Transformer validation NDCG@10 by about `+0.00484`
+  but missed the pre-registered `+0.005` hybrid promotion threshold; the frozen
+  Transformer was retained. The versioned paired-OOF late-fusion protocol is
+  now implemented to remove the earlier GNN-OOF/full-refit-Transformer
+  asymmetry, jointly select GNN variant and a `0.005` alpha grid on paired OOF,
+  reuse/refit only the selected full GNN, and enforce a one-shot newly frozen
+  gate. The first protected attempt completed four of five Transformer folds;
+  one Transformer fold and five GNN tasks exposed an unusable Calculco GPU
+  slot, while the full GNN materializer exceeded its former 12-hour walltime.
+  Targeted recovery now uses CUDA fail-fast checks, the proven GPU pool, and a
+  48-hour reservation; fold-1/full-variant recovery jobs `22470` and `22471`
+  are running after successful CUDA preflight. Selection and gate evaluation
+  remain pending.
   The versioned P1 representation is implemented in code: an explicit stay
   query node, fold-safe numeric value/deviation/trend/recency features, time-bin
   embeddings, learned relation gates/dropout, a rank-only baseline, dense
@@ -176,6 +174,11 @@ a medication is clinically optimal.
   final-mode gate.
 - `Documentation/HybridModelFeatureStrategy.md`: planned Transformer/GNN
   feature boundaries and selection gates (post-8B; not neural training yet).
+- `Documentation/PhaseDRankingModelsExplained.md`: Transformer, standalone
+  GNN, and late-fusion inputs/outputs, gates, and why hybrid was not promoted.
+- `Documentation/PairedOOFLateFusionProtocol.md`: paired five-fold evidence,
+  joint GNN/alpha selection, parallel OAR execution, one-shot gate contract,
+  and measured runtime estimates.
 - `visualization/`: aggregate-only Phase 4-9 meeting figure-pack generator.
 - `Documentation/SimilarPapers.md`: related-work notes.
 - `FinalPosterCDS.pdf`: research poster.

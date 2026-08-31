@@ -31,6 +31,10 @@ STAGES = (
     "prepare",
     "train-gnn",
     "train-gnn-fold",
+    "materialize-gnn-oof",
+    "select-paired-oof",
+    "refit-paired-gnn",
+    "score-paired-late",
     "select-gnn",
     "refit-gnn",
     "score-gnn",
@@ -38,11 +42,21 @@ STAGES = (
     "score-fusion",
 )
 GNN_STAGES = frozenset(
-    {"train-gnn", "train-gnn-fold", "select-gnn", "refit-gnn", "score-gnn"}
+    {
+        "train-gnn",
+        "train-gnn-fold",
+        "materialize-gnn-oof",
+        "select-paired-oof",
+        "refit-paired-gnn",
+        "score-paired-late",
+        "select-gnn",
+        "refit-gnn",
+        "score-gnn",
+    }
 )
 FUSION_STAGES = frozenset({"train-fusion", "score-fusion"})
 CROSS_FIT_REQUIRED_STAGES = GNN_STAGES | FUSION_STAGES
-SCORING_STAGES = frozenset({"score-gnn", "score-fusion"})
+SCORING_STAGES = frozenset({"score-gnn", "score-fusion", "score-paired-late"})
 
 
 def _error(
@@ -214,13 +228,16 @@ def path_safety_errors(config: GNNTrainingConfig) -> list[dict[str, Any]]:
             )
         )
 
+    allowed_restricted_roots = (config.gnn_root, config.paired_protocol_root)
     for index, path in enumerate(config.restricted_write_paths()):
-        if not _is_under(path, config.gnn_root) or _is_under(path, config.neural_root):
+        if not any(
+            _is_under(path, root) for root in allowed_restricted_roots
+        ) or _is_under(path, config.neural_root):
             errors.append(
                 _error(
                     "unsafe_artifact_write_path",
-                    "restricted GNN artifact writes must stay under gnn_root "
-                    "and outside neural_root",
+                    "restricted GNN artifact writes must stay under gnn_root or "
+                    "the versioned paired-protocol root, and outside neural_root",
                     artifact_name=f"restricted_write_{index}",
                 )
             )
@@ -333,6 +350,8 @@ def required_stage_artifacts(
     if stage in FUSION_STAGES:
         artifacts.update(transformer_cache_artifacts(config))
         artifacts.update(checkpoint_artifacts(config, branch="gnn"))
+    if stage == "score-paired-late":
+        artifacts.update(transformer_cache_artifacts(config))
     if stage == "score-gnn":
         artifacts.update(checkpoint_artifacts(config, branch="gnn"))
     if stage == "score-fusion":

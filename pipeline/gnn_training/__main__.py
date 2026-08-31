@@ -46,6 +46,7 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--crossfit-graph-manifest", type=Path, default=None)
     parser.add_argument("--gnn-selection", type=Path, default=None)
     parser.add_argument("--fusion-selection", type=Path, default=None)
+    parser.add_argument("--paired-frozen-gate", type=Path, default=None)
     parser.add_argument(
         "--mode",
         choices=("development", "final"),
@@ -222,6 +223,7 @@ def build_config(args: argparse.Namespace) -> GNNTrainingConfig:
         ("crossfit_graph_manifest", "crossfit_graph_manifest_path"),
         ("gnn_selection", "gnn_selection_report_path"),
         ("fusion_selection", "fusion_selection_report_path"),
+        ("paired_frozen_gate", "paired_frozen_gate_manifest_path"),
     ):
         value = getattr(args, argument_name)
         if value is not None:
@@ -249,6 +251,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         (
             "train-gnn-fold",
             "Train exactly one array-addressable GNN variant/fold task.",
+        ),
+        (
+            "materialize-gnn-oof",
+            "Score one GNN variant from existing fold checkpoints into OOF logits.",
+        ),
+        (
+            "select-paired-oof",
+            "Jointly select GNN variant and fine-grid alpha on paired OOF logits.",
+        ),
+        (
+            "refit-paired-gnn",
+            "Refit or reuse the jointly selected GNN for late-only inference.",
+        ),
+        (
+            "score-paired-late",
+            "One-shot late-only scoring on an explicitly frozen clean gate.",
         ),
         (
             "select-gnn",
@@ -301,6 +319,27 @@ def _run(
             variant=args.ablation_variant,
             fold_index=args.held_out_fold,
         )
+    if command == "materialize-gnn-oof":
+        from pipeline.gnn_training.train_gnn import materialize_variant_oof
+
+        if args.ablation_variant is None:
+            raise ValueError("materialize-gnn-oof requires --ablation-variant")
+        return materialize_variant_oof(
+            config,
+            variant=args.ablation_variant,
+        )
+    if command == "select-paired-oof":
+        from pipeline.gnn_training.paired_oof import select_paired_oof_late_fusion
+
+        return select_paired_oof_late_fusion(config)
+    if command == "refit-paired-gnn":
+        from pipeline.gnn_training.paired_late import refit_paired_gnn
+
+        return refit_paired_gnn(config)
+    if command == "score-paired-late":
+        from pipeline.gnn_training.paired_late import score_paired_late
+
+        return score_paired_late(config)
     if command == "select-gnn":
         from pipeline.gnn_training.train_gnn import select_gnn
 

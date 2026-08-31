@@ -21,6 +21,12 @@ from pipeline.config import (
     RANDOM_SEED,
     REPORTS_ROOT,
 )
+from pipeline.late_fusion_protocol import (
+    gnn_variant_oof_predictions_path,
+    paired_late_checkpoint_path,
+    paired_selection_artifact_path,
+    protocol_root,
+)
 
 # ---------------------------------------------------------------------------
 # Stable schemas, experiments, and typed graph vocabulary
@@ -114,6 +120,9 @@ DEFAULT_FUSION_SCORE_REPORT = REPORTS_ROOT / "phase8_p0_fusion_score_evaluation.
 DEFAULT_FUSION_SELECTION_REPORT = (
     REPORTS_ROOT / "phase8_p0_fusion_training_selection.json"
 )
+DEFAULT_PAIRED_FROZEN_GATE_MANIFEST = (
+    REPORTS_ROOT / "phase8_p0_paired_oof_frozen_gate.json"
+)
 DEFAULT_GRAPH_REFERENCE_REPORT = (
     REPORTS_ROOT / "phase8_p0_milestone8b_ablation_evaluation.json"
 )
@@ -193,6 +202,7 @@ class GNNTrainingConfig:
     fusion_training_report_path: Path = DEFAULT_FUSION_TRAINING_REPORT
     fusion_score_report_path: Path = DEFAULT_FUSION_SCORE_REPORT
     fusion_selection_report_path: Path = DEFAULT_FUSION_SELECTION_REPORT
+    paired_frozen_gate_manifest_path: Path = DEFAULT_PAIRED_FROZEN_GATE_MANIFEST
 
     mode: str = "development"
     frozen_selection: bool = False
@@ -260,6 +270,10 @@ class GNNTrainingConfig:
     @property
     def neural_feature_layout_path(self) -> Path:
         return self.neural_root / "feature_layout.json"
+
+    @property
+    def neural_training_state_path(self) -> Path:
+        return self.neural_root / "checkpoints" / "training_state.json"
 
     # ---- prepared GNN cache and vocabulary layout ---------------------------
     @property
@@ -415,6 +429,56 @@ class GNNTrainingConfig:
         return self.oof_predictions_root / "gnn_selected_variant.parquet"
 
     @property
+    def paired_protocol_root(self) -> Path:
+        """Return the versioned restricted root shared by paired OOF jobs."""
+
+        return protocol_root(self.gnn_root.parent)
+
+    def variant_oof_predictions_path(self, variant: str) -> Path:
+        """Return one independently materialized GNN-variant OOF table."""
+
+        return gnn_variant_oof_predictions_path(self.gnn_root, variant)
+
+    def variant_oof_report_path(self, variant: str) -> Path:
+        return self.reports_root / f"phase8_p0_gnn_paired_oof_{variant}.json"
+
+    @property
+    def paired_oof_selection_path(self) -> Path:
+        return paired_selection_artifact_path(self.gnn_root)
+
+    @property
+    def paired_late_checkpoint_path(self) -> Path:
+        return paired_late_checkpoint_path(self.gnn_root)
+
+    @property
+    def paired_gnn_checkpoint_path(self) -> Path:
+        return self.paired_protocol_root / "checkpoints" / "gnn_relation_branch.pt"
+
+    @property
+    def paired_late_score_root(self) -> Path:
+        return self.paired_protocol_root / "gate_score"
+
+    @property
+    def paired_late_score_output_path(self) -> Path:
+        return self.paired_late_score_root / "baseline_scores.parquet"
+
+    @property
+    def paired_late_score_completion_path(self) -> Path:
+        return self.paired_late_score_root / "one_shot_completion.json"
+
+    @property
+    def paired_oof_selection_report_path(self) -> Path:
+        return self.reports_root / "phase8_p0_paired_oof_late_fusion_selection.json"
+
+    @property
+    def paired_gnn_refit_report_path(self) -> Path:
+        return self.reports_root / "phase8_p0_paired_oof_gnn_refit.json"
+
+    @property
+    def paired_late_score_report_path(self) -> Path:
+        return self.reports_root / "phase8_p0_paired_oof_late_fusion_gate_score.json"
+
+    @property
     def residual_oof_predictions_path(self) -> Path:
         return self.oof_predictions_root / "residual_fusion.parquet"
 
@@ -497,6 +561,13 @@ class GNNTrainingConfig:
             self.predictions_root,
             self.oof_predictions_root,
             self.gnn_oof_predictions_path,
+            self.paired_protocol_root,
+            self.paired_oof_selection_path,
+            self.paired_late_checkpoint_path,
+            self.paired_gnn_checkpoint_path,
+            self.paired_late_score_root,
+            self.paired_late_score_output_path,
+            self.paired_late_score_completion_path,
             self.residual_oof_predictions_path,
             self.gnn_score_output_path,
             self.fusion_score_output_path,
@@ -522,6 +593,9 @@ class GNNTrainingConfig:
                 f"{self.fusion_score_report_path.suffix}"
             ),
             self.fusion_selection_report_path,
+            self.paired_oof_selection_report_path,
+            self.paired_gnn_refit_report_path,
+            self.paired_late_score_report_path,
         )
 
     def gate_policy(self) -> dict[str, object]:

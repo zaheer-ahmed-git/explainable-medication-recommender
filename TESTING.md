@@ -53,6 +53,10 @@ behavior, frozen Transformer immutability/alignment, canonical score reconciliat
 non-finite-value rejection, mixed-precision gradient-overflow backoff,
 full-precision gradient failure, atomic final-run claims, and the complete
 five-stage synthetic smoke workflow.
+Paired-OOF tests additionally cover the exact `0.005` alpha grid,
+fold-isolated fixed-epoch Transformer OOF training, restored train-scope output,
+joint GNN-variant/alpha selection, fail-closed label/fold alignment, and
+explicit-CUDA rejection when a scheduler allocation exposes no CUDA device.
 The Phase 4-9 visualization generator has a focused synthetic test that verifies
 aggregate-only meeting-pack generation without raw clinical rows.
 
@@ -109,6 +113,7 @@ uv run pytest tests/test_gnn_contract.py tests/test_gnn_crossfit.py \
   tests/test_gnn_model.py \
   tests/test_gnn_frozen_transformer.py tests/test_gnn_scoring.py \
   tests/test_gnn_train_score.py
+uv run pytest tests/test_paired_oof.py
 uv run pytest tests/test_phase4_to_9_visualization.py
 uv run pytest tests/test_condition_normalization.py
 uv run pytest tests/test_condition_mapping_builder.py

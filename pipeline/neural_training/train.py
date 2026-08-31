@@ -18,7 +18,7 @@ import random
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 import torch
@@ -86,7 +86,16 @@ def resolve_device(config: NeuralTrainingConfig) -> torch.device:
     """Return the training device, honoring an explicit override."""
 
     if config.device:
-        return torch.device(config.device)
+        device = torch.device(config.device)
+        if device.type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("CUDA device was requested but CUDA is unavailable")
+        if (
+            device.type == "cuda"
+            and device.index is not None
+            and device.index >= torch.cuda.device_count()
+        ):
+            raise RuntimeError("requested CUDA device index is unavailable")
+        return device
     if torch.cuda.is_available():
         return torch.device("cuda")
     return torch.device("cpu")
@@ -329,33 +338,34 @@ def save_checkpoint(
     path: Path,
     best_epoch: int,
     best_validation: dict[str, Any],
+    metadata: Mapping[str, Any] | None = None,
 ) -> None:
     """Persist model weights plus the layout and hyperparameters to reload."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "schema_version": TRAINING_SCHEMA_VERSION,
-            "state_dict": model.state_dict(),
-            "architecture": asdict(config.architecture),
-            "optimization": asdict(config.optimization),
-            "feature_layout": {
-                "numeric_columns": list(spec.numeric_columns),
-                "categorical_columns": list(spec.categorical_columns),
-                "max_sequence_length": spec.max_sequence_length,
-                "event_vocab_size": spec.event_vocab_size,
-                "condition_vocab_size": spec.condition_vocab_size,
-                "candidate_vocab_size": spec.candidate_vocab_size,
-                "categorical_vocab_sizes": list(spec.categorical_vocab_sizes),
-                "candidate_side_features": list(spec.candidate_side_features),
-            },
-            "experiment_version": EXPERIMENT_VERSION,
-            "seed": config.seed,
-            "best_epoch": best_epoch,
-            "best_validation": best_validation,
+    payload: dict[str, Any] = {
+        "schema_version": TRAINING_SCHEMA_VERSION,
+        "state_dict": model.state_dict(),
+        "architecture": asdict(config.architecture),
+        "optimization": asdict(config.optimization),
+        "feature_layout": {
+            "numeric_columns": list(spec.numeric_columns),
+            "categorical_columns": list(spec.categorical_columns),
+            "max_sequence_length": spec.max_sequence_length,
+            "event_vocab_size": spec.event_vocab_size,
+            "condition_vocab_size": spec.condition_vocab_size,
+            "candidate_vocab_size": spec.candidate_vocab_size,
+            "categorical_vocab_sizes": list(spec.categorical_vocab_sizes),
+            "candidate_side_features": list(spec.candidate_side_features),
         },
-        path,
-    )
+        "experiment_version": EXPERIMENT_VERSION,
+        "seed": config.seed,
+        "best_epoch": best_epoch,
+        "best_validation": best_validation,
+    }
+    if metadata is not None:
+        payload["metadata"] = dict(metadata)
+    torch.save(payload, path)
 
 
 def load_model_from_checkpoint(

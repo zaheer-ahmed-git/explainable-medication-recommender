@@ -256,7 +256,16 @@ def resolve_device(config: GNNTrainingConfig) -> torch.device:
     """Resolve the configured device with a CUDA-first default."""
 
     if config.device:
-        return torch.device(config.device)
+        device = torch.device(config.device)
+        if device.type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("CUDA device was requested but CUDA is unavailable")
+        if (
+            device.type == "cuda"
+            and device.index is not None
+            and device.index >= torch.cuda.device_count()
+        ):
+            raise RuntimeError("requested CUDA device index is unavailable")
+        return device
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 

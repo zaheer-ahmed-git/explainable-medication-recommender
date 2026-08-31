@@ -1,0 +1,32 @@
+timestamp: 2026-08-29T00:44:38Z
+to: dev.zaheer.ahmad@gmail.com
+from: zahmed@calculco.univ-littoral.fr
+subject: ResearchModule delivery check 024438
+mail_status: queued_on_opale_mta
+
+If Gmail still hides this, read scripts/calculco/logs/oar_notify_latest.txt on ritchie. Relay accepted the message.
+
+--- mail verbose ---
+[<-] 220 opale-mta.univ-littoral.fr ESMTP Postfix
+[->] HELO calculco.univ-littoral.fr
+[<-] 250 opale-mta.univ-littoral.fr
+[->] MAIL FROM:<zahmed@calculco.univ-littoral.fr>
+[<-] 250 2.1.0 Ok
+[->] RCPT TO:<dev.zaheer.ahmad@gmail.com>
+[<-] 250 2.1.5 Ok
+[->] DATA
+[<-] 354 End data with <CR><LF>.<CR><LF>
+[->] Received: by calculco.univ-littoral.fr (sSMTP sendmail emulation); Sat, 29 Aug 2026 02:44:38 +0200
+[->] Date: Sat, 29 Aug 2026 02:44:38 +0200
+[->] From: zahmed@calculco.univ-littoral.fr
+[->] To: dev.zaheer.ahmad@gmail.com
+[->] Subject: ResearchModule delivery check 024438
+[->] MIME-Version: 1.0
+[->] Content-Type: text/plain; charset="UTF-8"
+[->] Content-Transfer-Encoding: 8bit
+[->] 
+[->] If Gmail still hides this, read scripts/calculco/logs/oar_notify_latest.txt on ritchie. Relay accepted the message.
+[->] .
+[<-] 250 2.0.0 Ok: queued as 86A9EA03BF
+[->] QUIT
+[<-] 221 2.0.0 Bye

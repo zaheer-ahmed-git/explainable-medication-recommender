@@ -83,8 +83,17 @@ if [[ -n "${GNN_AFTER_JOB_ID:-}" ]]; then
   fi
   dependency_args=(-a "$GNN_AFTER_JOB_ID")
 fi
+# Optional OAR end notification, e.g.:
+#   GNN_OAR_NOTIFY='[END,ERROR]mail:you@example.com'
+#   GNN_OAR_NOTIFY='[END,ERROR]exec:/path/to/script'
+notify_args=()
+if [[ -n "${GNN_OAR_NOTIFY:-}" ]]; then
+  notify_args=(--notify "$GNN_OAR_NOTIFY")
+  echo "OAR notify: $GNN_OAR_NOTIFY"
+fi
 oarsub \
   "${dependency_args[@]}" \
+  "${notify_args[@]}" \
   -O "$project_home/scripts/calculco/logs/rm_phase8_p0_gnn_training_%jobid%.out" \
   -E "$project_home/scripts/calculco/logs/rm_phase8_p0_gnn_training_%jobid%.err" \
   -S "$script_dir/phase8_p0_gnn_training.sh"

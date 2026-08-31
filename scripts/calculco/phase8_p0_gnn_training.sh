@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #OAR -n rm_phase8_p0_gnn_training
 #OAR -l /nodes=1/gpu=1,walltime=48:00:00
-#OAR -p gpudevice<>'-1'
+#OAR -p network_address='chimay34' and gpudevice<>'-1'
 # GPU training, development scoring, and explicitly confirmed one-shot final
 # scoring for the relation-aware GNN and frozen-Transformer fusion workflow.
 

@@ -40,6 +40,8 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--neural-root", type=Path, default=None)
     parser.add_argument("--features-root", type=Path, default=None)
     parser.add_argument("--training-root", type=Path, default=None)
+    parser.add_argument("--graph-root", type=Path, default=None)
+    parser.add_argument("--gnn-root", type=Path, default=None)
     parser.add_argument("--reference-scores", type=Path, default=None)
     parser.add_argument("--contract-lock", type=Path, default=None)
     parser.add_argument("--gate-selection", type=Path, default=None)
@@ -66,6 +68,9 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--auxiliary-bce-weight", type=float, default=None)
     parser.add_argument("--early-stopping-patience", type=int, default=None)
     parser.add_argument("--warmup-epochs", type=float, default=None)
+    parser.add_argument("--fold-count", type=int, default=5)
+    parser.add_argument("--held-out-fold", type=int, default=None)
+    parser.add_argument("--fixed-epochs", type=int, default=None)
     parser.add_argument("--duckdb-temp-dir", type=Path, default=DUCKDB_TEMP_DIR)
     parser.add_argument("--duckdb-memory-limit", default=DUCKDB_MEMORY_LIMIT)
     parser.add_argument("--duckdb-threads", type=int, default=DUCKDB_THREADS)
@@ -114,6 +119,8 @@ def build_config(args: argparse.Namespace) -> NeuralTrainingConfig:
         kwargs["features_root"] = args.features_root
     if args.training_root is not None:
         kwargs["training_root"] = args.training_root
+    if args.graph_root is not None:
+        kwargs["graph_root"] = args.graph_root
     if args.reference_scores is not None:
         kwargs["reference_scores_path"] = args.reference_scores
     if args.contract_lock is not None:
@@ -133,13 +140,21 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         ("prepare", "Build vocabularies, normalization, and sharded caches."),
         ("train", "Train the Transformer branch with early stopping."),
         ("score", "Score the evaluation split and record the neural gate."),
+        (
+            "oof-fold",
+            "Fit one fold-isolated Transformer and write held-out OOF logits.",
+        ),
     ):
         subparser = subparsers.add_parser(name, help=help_text)
         _add_common_arguments(subparser)
     return parser.parse_args(argv)
 
 
-def _run(command: str, config: NeuralTrainingConfig) -> dict[str, Any]:
+def _run(
+    command: str,
+    config: NeuralTrainingConfig,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
     if command == "prepare":
         from pipeline.neural_training.data import prepare_neural_caches
 
@@ -152,6 +167,18 @@ def _run(command: str, config: NeuralTrainingConfig) -> dict[str, Any]:
         from pipeline.neural_training.score import score_transformer
 
         return score_transformer(config)
+    if command == "oof-fold":
+        from pipeline.neural_training.oof import run_transformer_oof_fold
+
+        if args.held_out_fold is None:
+            raise ValueError("oof-fold requires --held-out-fold")
+        return run_transformer_oof_fold(
+            config,
+            gnn_root=args.gnn_root,
+            held_out_fold=args.held_out_fold,
+            fold_count=args.fold_count,
+            fixed_epochs=args.fixed_epochs,
+        )
     raise ValueError(f"unknown command: {command!r}")
 
 
@@ -162,7 +189,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError as error:
         print(f"Invalid neural training arguments: {error}")
         return 2
-    report = _run(args.command, config)
+    try:
+        report = _run(args.command, config, args)
+    except ValueError as error:
+        print(f"Invalid neural training arguments: {error}")
+        return 2
     status = report.get("status", "unknown")
     print(f"Neural {args.command} finished: status={status}, mode={config.mode}")
     return 0 if status == "completed" else 1

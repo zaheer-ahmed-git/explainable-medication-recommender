@@ -681,6 +681,16 @@ scripts/calculco/submit_phase8_p0_gnn_training.sh development score-fusion
 Set `GNN_AFTER_JOB_ID=<prior OAR job id>` on each submission to add an OAR
 anterior-job dependency (`oarsub -a`), including selection after the fold
 array, refit after selection, and each reviewed scoring/fusion boundary.
+Note that `-a` starts the next job when the prior **ends**, including on
+failure; prefer success-gated watchers when a failed prior must block the
+next stage.
+
+For end-of-job alerts, set `GNN_OAR_NOTIFY` before submit (passed to
+`oarsub --notify`), for example
+`GNN_OAR_NOTIFY='[END,ERROR]mail:you@example.com'`. For a job already
+running, use `scripts/calculco/watch_oar_job.sh <job_id> --mail you@example.com`
+(optional `--on-success '…'` to submit the next stage only when
+`exit_code` is 0).
 
 The compatibility `train-gnn` command still performs missing folds, selection,
 and refit serially, but the OAR array is the protected-scale workflow. Six
@@ -690,7 +700,10 @@ temperature from those patient-grouped train OOF logits; `refit-gnn` trains the
 selected variant on the full train graph. `score-gnn`
 compares the standalone branch with the locked graph-only XGBoost reference.
 Fusion keeps the Transformer immutable and compares late versus residual
-candidates against the frozen Transformer validation metrics.
+candidates against the frozen Transformer validation metrics. Late-fusion
+alpha is fit on the intersection of patient-fold GNN OOF logits with the
+full-train frozen Transformer cache; that cache excludes zero-positive train
+groups by design, matching the refit graph.
 
 Calculco A100 jobs default to BF16 (`GNN_PRECISION=bf16`); FP16 remains an
 explicit option and alone uses dynamic loss scaling and bounded overflow
@@ -747,6 +760,92 @@ test predictions. A concurrent run or interrupted attempt remains blocked; do
 not remove or reset the marker without a separate reviewed recovery decision.
 The broader MIMIC test split is not wholly unseen because the frozen
 Transformer was evaluated earlier, and reports disclose that limitation.
+
+## Run Paired-OOF Late Fusion (Protocol v2)
+
+Use this workflow to replace the asymmetric original late-fusion meta-fit. The
+five Transformer folds and six GNN-variant OOF materializations are independent
+and are submitted as two parallel OAR arrays:
+
+```bash
+export PROJECT_HOME DATASET_ROOT WORK_SCRATCH
+scripts/calculco/submit_phase8_p0_paired_oof.sh all-oof
+```
+
+Each Transformer task rebuilds fit-only preprocessing and uses the matching
+fold-excluded graph. Each GNN task scores all five held-out checkpoints for one
+variant. Do not submit selection until all eleven aggregate reports say
+`status=completed`.
+
+For a failed individual task, use the targeted retry boundary rather than
+repeating an array:
+
+```bash
+scripts/calculco/submit_phase8_p0_paired_oof.sh transformer-fold 1
+scripts/calculco/submit_phase8_p0_paired_oof.sh gnn-variant full
+```
+
+The GPU worker reserves 48 hours, is restricted to the proven
+`chimay33`/`chimay34` pool, and fails before pipeline work when CUDA is not
+visible. The first full GNN materializer exceeded the former 12-hour limit, so
+do not use the original 6--10 hour planning estimate. Submit additional GNN
+variants only after reviewing the first recovery task's completion and runtime.
+
+To run the remaining variants serially with mail alerts and automatic hand-off,
+start a login-node watcher inside `tmux` or `screen`:
+
+```bash
+export PROJECT_HOME DATASET_ROOT WORK_SCRATCH
+PAIRED_GNN_CHAIN_MAIL=you@example.com \
+  scripts/calculco/watch_paired_gnn_oof_chain.sh
+```
+
+The chain skips variants whose aggregate report already says `status=completed`,
+submits the next pending variant only after the prior job finishes with exit
+code 0 **and** the aggregate report says `completed`, and mails on every job end.
+On failure it stops instead of continuing. Optional auto-selection after the
+last variant:
+
+```bash
+PAIRED_GNN_CHAIN_MAIL=you@example.com \
+PAIRED_GNN_CHAIN_ON_COMPLETE='scripts/calculco/submit_phase8_p0_paired_oof.sh select' \
+  scripts/calculco/watch_paired_gnn_oof_chain.sh
+```
+
+For one variant at a time without the chain, use `gnn-variant VARIANT`. For OAR
+dependencies on a future submit, set `PAIRED_AFTER_JOB_ID=<prior job id>`
+(starts even on failure, like `GNN_AFTER_JOB_ID`). For submit-time OAR notify,
+set `PAIRED_OAR_NOTIFY='[END,ERROR]mail:you@example.com'`. If built-in OAR
+notify is unreliable, prefer the watcher; it uses `send_oar_mail.sh` with a
+filesystem fallback when `mail`/`mailx` fail. Test mail once:
+
+```bash
+scripts/calculco/send_oar_mail.sh you@example.com "Calculco OAR test" "Watcher mail works."
+```
+
+```bash
+scripts/calculco/submit_phase8_p0_paired_oof.sh select
+scripts/calculco/submit_phase8_p0_paired_oof.sh refit
+```
+
+`select` is a CPU OAR job. It requires exact fold/candidate/label alignment and
+searches the locked alpha grid `0.000..0.250` by `0.005` on paired train OOF
+only. `refit` reuses the existing full GNN when variant and epoch count match;
+otherwise it runs one selected-variant refit.
+
+The final boundary is blocked until a reviewed newly isolated gate and matching
+cache partitions exist. The pipeline never chooses that split automatically.
+After freezing `reports/phase8_p0_paired_oof_frozen_gate.json`:
+
+```bash
+PAIRED_GATE_SCORE_CONFIRM=I_UNDERSTAND_ONE_SHOT \
+  scripts/calculco/submit_phase8_p0_paired_oof.sh score
+```
+
+The command claims the gate before scoring and applies the unchanged `+0.005`
+NDCG@10 / `-0.01` secondary guards. See
+`Documentation/PairedOOFLateFusionProtocol.md` for the manifest contract,
+artifact layout, measured prior runtimes, and planning ranges.
 
 ## Run Milestone 8 Graph Suitability
 

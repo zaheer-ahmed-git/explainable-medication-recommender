@@ -4,6 +4,26 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ## [Unreleased]
 
+### Added
+
+- Versioned paired-OOF late-fusion protocol
+  (`phase8-p0-paired-oof-late-fusion-v2`): five independently queueable,
+  fold-isolated Transformer jobs with fit-only preprocessing and fixed epochs;
+  six parallel GNN-variant OOF materializers reusing existing checkpoints;
+  exact candidate/fold/label alignment; joint variant and `0.000..0.250` alpha
+  selection at `0.005` resolution; late-only refit/reuse and inference; a
+  fail-closed newly frozen gate manifest; and atomic one-shot promotion scoring.
+  Added CPU/GPU Calculco workers, measured-runtime planning guidance, and
+  synthetic paired-OOF/alignment tests. Protected paired recovery is in
+  progress; selection and gate scoring remain pending.
+
+- Programmatic hybrid architecture diagrams
+  (`uv run python -m visualization.hybrid_architecture_diagrams`): stacked-block
+  internal views of the Pre-LN Transformer encoder
+  (`pipeline.neural_training.model`) and R-GCN relation layers
+  (`pipeline.gnn_training.model` / `fusion.py`), with solid vs dashed styling for
+  implemented modules versus pending protected-training status.
+
 ### Changed
 
 - Neural Transformer gap-recovery v3 (`phase8-p0-neural-transformer-v3`) after
@@ -29,6 +49,25 @@ All notable repository changes are recorded here. Dates use ISO 8601.
   NDCG gate bar is unchanged.
 
 ### Fixed
+
+- Paired-OOF recovery now fails explicitly when CUDA was requested but is not
+  visible, restricts GPU work to the proven `chimay33`/`chimay34` pool, reserves
+  48 hours for five-fold GNN materialization, and supports targeted
+  `transformer-fold` / `gnn-variant` retries. This addresses first-attempt jobs
+  `22101` and `22106..22110` on an unusable `chimay31` GPU slot and job `22105`,
+  which exceeded the former 12-hour walltime. Four Transformer OOF folds remain
+  completed. Single-task retry, refit, and score submissions use one-line OAR
+  parameter files for compatibility with Calculco's `oarsub -S`; selection
+  remains blocked pending recovery of the missing fold and all six GNN variant
+  tables. Targeted recovery jobs `22470` (Transformer fold 1) and `22471` (full
+  GNN variant) started on `chimay34` on 2026-08-28 and passed the new CUDA
+  preflight.
+
+- Late-fusion meta-fit no longer requires GNN OOF train candidates to equal the
+  full PCM set when joining the frozen Transformer cache. Full-train / frozen
+  caches exclude zero-positive train groups by design; fusion now requires an
+  exact join against that refit-eligible frozen subset. Unblocks `train-fusion`
+  after protected job 20314.
 
 - Implemented the versioned GNN P1 representation/modeling contract: explicit
   stay-query nodes and relations; fold-safe numeric value, statistical

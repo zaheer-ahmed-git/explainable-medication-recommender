@@ -43,6 +43,7 @@ from pipeline.gnn_training.scoring import (
 )
 from pipeline.training_contract import sha256_file
 from pipeline.training_contract import load_json
+from pipeline.late_fusion_protocol import PAIRED_OOF_PROTOCOL_VERSION
 
 
 def _weighted_fold_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -89,28 +90,29 @@ def _select_variant(
     return selected, summaries
 
 
-def _write_selected_oof(
+def _write_variant_oof(
     config: GNNTrainingConfig,
     *,
-    selected_variant: str,
+    variant: str,
+    output_path: Any,
     device: torch.device,
 ) -> int:
     """Regenerate exactly one OOF prediction per MIMIC-train candidate."""
 
     with AtomicParquetWriter(
-        config.gnn_oof_predictions_path,
+        output_path,
         OOF_PREDICTION_SCHEMA,
     ) as writer:
         for fold_index in range(config.fold_count):
             spec = load_feature_spec(config, fold_index=fold_index)
-            checkpoint = config.fold_checkpoint_path(fold_index, selected_variant)
+            checkpoint = config.fold_checkpoint_path(fold_index, variant)
             model, payload = load_gnn_checkpoint(
                 checkpoint,
                 spec,
                 device=device,
                 expected_seed=config.seed,
             )
-            if payload.get("ablation_variant") != selected_variant:
+            if payload.get("ablation_variant") != variant:
                 raise ValueError("fold checkpoint ablation variant does not match")
             evaluate_gnn(
                 model,
@@ -127,6 +129,126 @@ def _write_selected_oof(
                 ),
             )
         return writer.commit()
+
+
+def _write_selected_oof(
+    config: GNNTrainingConfig,
+    *,
+    selected_variant: str,
+    device: torch.device,
+) -> int:
+    return _write_variant_oof(
+        config,
+        variant=selected_variant,
+        output_path=config.gnn_oof_predictions_path,
+        device=device,
+    )
+
+
+def materialize_variant_oof(
+    config: GNNTrainingConfig,
+    *,
+    variant: str,
+) -> dict[str, Any]:
+    """Score existing fold checkpoints for one independently queueable variant."""
+
+    generated_at = datetime.now(UTC).isoformat()
+    if variant not in ABLATION_VARIANTS:
+        raise ValueError(f"unknown GNN ablation variant: {variant!r}")
+    report_path = config.variant_oof_report_path(variant)
+    report: dict[str, Any] = {
+        "schema_version": GNN_TRAINING_SCHEMA_VERSION,
+        "status": "running",
+        "stage": "materialize-gnn-oof",
+        "protocol_version": PAIRED_OOF_PROTOCOL_VERSION,
+        "generated_at": generated_at,
+        "mode": config.mode,
+        "seed": config.seed,
+        "ablation_variant": variant,
+        "fold_count": config.fold_count,
+        "data_safety": {
+            "report_contains_patient_rows": False,
+            "report_contains_row_samples": False,
+            "report_contains_identifier_values": False,
+            "predictions_are_restricted_patient_level_artifacts": True,
+        },
+    }
+    errors = preflight_errors(config, stage="materialize-gnn-oof")
+    if errors:
+        report.update(
+            blocked_report(
+                config=config,
+                schema_version=GNN_TRAINING_SCHEMA_VERSION,
+                stage="materialize-gnn-oof",
+                generated_at=generated_at,
+                errors=errors,
+            )
+        )
+        write_json(report_path, report)
+        return report
+    try:
+        crossfit_hash = sha256_file(config.crossfit_graph_manifest_path)
+        checkpoint_locks: list[dict[str, Any]] = []
+        for fold_index in range(config.fold_count):
+            checkpoint = config.fold_checkpoint_path(fold_index, variant)
+            completion_path = config.fold_completion_manifest_path(
+                fold_index,
+                variant,
+            )
+            if not checkpoint.is_file() or not completion_path.is_file():
+                raise FileNotFoundError(
+                    f"completed checkpoint is missing for {variant}/fold-{fold_index}"
+                )
+            completion = load_json(completion_path)
+            checkpoint_hash = sha256_file(checkpoint)
+            if (
+                completion.get("status") != "completed"
+                or completion.get("seed") != config.seed
+                or completion.get("held_out_fold_index") != fold_index
+                or completion.get("ablation_variant") != variant
+                or completion.get("architecture") != asdict(config.architecture)
+                or completion.get("optimization") != asdict(config.optimization)
+                or completion.get("crossfit_manifest_sha256") != crossfit_hash
+                or completion.get("checkpoint_sha256") != checkpoint_hash
+            ):
+                raise ValueError(
+                    f"fold completion lock is incompatible for {variant}/fold-{fold_index}"
+                )
+            checkpoint_locks.append(
+                {
+                    "fold_index": fold_index,
+                    "checkpoint_sha256": checkpoint_hash,
+                }
+            )
+        device = resolve_device(config)
+        output_path = config.variant_oof_predictions_path(variant)
+        row_count = _write_variant_oof(
+            config,
+            variant=variant,
+            output_path=output_path,
+            device=device,
+        )
+        if row_count <= 0:
+            raise ValueError("GNN variant produced no OOF predictions")
+        report.update(
+            {
+                "status": "completed",
+                "device": str(device),
+                "crossfit_manifest_sha256": crossfit_hash,
+                "checkpoint_locks": checkpoint_locks,
+                "oof_prediction_row_count": row_count,
+                "artifacts": {
+                    "oof_predictions": str(output_path),
+                    "oof_predictions_sha256": sha256_file(output_path),
+                },
+                "contract_digest": contract_digest_or_none(config),
+            }
+        )
+    except Exception as error:  # noqa: BLE001 - aggregate fail-closed report
+        report["status"] = "failed"
+        report["reason"] = safe_error_message(error)
+    write_json(report_path, report)
+    return report
 
 
 def _load_completed_fold(

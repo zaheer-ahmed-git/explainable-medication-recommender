@@ -285,13 +285,16 @@ candidates. The implemented candidates are constrained within-group late
 fusion and a zero-initialized residual head over a separately trained GNN copy;
 the frozen Transformer and standalone GNN checkpoints remain immutable.
 
-The frozen Transformer cache is a full-train refit, not a Transformer
-cross-fit. Late-fusion weight fitting is therefore recorded as train
-meta-fitting over GNN OOF logits plus a fixed train-derived Transformer
-covariate, not as complete hybrid OOF evidence. Promotion depends on the
-separate MIMIC validation gate. Protected Phase D preparation is complete;
-successful training/scoring and all GNN/hybrid performance claims remain
-pending.
+The first protected fusion run used a full-train Transformer covariate with GNN
+OOF logits; it improved validation NDCG@10 but did not clear the promotion bar.
+The versioned replacement protocol builds Transformer logits on the same five
+patient folds and fits every Transformer preprocessing artifact on the other
+four folds. It then jointly freezes GNN variant and fine-grid alpha on exact
+paired OOF candidates. Late-only inference directly blends within-group
+z-scored logits and does not train a residual head. Promotion remains a
+one-shot decision on a separately constructed, newly frozen gate; the scorer
+cannot create or infer that gate. See
+`Documentation/PairedOOFLateFusionProtocol.md`.
 
 ## Explanation Boundary
 

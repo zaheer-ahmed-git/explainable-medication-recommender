@@ -200,6 +200,90 @@ SELECT
                 "selected GNN OOF predictions do not exactly match train candidates"
             )
 
+        # Full-train / frozen-Transformer caches exclude zero-positive train
+        # groups by design. Cross-fit OOF keeps the full PCM train set. Late
+        # fusion therefore joins on the frozen (refit-eligible) subset and
+        # requires every frozen train candidate to appear in OOF.
+        frozen_scan = parquet_scan(frozen_glob)
+        frozen_coverage = connection.execute(
+            f"""
+WITH oof_keys AS (
+    SELECT
+        source,
+        split,
+        ranking_group_id,
+        index_condition_token,
+        candidate_medication_token,
+        CAST(candidate_rank AS BIGINT) AS candidate_rank
+    FROM {oof}
+    WHERE source = 'mimiciv' AND split = 'train'
+),
+frozen_keys AS (
+    SELECT
+        source,
+        split,
+        ranking_group_id,
+        index_condition_token,
+        candidate_medication_token,
+        CAST(candidate_rank AS BIGINT) AS candidate_rank
+    FROM {frozen_scan}
+    WHERE source = 'mimiciv' AND split = 'train'
+)
+SELECT
+    (SELECT COUNT(*) FROM frozen_keys) AS frozen_count,
+    (
+        SELECT COUNT(*)
+        FROM oof_keys AS oof
+        INNER JOIN frozen_keys AS frozen
+            USING (
+                source,
+                split,
+                ranking_group_id,
+                index_condition_token,
+                candidate_medication_token,
+                candidate_rank
+            )
+    ) AS joined_count,
+    (
+        SELECT COUNT(*)
+        FROM frozen_keys AS frozen
+        ANTI JOIN oof_keys AS oof
+            USING (
+                source,
+                split,
+                ranking_group_id,
+                index_condition_token,
+                candidate_medication_token,
+                candidate_rank
+            )
+    ) AS frozen_only_count,
+    (
+        SELECT COUNT(*)
+        FROM oof_keys AS oof
+        ANTI JOIN frozen_keys AS frozen
+            USING (
+                source,
+                split,
+                ranking_group_id,
+                index_condition_token,
+                candidate_medication_token,
+                candidate_rank
+            )
+    ) AS oof_only_count
+"""
+        ).fetchone()
+        if (
+            frozen_coverage is None
+            or int(frozen_coverage[0]) <= 0
+            or int(frozen_coverage[1]) != int(frozen_coverage[0])
+            or int(frozen_coverage[2]) != 0
+        ):
+            raise ValueError(
+                "frozen Transformer and GNN OOF candidate coverage is not exact"
+            )
+        frozen_train_count = int(frozen_coverage[0])
+        oof_only_count = int(frozen_coverage[3])
+
         reader = connection.sql(
             f"""
 SELECT
@@ -209,7 +293,7 @@ SELECT
     oof.gnn_logit,
     frozen.frozen_transformer_logit
 FROM {oof} AS oof
-INNER JOIN {parquet_scan(frozen_glob)} AS frozen
+INNER JOIN {frozen_scan} AS frozen
     ON oof.source = frozen.source
     AND oof.split = frozen.split
     AND oof.ranking_group_id = frozen.ranking_group_id
@@ -241,7 +325,7 @@ ORDER BY oof.ranking_group_id, oof.candidate_rank
             update_group(pending)
     if joined_rows <= 0:
         raise ValueError("OOF GNN and frozen Transformer caches have no joined rows")
-    if joined_rows != int(coverage[0]):
+    if joined_rows != frozen_train_count:
         raise ValueError(
             "frozen Transformer and GNN OOF candidate coverage is not exact"
         )
@@ -260,12 +344,16 @@ ORDER BY oof.ranking_group_id, oof.candidate_rank
     )
     return selected, {
         "joined_candidate_row_count": joined_rows,
+        "frozen_train_candidate_row_count": frozen_train_count,
+        "oof_candidates_excluded_from_frozen_join": oof_only_count,
         "candidate_weights": summaries,
         "selected_gnn_weight": selected,
-        "selection_scope": "mimiciv_train_meta_fit",
+        "selection_scope": "mimiciv_train_meta_fit_refit_eligible_subset",
         "frozen_transformer_policy": (
             "The Transformer checkpoint was frozen before Phase D and is a "
             "fixed train-derived covariate; the GNN side is patient-fold OOF. "
+            "Late-fusion alpha is fit on the intersection with the full-train "
+            "frozen cache, which excludes zero-positive train groups by design. "
             "These train metrics fit alpha and are not promotion evidence."
         ),
     }
