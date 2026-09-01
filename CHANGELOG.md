@@ -6,6 +6,16 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ### Added
 
+- A versioned, framework-independent explanation evidence contract in
+  `pipeline.explainability` for pairwise medication-ranking decisions. The
+  fail-closed schema separates hierarchical model contributions, hard safety
+  certificates, external knowledge, constrained non-causal counterfactuals,
+  uncertainty metadata, and protected references; checks rank-margin and
+  parent/child evidence conservation; and provides deterministic JSON plus a
+  stable digest. Synthetic tests cover serialization and invalid evidence.
+  Component explainers, protected logging, language generation, and clinical
+  validation remain planned.
+
 - Versioned paired-OOF late-fusion protocol
   (`phase8-p0-paired-oof-late-fusion-v2`): five independently queueable,
   fold-isolated Transformer jobs with fit-only preprocessing and fixed epochs;

@@ -1,25 +1,23 @@
 # Explainability and Interpretability for the Medication Recommender
 
-**Research review and architecture recommendation — 30 August 2026**
+**Architecture Design**
 
-## Executive decision
+## My Decision
 
-The project should not adopt a single generic explainer and should not present an LLM-written rationale as the model's reasoning. The strongest practical design is a layered explanation system in which each claim has a distinct evidential role:
+The strongest practical design is a layered explanation system in which each claim has a distinct evidential role:
 
 1. **Transformer evidence:** clinically grouped, candidate-contrastive Integrated Gradients (IG), checked by event/time-window occlusion.
 2. **GNN evidence:** a candidate-conditioned sparse subgraph selected for necessity and sufficiency, then rendered as typed, temporally valid paths.
 3. **Safety evidence:** exact, versioned rule traces for allergies, contraindications, interactions, dose or organ-function constraints, including reasons that candidates were rejected.
 4. **Knowledge evidence:** retrieved guideline or biomedical knowledge with source, version, date, and scope; this supports clinical interpretation but is not automatically evidence of what the learned model used.
 5. **Uncertainty:** calibrated recommendation uncertainty and explanation stability/intervals, with an abstention or “insufficiently stable to explain” state.
-6. **Language:** an LLM may verbalize a structured evidence object, but it must not add clinical facts or causal claims. Every sentence should be mechanically traceable to an evidence atom and checked after generation.
+6. **Language:** an LLM may verbalize a structured evidence object, Every sentence should be mechanically traceable to an evidence atom and checked after generation.
 
-The strongest research gap is not “combine SHAP, paths, rules, and an LLM.” Close prior work already contains most of those ingredients in isolation or loose combination. The defensible opportunity is an **end-to-end, constraint-aware rank-evidence ledger** that explains the *final pairwise medication ranking* across temporal and graph branches, separates hard feasibility certificates from learned preference evidence, conserves the explained rank margin, quantifies explanation uncertainty, and constrains every natural-language claim to verified evidence.
+Close prior work already contains most of those ingredients in isolation or loose combination. *The defensible opportunity is an **end-to-end, constraint-aware rank-evidence ledger*** that explains the final pairwise medication ranking across temporal and graph branches, separates hard feasibility certificates from learned preference evidence, conserves the explained rank margin, quantifies explanation uncertainty, and constrains every natural-language claim to verified evidence.
 
 This is a **potentially meaningful methodological contribution**, not yet a proven novelty claim. Pairwise/listwise Shapley ranking explanations, component attribution, graph-path explanations, safety-aware recommenders, and grounded LLM recommenders already exist. A paper would need to show that the proposed common decision target, intervention semantics, hard/soft constraint separation, conservation diagnostics, and end-to-end evaluation produce better faithfulness and clinical error detection than those components used separately.
 
 ## Scope, evidence standard, and terminology
-
-This is a targeted deep review of seminal and recent literature, prioritizing peer-reviewed primary work from 2024–2026 and using surveys or systematic reviews to map broader evidence. The cutoff is 30 August 2026. It is not a PRISMA systematic review: no dual-reviewer screening, database export, or formal risk-of-bias instrument was used. Very recent preprints are explicitly labelled and should not carry the same evidential weight as peer-reviewed work.
 
 Claims are separated as follows:
 
@@ -28,7 +26,7 @@ Claims are separated as follows:
 - **Project inference:** a conclusion derived from the literature and the repository's architecture.
 - **Proposed research:** a design that has not yet been implemented or validated here.
 
-The repository is no longer purely conceptual: the active tree contains an experimental [Transformer event-sequence ranker](../pipeline/neural_training/model.py), [candidate-conditioned relational GNN](../pipeline/gnn_training/model.py), and [fusion implementations](../pipeline/gnn_training/fusion.py). The grounded explanation layer remains a target rather than a clinically evaluated capability. This report therefore maps XAI to the code that exists without claiming a production recommender or validated clinical benefit.
+The active tree contains an experimental [Transformer event-sequence ranker](../pipeline/neural_training/model.py), [candidate-conditioned relational GNN](../pipeline/gnn_training/model.py), and [fusion implementations](../pipeline/gnn_training/fusion.py). A first, framework-independent [explanation evidence contract](../pipeline/explainability/contract.py) now implements part of Stage 0 below: it records a versioned pairwise decision, hierarchical signed evidence, conservation residual, hard safety certificates, external-knowledge support status, constrained model counterfactuals, and protected-reference declarations. It validates and serializes those records but does **not** yet compute Transformer/GNN explanations, log protected runs, generate clinical language, or establish clinical validity. This report therefore maps XAI to the code that exists without claiming a production recommender or validated clinical benefit.
 
 Several terms are often conflated:
 
@@ -44,27 +42,33 @@ The distinction between correctness and human-facing coherence is central to the
 
 ## 1. XAI method families: mechanism, trade-offs, and project fit
 
+
+
 ### 1.1 Comparative summary
 
-| Method family | Mechanism and model compatibility | Strengths | Principal limitations | Typical explanation cost | Project verdict |
-|---|---|---|---|---|---|
-| SHAP / KernelSHAP | Allocates the difference from a baseline expectation using Shapley values; model-agnostic sampling variants work with any scorer | Signed local contributions, additive completeness under the chosen game, global aggregation | Result depends on background distribution, masking semantics, and feature dependence; exact enumeration is exponential; a point-score explanation can miss ranking interactions | Exact general SHAP is exponential in feature groups; sampling needs many model calls | Useful as a baseline and for grouped inputs, but not on embedding dimensions and not as the sole rank explainer |
-| TreeSHAP | Computes Shapley-style attributions efficiently for tree ensembles | Fast and exact for the specified tree game; excellent reference-model explainer | Explains the tree model, not a Transformer/GNN; conditional/interventional interpretation still matters | Polynomial in trees/leaves/depth rather than feature coalitions | Use for tree baselines and audit comparisons |
-| LIME | Samples a local neighbourhood, queries the black box, and fits a sparse interpretable surrogate | Simple, model-agnostic, can expose local nonlinear behaviour approximately | Neighbourhood and kernel are arbitrary; perturbations may be implausible; repeated runs can vary; surrogate fidelity is only local | Approximately the sampled model calls plus a sparse regression | Retain only as a conventional baseline, not the production explanation |
-| Integrated Gradients | Integrates input gradients from a reference point to the input; applies to differentiable models | Satisfies sensitivity and implementation invariance; contributions sum to output difference for the chosen path | Baseline and path can be clinically implausible; saturation/noise; token embeddings require grouping; correlation is not causation | Roughly `m` forward/backward passes for `m` integration steps | Primary Transformer attribution, with a clinically valid baseline and occlusion tests |
-| Raw gradients / saliency / DeepLIFT / LRP | Propagates local sensitivity or relevance through the network | Cheap; fine-grained; useful for developer diagnostics | Noisy, scale-sensitive, may fail sanity/input-invariance tests; relevance is easy to overinterpret | One or a few backward passes | Developer diagnostic only unless it passes model/data randomization and intervention checks |
-| Attention analysis | Displays learned attention weights or aggregates them across heads/layers | Native to attention models; low incremental cost; can help inspect information routing | Attention need not correlate with output importance; alternative attention distributions may preserve predictions; layer mixing complicates interpretation | Usually one forward pass; rollout/flow adds modest graph operations | Never call raw attention a faithful explanation; use as a secondary diagnostic |
-| Permutation importance | Permutes a feature/group and measures performance loss | Simple global model reliance; model-agnostic | Breaks dependencies, creates out-of-distribution records, shares or hides importance among correlated features; not patient-local | About one or more evaluation passes per feature/group | Use only at cohort level with grouped/conditional perturbations |
-| Counterfactual explanations | Searches for a small change that flips a prediction or ranking | Contrastive and actionable in form; directly answers “what would change the result?” | Plausibility, immutability, temporal feasibility, and causal validity are hard; multiple counterfactuals exist; optimisation can be expensive | Repeated inference/gradient or combinatorial search | High-value later layer, but only with clinically constrained interventions and “model counterfactual” labelling |
-| Prototypes / examples / case retrieval | Returns representative training examples, learned prototypes, or similar prior cases | Natural comparison; can expose coverage and unusual cases | Similarity may not be clinically meaningful; privacy and memorisation risks; historical treatment is observed, not necessarily optimal | Index lookup is cheap; prototype learning and influence estimates can be costly | Use only with validated similarity, access control, provenance, and explicit non-optimality wording |
-| Rules / Anchors / global surrogates | Produces if–then rules or fits a simple model to approximate black-box decisions | Inspectable and auditable; exact safety rules can be intrinsically faithful to the rule engine | A surrogate can conceal errors outside its coverage; rule sets become large; learned anchors describe local precision, not causality | Rule execution is cheap; discovery/surrogate training can be expensive | Exact rule traces are mandatory for safety; learned rules are optional audit aids |
-| Concept explanations / CBMs / TCAV | Maps hidden representations to human concepts; a CBM predicts concepts before the outcome and can permit interventions | Matches clinical vocabulary; supports concept-level auditing and correction | Concept annotations are costly; bottleneck leakage and concept misalignment; interventions may not behave causally | Added concept model/training; inference usually modest | Promising intrinsic extension after concepts and labels are validated, not an immediate post-hoc fix |
-| Knowledge-graph paths | Retrieves typed paths between patient factors, conditions, drugs, and evidence | Human-readable relations and provenance; supports evidence retrieval | A true path is not necessarily used by the GNN, clinically sufficient, or causal; path ranking can favour popular hubs | Graph traversal is manageable but candidate-path explosion can be large | Use as clinical/provenance evidence only after linking paths to score interventions |
-| GNN explainers | Optimises edge/node/feature masks, learns an amortised mask, or searches subgraphs | Can expose relational structure that tabular attribution loses | Masking can create invalid graphs; different explainers disagree; per-instance search may be slow; subgraphs are not automatically paths or clinical rationales | From iterative mask optimisation to expensive Monte Carlo tree search | Use candidate-conditioned mask methods, then validate necessity/sufficiency and render typed paths |
-| Causal explanations | Uses a structural causal model or interventional value function | Separates intervention from observation; supports causal counterfactuals in principle | Requires defensible graph, identifiability, and assumptions rarely available in retrospective EHR data | Model-specific; often repeated causal inference/simulation | Long-term research only; do not use causal language for ordinary feature attribution |
-| Uncertainty-aware explanation | Explains predictive entropy or adds intervals/stability estimates to explanations | Shows when both decision and explanation are unreliable | Predictive uncertainty and explanation uncertainty are different; intervals inherit model/perturbation assumptions | Ensembles/bootstrap multiply inference; some wrappers are expensive | Required for deployment-quality explanations; begin with bootstrap/seed stability and calibration |
-| LLM-generated explanation | Converts evidence into fluent text, sometimes with retrieval or multi-agent critique | Flexible, conversational, and adaptable to clinician questions | Fluency amplifies plausibility; self-explanations and chain-of-thought can rationalise outputs; unsupported facts and citations remain possible | High and variable latency/cost | Restrict to a schema-constrained verbalizer with deterministic validation and fallback |
-| Hybrid multi-method XAI | Combines complementary explanation channels | Can answer attribution, relational, safety, contrastive, and uncertainty questions together | Concatenation can produce contradictions and does not create end-to-end faithfulness | Sum of component costs plus orchestration | Recommended only with a common decision target, provenance, conflict handling, and fidelity tests |
+
+| Method family                             | Mechanism and model compatibility                                                                                                | Strengths                                                                                                       | Principal limitations                                                                                                                                                           | Typical explanation cost                                                             | Project verdict                                                                                                 |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| SHAP / KernelSHAP                         | Allocates the difference from a baseline expectation using Shapley values; model-agnostic sampling variants work with any scorer | Signed local contributions, additive completeness under the chosen game, global aggregation                     | Result depends on background distribution, masking semantics, and feature dependence; exact enumeration is exponential; a point-score explanation can miss ranking interactions | Exact general SHAP is exponential in feature groups; sampling needs many model calls | Useful as a baseline and for grouped inputs, but not on embedding dimensions and not as the sole rank explainer |
+| TreeSHAP                                  | Computes Shapley-style attributions efficiently for tree ensembles                                                               | Fast and exact for the specified tree game; excellent reference-model explainer                                 | Explains the tree model, not a Transformer/GNN; conditional/interventional interpretation still matters                                                                         | Polynomial in trees/leaves/depth rather than feature coalitions                      | Use for tree baselines and audit comparisons                                                                    |
+| LIME                                      | Samples a local neighbourhood, queries the black box, and fits a sparse interpretable surrogate                                  | Simple, model-agnostic, can expose local nonlinear behaviour approximately                                      | Neighbourhood and kernel are arbitrary; perturbations may be implausible; repeated runs can vary; surrogate fidelity is only local                                              | Approximately the sampled model calls plus a sparse regression                       | Retain only as a conventional baseline, not the production explanation                                          |
+| Integrated Gradients                      | Integrates input gradients from a reference point to the input; applies to differentiable models                                 | Satisfies sensitivity and implementation invariance; contributions sum to output difference for the chosen path | Baseline and path can be clinically implausible; saturation/noise; token embeddings require grouping; correlation is not causation                                              | Roughly `m` forward/backward passes for `m` integration steps                        | Primary Transformer attribution, with a clinically valid baseline and occlusion tests                           |
+| Raw gradients / saliency / DeepLIFT / LRP | Propagates local sensitivity or relevance through the network                                                                    | Cheap; fine-grained; useful for developer diagnostics                                                           | Noisy, scale-sensitive, may fail sanity/input-invariance tests; relevance is easy to overinterpret                                                                              | One or a few backward passes                                                         | Developer diagnostic only unless it passes model/data randomization and intervention checks                     |
+| Attention analysis                        | Displays learned attention weights or aggregates them across heads/layers                                                        | Native to attention models; low incremental cost; can help inspect information routing                          | Attention need not correlate with output importance; alternative attention distributions may preserve predictions; layer mixing complicates interpretation                      | Usually one forward pass; rollout/flow adds modest graph operations                  | Never call raw attention a faithful explanation; use as a secondary diagnostic                                  |
+| Permutation importance                    | Permutes a feature/group and measures performance loss                                                                           | Simple global model reliance; model-agnostic                                                                    | Breaks dependencies, creates out-of-distribution records, shares or hides importance among correlated features; not patient-local                                               | About one or more evaluation passes per feature/group                                | Use only at cohort level with grouped/conditional perturbations                                                 |
+| Counterfactual explanations               | Searches for a small change that flips a prediction or ranking                                                                   | Contrastive and actionable in form; directly answers “what would change the result?”                            | Plausibility, immutability, temporal feasibility, and causal validity are hard; multiple counterfactuals exist; optimisation can be expensive                                   | Repeated inference/gradient or combinatorial search                                  | High-value later layer, but only with clinically constrained interventions and “model counterfactual” labelling |
+| Prototypes / examples / case retrieval    | Returns representative training examples, learned prototypes, or similar prior cases                                             | Natural comparison; can expose coverage and unusual cases                                                       | Similarity may not be clinically meaningful; privacy and memorisation risks; historical treatment is observed, not necessarily optimal                                          | Index lookup is cheap; prototype learning and influence estimates can be costly      | Use only with validated similarity, access control, provenance, and explicit non-optimality wording             |
+| Rules / Anchors / global surrogates       | Produces if–then rules or fits a simple model to approximate black-box decisions                                                 | Inspectable and auditable; exact safety rules can be intrinsically faithful to the rule engine                  | A surrogate can conceal errors outside its coverage; rule sets become large; learned anchors describe local precision, not causality                                            | Rule execution is cheap; discovery/surrogate training can be expensive               | Exact rule traces are mandatory for safety; learned rules are optional audit aids                               |
+| Concept explanations / CBMs / TCAV        | Maps hidden representations to human concepts; a CBM predicts concepts before the outcome and can permit interventions           | Matches clinical vocabulary; supports concept-level auditing and correction                                     | Concept annotations are costly; bottleneck leakage and concept misalignment; interventions may not behave causally                                                              | Added concept model/training; inference usually modest                               | Promising intrinsic extension after concepts and labels are validated, not an immediate post-hoc fix            |
+| Knowledge-graph paths                     | Retrieves typed paths between patient factors, conditions, drugs, and evidence                                                   | Human-readable relations and provenance; supports evidence retrieval                                            | A true path is not necessarily used by the GNN, clinically sufficient, or causal; path ranking can favour popular hubs                                                          | Graph traversal is manageable but candidate-path explosion can be large              | Use as clinical/provenance evidence only after linking paths to score interventions                             |
+| GNN explainers                            | Optimises edge/node/feature masks, learns an amortised mask, or searches subgraphs                                               | Can expose relational structure that tabular attribution loses                                                  | Masking can create invalid graphs; different explainers disagree; per-instance search may be slow; subgraphs are not automatically paths or clinical rationales                 | From iterative mask optimisation to expensive Monte Carlo tree search                | Use candidate-conditioned mask methods, then validate necessity/sufficiency and render typed paths              |
+| Causal explanations                       | Uses a structural causal model or interventional value function                                                                  | Separates intervention from observation; supports causal counterfactuals in principle                           | Requires defensible graph, identifiability, and assumptions rarely available in retrospective EHR data                                                                          | Model-specific; often repeated causal inference/simulation                           | Long-term research only; do not use causal language for ordinary feature attribution                            |
+| Uncertainty-aware explanation             | Explains predictive entropy or adds intervals/stability estimates to explanations                                                | Shows when both decision and explanation are unreliable                                                         | Predictive uncertainty and explanation uncertainty are different; intervals inherit model/perturbation assumptions                                                              | Ensembles/bootstrap multiply inference; some wrappers are expensive                  | Required for deployment-quality explanations; begin with bootstrap/seed stability and calibration               |
+| LLM-generated explanation                 | Converts evidence into fluent text, sometimes with retrieval or multi-agent critique                                             | Flexible, conversational, and adaptable to clinician questions                                                  | Fluency amplifies plausibility; self-explanations and chain-of-thought can rationalise outputs; unsupported facts and citations remain possible                                 | High and variable latency/cost                                                       | Restrict to a schema-constrained verbalizer with deterministic validation and fallback                          |
+| Hybrid multi-method XAI                   | Combines complementary explanation channels                                                                                      | Can answer attribution, relational, safety, contrastive, and uncertainty questions together                     | Concatenation can produce contradictions and does not create end-to-end faithfulness                                                                                            | Sum of component costs plus orchestration                                            | Recommended only with a common decision target, provenance, conflict handling, and fidelity tests               |
+
+
+
 
 ### 1.2 Feature attribution and local surrogates
 
@@ -74,10 +78,10 @@ LIME learns a sparse local surrogate around the patient being explained ([Ribeir
 
 Integrated Gradients (IG) accumulates gradients along a path from baseline `x'` to input `x`:
 
-\[
+
 \operatorname{IG}_i(x)=(x_i-x'_i)\int_0^1
-\frac{\partial f(x'+\alpha(x-x'))}{\partial x_i}\,d\alpha .
-\]
+\frac{\partial f(x'+\alpha(x-x'))}{\partial x_i}d\alpha .
+
 
 It was designed to satisfy sensitivity and implementation invariance, with a completeness relation to the baseline output ([Sundararajan et al., 2017](https://proceedings.mlr.press/v70/sundararajan17a.html)). The baseline is therefore part of the scientific question, not a plotting option. Very recent EHR work proposes a validation-set mean embedding as a manifold-aware baseline and group-sparse IG to reduce dense token explanations; it reports improved comprehensiveness/sufficiency and 9–18% lower token-level group density on two EHR tasks ([Amirahmadi et al., 2026](https://proceedings.mlr.press/v297/amirahmadi26a.html)). This is strong prior art against claiming novelty for sparse or EHR-specific IG alone, but it is directly useful as a baseline and design reference.
 
@@ -129,6 +133,8 @@ The safe role for the project's LLM is consequently narrow but useful: extract a
 
 ## 2. Healthcare evidence and clinician explanation needs
 
+
+
 ### 2.1 What the literature supports
 
 Clinicians do not ask for a single universal explanation. Interview work in critical-care ML found demand for patient-specific context, uncertainty, actionable factors, and examples that make sense for the clinical trajectory ([Tonekaboni et al., 2019](https://proceedings.mlr.press/v106/tonekaboni19a.html)). A recent comparison of explanation types with 39 hospital and critical-care clinicians found the most positive overall response to feature attribution, while almost half preferred access to multiple explanation forms; the limited two-centre sample prevents broad generalisation ([clinician user study, 2026](https://pmc.ncbi.nlm.nih.gov/articles/PMC13370522/)). Reviews likewise emphasise clear, actionable, patient-relevant explanations that support validation and decision-making rather than generic transparency ([healthcare-professional scoping review, 2026](https://pmc.ncbi.nlm.nih.gov/articles/PMC13175488/)).
@@ -139,19 +145,21 @@ The evaluation evidence remains weak relative to the volume of healthcare XAI pu
 
 ### 2.2 Clinical questions and the evidence needed to answer them
 
-| Clinician question | Required evidence object | Suitable method | Unsafe shortcut |
-|---|---|---|---|
-| Which patient factors influenced this recommendation? | Signed contributions grouped by clinical concept and time | Contrastive IG plus in-distribution occlusion; TreeSHAP for tree baseline | Raw gradient or embedding dimension |
-| Which diagnosis, symptom, laboratory result, or vital sign mattered? | Input provenance, value/time, direction, magnitude, stability | Grouped temporal attribution with missingness represented separately | Treating missing values as normal values or causal factors |
-| Why is medication `a` above `b`? | Pairwise rank-margin decomposition on a fixed candidate slate | ShaRP/RankingSHAP-style rank value function, branch decomposition, grouped IG/GNN interventions | Two unrelated pointwise explanations |
-| Which treatments were considered? | Candidate slate, stage-by-stage score/rank, filtering reason | Pipeline trace | Display only the winner |
-| What supported the recommendation relationally? | Necessary/sufficient typed subgraph and path provenance | GraphMask/PGExplainer/GNNExplainer plus path intervention | Highest attention weight or any path that exists |
-| Which safety constraints changed the result? | Exact triggered rule, inputs, severity, action, source and rule version | Intrinsic rule trace/replay | LLM paraphrase without rule identifier |
-| Why was a candidate rejected? | Hard-veto certificate or quantified soft penalty | Constraint trace plus counterfactual replay | A generic “unsafe” label |
-| What medical evidence supports the statement? | Versioned retrieved source and passage/structured relation | Evidence retrieval with citation validation | Treating model attribution as medical evidence |
-| How certain is the system? | Calibrated score/rank set, distribution-shift warning, explanation stability | Calibration, ensemble/bootstrap, conformal set where valid | The LLM saying “high confidence” |
-| What would need to change for the rank to change? | Minimal feasible model counterfactual with immutable/causal restrictions | Clinically constrained optimisation | Unconstrained feature edits or treatment advice |
-| Can I challenge or inspect this? | Expandable evidence packet, alternatives, unknowns, provenance, feedback channel | Interactive evidence view and audit log | Static persuasive paragraph |
+
+| Clinician question                                                   | Required evidence object                                                         | Suitable method                                                                                 | Unsafe shortcut                                            |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Which patient factors influenced this recommendation?                | Signed contributions grouped by clinical concept and time                        | Contrastive IG plus in-distribution occlusion; TreeSHAP for tree baseline                       | Raw gradient or embedding dimension                        |
+| Which diagnosis, symptom, laboratory result, or vital sign mattered? | Input provenance, value/time, direction, magnitude, stability                    | Grouped temporal attribution with missingness represented separately                            | Treating missing values as normal values or causal factors |
+| Why is medication `a` above `b`?                                     | Pairwise rank-margin decomposition on a fixed candidate slate                    | ShaRP/RankingSHAP-style rank value function, branch decomposition, grouped IG/GNN interventions | Two unrelated pointwise explanations                       |
+| Which treatments were considered?                                    | Candidate slate, stage-by-stage score/rank, filtering reason                     | Pipeline trace                                                                                  | Display only the winner                                    |
+| What supported the recommendation relationally?                      | Necessary/sufficient typed subgraph and path provenance                          | GraphMask/PGExplainer/GNNExplainer plus path intervention                                       | Highest attention weight or any path that exists           |
+| Which safety constraints changed the result?                         | Exact triggered rule, inputs, severity, action, source and rule version          | Intrinsic rule trace/replay                                                                     | LLM paraphrase without rule identifier                     |
+| Why was a candidate rejected?                                        | Hard-veto certificate or quantified soft penalty                                 | Constraint trace plus counterfactual replay                                                     | A generic “unsafe” label                                   |
+| What medical evidence supports the statement?                        | Versioned retrieved source and passage/structured relation                       | Evidence retrieval with citation validation                                                     | Treating model attribution as medical evidence             |
+| How certain is the system?                                           | Calibrated score/rank set, distribution-shift warning, explanation stability     | Calibration, ensemble/bootstrap, conformal set where valid                                      | The LLM saying “high confidence”                           |
+| What would need to change for the rank to change?                    | Minimal feasible model counterfactual with immutable/causal restrictions         | Clinically constrained optimisation                                                             | Unconstrained feature edits or treatment advice            |
+| Can I challenge or inspect this?                                     | Expandable evidence packet, alternatives, unknowns, provenance, feedback channel | Interactive evidence view and audit log                                                         | Static persuasive paragraph                                |
+
 
 The interface should provide progressive disclosure: a concise rank contrast and safety status first, then temporal details, graph paths, counterfactuals, sources, and audit metadata on demand. This answers the finding that clinicians work under time pressure while preserving depth for difficult or contested cases.
 
@@ -172,6 +180,8 @@ The literature boundary is consequently sharp: sequential features, graph knowle
 
 ## 3. Mapping XAI to the project architecture
 
+
+
 ### 3.1 End-to-end explanation flow
 
 ```text
@@ -186,6 +196,8 @@ Conversational input
   -> constrained LLM verbalisation and clause verifier
   -> clinician review, expansion, correction, and contestation
 ```
+
+
 
 ### 3.2 Conversational input and PatientProfile extraction
 
@@ -205,9 +217,9 @@ For each extracted field, the useful explanation is provenance and extraction un
 
 Let `t_m(x)` be the Transformer score for medication candidate `m`. The primary question is contrastive:
 
-\[
+
 \Delta^{T}_{a,b}(x)=t_a(x)-t_b(x),
-\]
+
 
 not merely `t_a(x)`. Apply IG to `Delta^T` from a carefully defined background, then aggregate along the model's input structure:
 
@@ -231,9 +243,9 @@ Attention rollout, attention flow, and relevance propagation can be retained as 
 
 Let `g_m(x,G)` be the relational score from the patient/candidate graph. The explainer should optimise a sparse, candidate-contrastive mask for
 
-\[
+
 \Delta^{G}_{a,b}(x,G)=g_a(x,G)-g_b(x,G).
-\]
+
 
 Use GNNExplainer as an initial per-instance baseline; evaluate an amortised PGExplainer or GraphMask-style explainer if explanation latency matters. SubgraphX is a useful interaction-aware audit on small graphs, not the likely serving method. Every extracted subgraph should be converted to one or more typed paths only after it passes:
 
@@ -250,17 +262,17 @@ For a typed patient graph, a displayable path might have the abstract form `obse
 
 The active late-fusion design combines standardized Transformer and GNN scores on a ranking group. For a linear fusion such as
 
-\[
+
 r_m=(1-\alpha)z(t_m)+\alpha z(g_m),
-\]
+
 
 the branch contributions to a fixed-slate pairwise margin are exactly inspectable:
 
-\[
+
 \Delta^{rank}_{a,b}
 =(1-\alpha)[z(t_a)-z(t_b)]
 +\alpha[z(g_a)-z(g_b)].
-\]
+
 
 This exact branch decomposition should be shown before using a model-agnostic explainer. Interventions must hold the candidate slate fixed and recompute the same standardization rule; otherwise removing one candidate can change all standardized scores and confound the explanation. Residual/nonlinear fusion would require a separate component-attribution or Shapley interaction analysis.
 
@@ -315,20 +327,26 @@ This is an abstract format, not a clinical recommendation. Chain-of-thought shou
 
 ## 4. Faithfulness versus plausibility
 
+
+
 ### 4.1 Operational definitions for this project
 
-| Property | Operational question | Proposed measurement |
-|---|---|---|
-| Local accuracy / conservation | Do signed contributions reconstruct the defined score or rank margin? | Absolute and relative conservation residual |
-| Fidelity | Does a surrogate reproduce the ranker in the relevant neighbourhood? | Pairwise agreement, top-k overlap, Kendall's tau, score/margin error on valid perturbations |
-| Faithfulness | Does changing the claimed evidence change the actual decision as claimed? | Necessity/sufficiency interventions, deletion/insertion curves, rank flips, retraining checks |
-| Completeness | How much of the decision is covered by displayed evidence? | Conserved margin fraction plus unallocated interaction/residual; coverage of triggered pipeline stages |
-| Stability | Does essentially the same case/model produce essentially the same explanation? | Rank correlation, top-k Jaccard, sign agreement across seeds/bootstrap and small invariant changes |
-| Robustness | Can irrelevant or adversarially small changes alter the explanation while preserving the decision? | Worst-case explanation distance under prediction-preserving valid perturbations |
-| Sparsity | Is the explanation concise? | Number of event groups, nodes, edges, paths, and clauses at a fixed fidelity threshold |
-| Consistency | Are equivalent implementations/candidates handled coherently? | Implementation-invariance tests, symmetry tests, subgroup consistency, cross-method conflict rate |
-| Clinical validity | Are concepts, paths, rules, and sources medically correct in context? | Blinded clinician ratings, rule/source audit, temporal-validity error rate |
-| Usefulness | Does the explanation improve the clinician's task? | Decision accuracy, error detection, time, contestation quality, appropriate reliance |
+
+| Property                      | Operational question                                                                               | Proposed measurement                                                                                   |
+| ----------------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Local accuracy / conservation | Do signed contributions reconstruct the defined score or rank margin?                              | Absolute and relative conservation residual                                                            |
+| Fidelity                      | Does a surrogate reproduce the ranker in the relevant neighbourhood?                               | Pairwise agreement, top-k overlap, Kendall's tau, score/margin error on valid perturbations            |
+| Faithfulness                  | Does changing the claimed evidence change the actual decision as claimed?                          | Necessity/sufficiency interventions, deletion/insertion curves, rank flips, retraining checks          |
+| Completeness                  | How much of the decision is covered by displayed evidence?                                         | Conserved margin fraction plus unallocated interaction/residual; coverage of triggered pipeline stages |
+| Stability                     | Does essentially the same case/model produce essentially the same explanation?                     | Rank correlation, top-k Jaccard, sign agreement across seeds/bootstrap and small invariant changes     |
+| Robustness                    | Can irrelevant or adversarially small changes alter the explanation while preserving the decision? | Worst-case explanation distance under prediction-preserving valid perturbations                        |
+| Sparsity                      | Is the explanation concise?                                                                        | Number of event groups, nodes, edges, paths, and clauses at a fixed fidelity threshold                 |
+| Consistency                   | Are equivalent implementations/candidates handled coherently?                                      | Implementation-invariance tests, symmetry tests, subgroup consistency, cross-method conflict rate      |
+| Clinical validity             | Are concepts, paths, rules, and sources medically correct in context?                              | Blinded clinician ratings, rule/source audit, temporal-validity error rate                             |
+| Usefulness                    | Does the explanation improve the clinician's task?                                                 | Decision accuracy, error detection, time, contestation quality, appropriate reliance                   |
+
+
+
 
 ### 4.2 Why visual agreement is insufficient
 
@@ -355,6 +373,8 @@ Doshi-Velez and Kim distinguish functionally grounded, human-grounded, and appli
 
 ## 5. Research gap and novelty assessment
 
+
+
 ### 5.1 What is established
 
 The following are already established or close to established:
@@ -375,17 +395,19 @@ It would therefore be inaccurate to claim novelty for any single item, or for si
 
 ### 5.2 What remains unresolved
 
-| Gap | What related work already covers | What is still missing for this project |
-|---|---|---|
-| Ranking rather than classification | RankingSHAP and ShaRP define listwise/pairwise value functions | Clinical event/graph/rule interventions on the same final medication rank target |
-| Temporal EHR attribution | IG, sparse/manifold-aware IG, RETAIN | Candidate-contrastive ranking, valid temporal baselines, missingness, and downstream safety/fusion effects |
-| GNN subgraph/path explanation | GNNExplainer, PGExplainer, GraphMask, SubgraphX, KG path recommenders | Typed patient-specific paths proven necessary/sufficient for the candidate-relative score and final rank |
-| Medication safety | GAMENet, SafeDrug, KEHGCN, SafeRx-Agent, GraphRAG safety verification | Exact separation of hard feasibility from soft preference evidence in the final explanation object |
-| Clinical grounding | KG retrieval, RAG, guideline citations, path-to-text | Clear distinction between “the model used this,” “a rule fired,” and “external evidence supports this” |
-| Uncertainty | Calibration, InfoSHAP, GPEC, conformal explanation work | Joint presentation of rank uncertainty, attribution stability, path stability, and knowledge/rule unknowns |
-| Natural-language explanation | LLM-generated recommender rationales and multi-agent critique | Clause-level machine verification against an immutable, versioned evidence packet |
-| Whole pipeline | Work on model stacks, component attribution, and pipeline Shapley values | A clinical ranking protocol that replays extraction, branches, fusion, constraints, retrieval, and language generation |
-| Clinical evaluation | Preference/trust/usability studies | Appropriate reliance, error detection, contestability, and workflow value under correct and deliberately incorrect AI advice |
+
+| Gap                                | What related work already covers                                         | What is still missing for this project                                                                                       |
+| ---------------------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| Ranking rather than classification | RankingSHAP and ShaRP define listwise/pairwise value functions           | Clinical event/graph/rule interventions on the same final medication rank target                                             |
+| Temporal EHR attribution           | IG, sparse/manifold-aware IG, RETAIN                                     | Candidate-contrastive ranking, valid temporal baselines, missingness, and downstream safety/fusion effects                   |
+| GNN subgraph/path explanation      | GNNExplainer, PGExplainer, GraphMask, SubgraphX, KG path recommenders    | Typed patient-specific paths proven necessary/sufficient for the candidate-relative score and final rank                     |
+| Medication safety                  | GAMENet, SafeDrug, KEHGCN, SafeRx-Agent, GraphRAG safety verification    | Exact separation of hard feasibility from soft preference evidence in the final explanation object                           |
+| Clinical grounding                 | KG retrieval, RAG, guideline citations, path-to-text                     | Clear distinction between “the model used this,” “a rule fired,” and “external evidence supports this”                       |
+| Uncertainty                        | Calibration, InfoSHAP, GPEC, conformal explanation work                  | Joint presentation of rank uncertainty, attribution stability, path stability, and knowledge/rule unknowns                   |
+| Natural-language explanation       | LLM-generated recommender rationales and multi-agent critique            | Clause-level machine verification against an immutable, versioned evidence packet                                            |
+| Whole pipeline                     | Work on model stacks, component attribution, and pipeline Shapley values | A clinical ranking protocol that replays extraction, branches, fusion, constraints, retrieval, and language generation       |
+| Clinical evaluation                | Preference/trust/usability studies                                       | Appropriate reliance, error detection, contestability, and workflow value under correct and deliberately incorrect AI advice |
+
 
 This review did **not** find a peer-reviewed method that jointly provides all of the following for medication recommendation:
 
@@ -403,19 +425,25 @@ This is a targeted-review finding, not proof of absence. A formal novelty claim 
 
 ### 5.3 Candidate ideas and honest novelty classification
 
-| Candidate idea | Novelty assessment | Recommendation |
-|---|---|---|
-| Concatenate SHAP/IG, GNN paths, safety rules, retrieval, uncertainty, and LLM prose | **Straightforward combination.** Each ingredient and several close hybrids already exist. | Useful engineering baseline, not the paper's methodological claim |
-| Apply pairwise Shapley values to medication candidates | **Already established in general ranking XAI.** ShaRP explicitly covers pairwise preferences. | Baseline or adaptation study only |
-| Sparse/manifold-aware IG for EHR Transformers | **Already established by 2026 EHR work.** | Reuse and validate; do not claim as new |
-| Use weighted metapaths and contraindications | **Already close to KEHGCN.** | Baseline; add intervention validation if used |
-| Use KG paths to prompt an LLM | **Already established in explainable recommendation and KAPER.** | Implementation pattern only |
-| Ground an LLM in patient context and safety resources | **Close to SafeRx-Agent and pharmacotherapy GraphRAG.** | Not standalone novelty |
+
+| Candidate idea                                                                      | Novelty assessment                                                                                                                                                                                                          | Recommendation                                                                        |
+| ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Concatenate SHAP/IG, GNN paths, safety rules, retrieval, uncertainty, and LLM prose | **Straightforward combination.** Each ingredient and several close hybrids already exist.                                                                                                                                   | Useful engineering baseline, not the paper's methodological claim                     |
+| Apply pairwise Shapley values to medication candidates                              | **Already established in general ranking XAI.** ShaRP explicitly covers pairwise preferences.                                                                                                                               | Baseline or adaptation study only                                                     |
+| Sparse/manifold-aware IG for EHR Transformers                                       | **Already established by 2026 EHR work.**                                                                                                                                                                                   | Reuse and validate; do not claim as new                                               |
+| Use weighted metapaths and contraindications                                        | **Already close to KEHGCN.**                                                                                                                                                                                                | Baseline; add intervention validation if used                                         |
+| Use KG paths to prompt an LLM                                                       | **Already established in explainable recommendation and KAPER.**                                                                                                                                                            | Implementation pattern only                                                           |
+| Ground an LLM in patient context and safety resources                               | **Close to SafeRx-Agent and pharmacotherapy GraphRAG.**                                                                                                                                                                     | Not standalone novelty                                                                |
 | Explain the final constrained pairwise rank with a conserved, typed evidence ledger | **Potentially meaningful contribution.** Ingredients exist, but the shared decision target, hard/soft separation, cross-channel intervention contract, residual, and verification could be novel as a method and benchmark. | Primary research direction, conditional on formal prior-art review and empirical gain |
-| Intrinsic concept–path medication ranker | **Incremental unless it solves concept/path faithfulness in a new way.** CBMs, aspect mapping, and metapath models are close. | Longer-term secondary direction |
-| Causal medication counterfactuals | **Scientifically valuable but presently underidentified.** Novelty depends on a defensible causal model, not terminology. | Long-term work after causal assumptions/data are established |
+| Intrinsic concept–path medication ranker                                            | **Incremental unless it solves concept/path faithfulness in a new way.** CBMs, aspect mapping, and metapath models are close.                                                                                               | Longer-term secondary direction                                                       |
+| Causal medication counterfactuals                                                   | **Scientifically valuable but presently underidentified.** Novelty depends on a defensible causal model, not terminology.                                                                                                   | Long-term work after causal assumptions/data are established                          |
+
+
+
 
 ## 6. Proposed method: an end-to-end constraint-aware rank-evidence ledger
+
+
 
 ### 6.1 Core idea
 
@@ -447,20 +475,20 @@ Let:
 
 Define the feasible utility
 
-\[
+
 u_m=
 \begin{cases}
-F(t_m,g_m)+q_m, & h_m=1,\\
--\infty, & h_m=0,\\
+F(t_m,g_m)+q_m, & h_m=1,
+-\infty, & h_m=0,
 \operatorname{abstain}, & h_m=\text{unknown and policy requires resolution}.
 \end{cases}
-\]
+
 
 For two feasible candidates `a` and `b`, the explanatory target is
 
-\[
+
 \Delta_{a,b}=u_a-u_b.
-\]
+
 
 Hard exclusions are represented by a separate certificate `C_m`, because an infinite/Boolean feasibility decision is not meaningfully decomposed into additive feature weights. If `b` is hard-excluded, the explanation says that `C_b` caused exclusion and optionally reports the learned preference margin that would have existed before the safety gate. It must not imply that a learned feature “outweighed” a contraindication.
 
@@ -468,34 +496,34 @@ Hard exclusions are represented by a separate certificate `C_m`, because an infi
 
 Partition evidence units into clinically meaningful groups:
 
-\[
+
 \mathcal E = \mathcal E_T \cup \mathcal E_G \cup \mathcal E_Q,
-\]
+
 
 where `E_T` contains temporal event/value/missingness groups, `E_G` contains typed graph substructures or paths, and `E_Q` contains soft rule adjustments. Branch identity is a higher-level partition.
 
 For coalition `S`, define a **clinically valid intervention operator** `I_S` that retains evidence in `S` and replaces other evidence using a conditional/manifold-aware reference while preserving immutable variables, temporal order, graph typing, and the fixed candidate slate. The value function is
 
-\[
+
 v_{a,b}(S)=
 \mathbb E\left[\Delta_{a,b}\bigl(I_S(x,G)\bigr)\right]
 -\mathbb E\left[\Delta_{a,b}\bigl(I_\varnothing(x,G)\bigr)\right].
-\]
+
 
 Use hierarchical/Owen-style or partitioned Shapley attribution to allocate the margin first across branches and then across evidence units, preserving cross-unit interactions as defined by the chosen game. This is not claimed as a new game-theoretic solution; the research question is whether the clinically constrained value function and cross-pipeline evidence contract improve faithfulness over pointwise or independently computed explanations.
 
 For each unit `j`, estimate signed contribution `phi_j` and a conservation residual
 
-\[
+
 \epsilon_{a,b}=\Delta_{a,b}
 -\left(\phi_0+\sum_{j\in\mathcal E}\phi_j\right).
-\]
+
 
 The interface reports the unexplained fraction
 
-\[
+
 \rho_{a,b}=\frac{|\epsilon_{a,b}|}{|\Delta_{a,b}|+\eta}.
-\]
+
 
 An explanation should be suppressed or labelled incomplete when `rho` exceeds a preregistered threshold. If the architecture permits an exact branch decomposition, use it rather than approximate Shapley attribution at that level.
 
@@ -503,26 +531,26 @@ An explanation should be suppressed or labelled incomplete when `rho` exceeds a 
 
 For each candidate contrast, learn or optimise an edge mask `M_G` on the GNN computation graph:
 
-\[
-\max_{M_G}\; \operatorname{Fid}_{a,b}(M_G)
+
+\max_{M_G} \operatorname{Fid}_{a,b}(M_G)
 -\lambda_1\lVert M_G\rVert_0
 -\lambda_2\operatorname{Invalid}(M_G)
 -\lambda_3\operatorname{Unstable}(M_G),
-\]
+
 
 where fidelity measures preservation of the pairwise graph margin, `Invalid` penalises type/temporal/source violations, and `Unstable` penalises explanations that change across model/bootstrap replicas. Extract short typed paths from the selected subgraph, but retain the subgraph as the primary computational explanation because multiple interacting paths can carry the effect.
 
 For every displayed path `p`, record:
 
-\[
+
 N_p=\Delta^G_{a,b}(G)-\Delta^G_{a,b}(G\setminus p)
-\]
+
 
 as a necessity effect and
 
-\[
+
 S_p=\left|\Delta^G_{a,b}(G)-\Delta^G_{a,b}(p)\right|
-\]
+
 
 as a sufficiency error, subject to graph-valid intervention semantics. A path may be clinically supportive yet fail model-faithfulness tests; the ledger must preserve that distinction.
 
@@ -530,16 +558,16 @@ as a sufficiency error, subject to graph-valid intervention semantics. A path ma
 
 For a feasible competitor `b`, search over allowed event/value edits `delta`, graph edits `gamma`, and resolvable soft constraints:
 
-\[
+
 \begin{aligned}
-\min_{\delta,\gamma}\quad & c(\delta,\gamma)\\
+\min_{\delta,\gamma}\quad & c(\delta,\gamma)
 \text{s.t.}\quad & u_b(I_{\delta,\gamma}(x,G))
-\ge u_a(I_{\delta,\gamma}(x,G))+\kappa,\\
-& h_a,h_b=1,\\
-& (\delta,\gamma)\in\mathcal A_{clinical},\\
+\ge u_a(I_{\delta,\gamma}(x,G))+\kappa,
+& h_a,h_b=1,
+& (\delta,\gamma)\in\mathcal A_{clinical},
 & \text{immutable and temporal constraints hold}.
 \end{aligned}
-\]
+
 
 The cost should be group-sparse and scaled by clinical plausibility, not Euclidean distance in an embedding. The result is labelled a **model-rank counterfactual**. Unless supported by a structural causal model, it does not claim that inducing the change is possible, safe, or outcome-improving.
 
@@ -622,6 +650,8 @@ INPUT: versioned patient profile x, graph G, fixed slate M,
 OUTPUT: machine-readable ledger + verified clinician-facing explanation
 ```
 
+
+
 ### 6.9 Expected advantages, weaknesses, and complexity
 
 Expected advantages:
@@ -663,6 +693,8 @@ If the work merely connects existing modules and generates a nicer report, its h
 
 ## 7. Evaluation framework
 
+
+
 ### 7.1 Prerequisites and split discipline
 
 Explanation evaluation cannot rescue an invalid recommender. All experiments must use patient-level splits and temporal cutoffs; fit backgrounds, normalisers, concept maps, explainers, calibration, retrieval indices, and thresholds on training/development data only. Record cohort definition, source dataset/version, feature and label windows, seed, model version, rule/knowledge version, candidate slate, and explainer configuration. Historical medication and post-treatment events are leakage risks. Clinical records must remain protected; published examples should be synthetic or safely aggregate.
@@ -673,24 +705,28 @@ Use three evaluation strata:
 2. **Retrospective held-out EHR:** model-behaviour and clinical plausibility, with no claim of treatment optimality.
 3. **Prospective or silent-mode clinician study:** workflow value and error detection, only after safety/governance review.
 
+
+
 ### 7.2 Technical metrics
 
-| Dimension | Metric | Concrete measurement for this system |
-|---|---|---|
-| Conservation/completeness | Relative residual `rho`, covered-stage rate | Difference between final pairwise margin and sum of baseline/evidence allocations; fraction of active stages represented |
-| Rank fidelity | Pairwise agreement, Kendall's tau, NDCG/top-k preservation | Rerank valid perturbations with surrogate/retained evidence and compare with full pipeline |
-| Necessity | Deletion AOPC, target-pair flip rate, `Fid+` | Remove top temporal groups, graph subgraphs/paths, or soft rules and recompute final rank |
-| Sufficiency | Retention error, `Fid−`, margin reconstruction | Retain only explanatory evidence with a valid reference and compare target margin/rank |
-| Stability | Top-k Jaccard, Spearman correlation, sign consistency | Across model seeds, bootstrap resamples, IG steps/baselines, explanation samples, and small valid input changes |
-| Robustness | Worst-case explanation distance under invariant decision | Semantics/prediction-preserving perturbations and adversarial explanation attacks |
-| Sparsity | Evidence count at fixed fidelity | Events, time windows, nodes, edges, paths, rules, sources, and clauses needed to meet a threshold |
-| Graph validity | Typed-edge/path validity, temporal leakage rate | Automatic ontology/type/direction/source/time checks |
-| Counterfactual validity | Replay success, feasibility, diversity, cost | Fraction that really flip the target rank and satisfy clinical/immutable constraints |
-| Rule faithfulness | Trigger precision/recall and replay agreement | Exact comparison with deployed rule engine; critical-rule omission target should be zero |
-| Predictive uncertainty | ECE, Brier score, log loss, coverage/set size | Candidate probability/rank calibration and conformal coverage where assumptions are justified |
-| Explanation uncertainty | Interval coverage on synthetic truth, sign/top-k stability | Bootstrap/conformal intervals and empirical inclusion frequencies |
-| Language grounding | Claim precision/recall, unsupported-claim rate, contradiction, citation correctness | Atomic clause-to-ledger/source alignment; critical omission rate |
-| Cost | p50/p95 latency, model calls, GPU/CPU memory, cache hit rate | Per candidate slate and per requested detail level |
+
+| Dimension                 | Metric                                                                              | Concrete measurement for this system                                                                                     |
+| ------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| Conservation/completeness | Relative residual `rho`, covered-stage rate                                         | Difference between final pairwise margin and sum of baseline/evidence allocations; fraction of active stages represented |
+| Rank fidelity             | Pairwise agreement, Kendall's tau, NDCG/top-k preservation                          | Rerank valid perturbations with surrogate/retained evidence and compare with full pipeline                               |
+| Necessity                 | Deletion AOPC, target-pair flip rate, `Fid+`                                        | Remove top temporal groups, graph subgraphs/paths, or soft rules and recompute final rank                                |
+| Sufficiency               | Retention error, `Fid−`, margin reconstruction                                      | Retain only explanatory evidence with a valid reference and compare target margin/rank                                   |
+| Stability                 | Top-k Jaccard, Spearman correlation, sign consistency                               | Across model seeds, bootstrap resamples, IG steps/baselines, explanation samples, and small valid input changes          |
+| Robustness                | Worst-case explanation distance under invariant decision                            | Semantics/prediction-preserving perturbations and adversarial explanation attacks                                        |
+| Sparsity                  | Evidence count at fixed fidelity                                                    | Events, time windows, nodes, edges, paths, rules, sources, and clauses needed to meet a threshold                        |
+| Graph validity            | Typed-edge/path validity, temporal leakage rate                                     | Automatic ontology/type/direction/source/time checks                                                                     |
+| Counterfactual validity   | Replay success, feasibility, diversity, cost                                        | Fraction that really flip the target rank and satisfy clinical/immutable constraints                                     |
+| Rule faithfulness         | Trigger precision/recall and replay agreement                                       | Exact comparison with deployed rule engine; critical-rule omission target should be zero                                 |
+| Predictive uncertainty    | ECE, Brier score, log loss, coverage/set size                                       | Candidate probability/rank calibration and conformal coverage where assumptions are justified                            |
+| Explanation uncertainty   | Interval coverage on synthetic truth, sign/top-k stability                          | Bootstrap/conformal intervals and empirical inclusion frequencies                                                        |
+| Language grounding        | Claim precision/recall, unsupported-claim rate, contradiction, citation correctness | Atomic clause-to-ledger/source alignment; critical omission rate                                                         |
+| Cost                      | p50/p95 latency, model calls, GPU/CPU memory, cache hit rate                        | Per candidate slate and per requested detail level                                                                       |
+
 
 Report fidelity against random, frequency/popularity, and shuffled-explanation baselines. Measure confidence intervals and paired significance/effect sizes. Avoid selecting a method because it wins one deletion metric; triangulate with ground-truth, conservation, stability, and clinical validity.
 
@@ -731,6 +767,8 @@ For recommender/model comparisons, include current tree, Transformer, GNN, and f
 14. removal of each evidence channel: Transformer, graph, safety, retrieved knowledge, uncertainty;
 15. full method versus equal-cost/latency alternatives.
 
+
+
 ### 7.5 Clinical and human evaluation
 
 Use a preregistered, blinded, within-subject/crossover study with representative clinicians. Include cases stratified by specialty, complexity, missingness, distribution shift, rule trigger, close versus wide rank margin, and explanation stability. Crucially, include both correct and deliberately incorrect AI recommendations and explanations; otherwise the study mainly measures persuasion.
@@ -768,6 +806,8 @@ Present clinicians' initial judgement before AI output, then collect post-AI jud
 
 ## 8. Recommended practical architecture
 
+
+
 ### 8.1 Existing techniques to use now
 
 - **TreeSHAP** for tree-reference models.
@@ -779,6 +819,8 @@ Present clinicians' initial judgement before AI output, then collect post-AI jud
 - **Calibration, bootstrap/ensemble stability, and explicit abstention**.
 - **Structured evidence retrieval with provenance**.
 - **Deterministic templates first**, followed by an evidence-constrained LLM verbalizer only after clause validation exists.
+
+
 
 ### 8.2 Techniques to combine
 
@@ -815,9 +857,11 @@ The user interface should label channels explicitly: **model evidence**, **safet
 - explanation agreement or clinician preference treated as proof of faithfulness.
 - a single faithfulness metric or visually selected examples.
 
+
+
 ### 8.4 Staged implementation and research plan
 
-**Stage 0 — Explanation contract and logging.** Define the evidence schema, pairwise decision target, candidate-slate semantics, rule/knowledge versioning, and protected logging policy. This is necessary engineering, not novelty.
+**Stage 0 — Explanation contract and logging (partially implemented).** The versioned, torch-free evidence schema and fail-closed synthetic contract tests are implemented in `[pipeline.explainability](../pipeline/explainability/contract.py)` and `[tests/test_explanation_contract.py](../tests/test_explanation_contract.py)`. The current schema enforces evidence hierarchy and margin conservation, distinguishes hard safety certificates from learned evidence, links retrieved knowledge to reranking evidence explicitly, requires replayed clinically permitted model counterfactuals, and stores references instead of clinical rows or source text. Candidate-slate capture beyond the explained pair, protected logging/storage policy, component adapters, and runtime integration remain planned. This is necessary engineering, not evidence of novelty or clinical validation.
 
 **Stage 1 — Validated component explanations.** Implement grouped contrastive IG plus occlusion, a GNNExplainer baseline plus necessity/sufficiency, exact fusion decomposition, safety certificates, and deterministic templates. Benchmark cost and stability on synthetic fixtures and held-out development data.
 
@@ -828,6 +872,8 @@ The user interface should label channels explicitly: **model evidence**, **safet
 **Stage 4 — Grounded language and clinician evaluation.** Add clause-level grounding/validation, then conduct a human-first clinician study with correct and incorrect AI advice. Do not make deployment claims from retrospective evaluation.
 
 ## 9. Final research recommendation
+
+
 
 ### 9.1 Recommended methods and combination
 
@@ -841,6 +887,8 @@ The minimum defensible explanation stack is:
 6. rank calibration plus explanation stability/intervals and abstention;
 7. optional clinically constrained model counterfactuals;
 8. a structured evidence ledger verbalised by templates or a clause-verified LLM.
+
+
 
 ### 9.2 Strongest research gap
 
@@ -858,6 +906,8 @@ The most realistic contribution is a combination of:
 - a conserved and uncertainty-aware evidence ledger;
 - clause-verifiable language;
 - a multi-level evaluation benchmark.
+
+
 
 ### 9.4 Proposed research question and hypotheses
 
@@ -880,6 +930,8 @@ Preregistered hypotheses could be:
 - `H3`: displaying rule certificates and uncertainty increases error detection and appropriate reliance without materially increasing decision time;
 - `H4`: clause validation reduces unsupported clinical claims to a preregistered near-zero threshold compared with free-form LLM explanation.
 
+
+
 ### 9.5 Paper-level contribution
 
 A strong journal or conference paper would contribute:
@@ -896,6 +948,8 @@ If the algorithmic novelty proves incremental after a formal review, the work ca
 
 ## 10. Selected bibliography
 
+
+
 ### General XAI and evaluation
 
 - Ribeiro, Singh, and Guestrin. “Why Should I Trust You?” Explaining the Predictions of Any Classifier. KDD 2016. [DOI 10.1145/2939672.2939778](https://doi.org/10.1145/2939672.2939778).
@@ -909,6 +963,8 @@ If the algorithmic novelty proves incremental after a formal review, the work ca
 - Hedström et al. Quantus: An Explainable AI Toolkit for Responsible Evaluation of Neural Network Explanations and Beyond. JMLR 2023. [Paper](https://www.jmlr.org/papers/v24/22-0142.html).
 - Watson et al. Explaining Predictive Uncertainty with Information Theoretic Shapley Values. NeurIPS 2023. [DOI 10.52202/075280-0320](https://doi.org/10.52202/075280-0320).
 - Hill et al. Boundary-Aware Uncertainty for Feature Attribution Explainers. AISTATS 2024. [Paper](https://proceedings.mlr.press/v238/hill24a.html).
+
+
 
 ### Transformer, GNN, ranking, and recommender explanation
 
@@ -926,6 +982,8 @@ If the algorithmic novelty proves incremental after a formal review, the work ca
 - Pliatsika et al. ShaRP: Explaining Rankings and Preferences with Shapley Values. PVLDB 2025. [DOI 10.14778/3749646.3749682](https://doi.org/10.14778/3749646.3749682).
 - Zhang et al. A Reusable Model-agnostic Framework for Faithfully Explainable Recommendation and System Scrutability. ACM TOIS 2023. [DOI 10.1145/3605357](https://doi.org/10.1145/3605357).
 - Yang et al. Leveraging Graph Path Evidence for Explainable Recommender Systems (KAPER). Knowledge-Based Systems 2026. [DOI 10.1016/j.knosys.2026.116236](https://doi.org/10.1016/j.knosys.2026.116236).
+
+
 
 ### Healthcare and medication recommendation
 
@@ -945,12 +1003,16 @@ If the algorithmic novelty proves incremental after a formal review, the work ca
 - Albahri et al. Explainable Artificial Intelligence in Clinical Decision Support Systems: Meta-analysis. Healthcare 2025. [DOI 10.3390/healthcare13172154](https://doi.org/10.3390/healthcare13172154).
 - Liu et al. Explainability, Safety, Privacy, and Fairness Across the Health Recommender Lifecycle. 2026. [Open article](https://pmc.ncbi.nlm.nih.gov/articles/PMC13273477/).
 
+
+
 ### LLM explanation faithfulness
 
 - Turpin et al. Language Models Don't Always Say What They Think: Unfaithful Explanations in Chain-of-Thought Prompting. NeurIPS 2023. [DOI 10.52202/075280-3275](https://doi.org/10.52202/075280-3275).
 - Madsen et al. Are Self-Explanations from Large Language Models Faithful? Findings of ACL 2024. [Paper](https://aclanthology.org/2024.findings-acl.19/).
 - Lyu et al. Towards Faithful Model Explanation in NLP: A Survey. Computational Linguistics 2024. [DOI 10.1162/coli_a_00511](https://doi.org/10.1162/coli_a_00511).
 - Asgari et al. A Framework to Assess Clinical Safety and Hallucination Rates of LLMs for Medical Text Summarisation. npj Digital Medicine 2025. [DOI 10.1038/s41746-025-01670-7](https://doi.org/10.1038/s41746-025-01670-7).
+
+
 
 ## Bottom line
 
