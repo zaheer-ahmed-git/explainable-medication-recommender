@@ -826,12 +826,30 @@ scripts/calculco/send_oar_mail.sh you@example.com "Calculco OAR test" "Watcher m
 ```bash
 scripts/calculco/submit_phase8_p0_paired_oof.sh select
 scripts/calculco/submit_phase8_p0_paired_oof.sh refit
+scripts/calculco/submit_phase8_p0_paired_oof.sh calibrate
 ```
 
 `select` is a CPU OAR job. It requires exact fold/candidate/label alignment and
 searches the locked alpha grid `0.000..0.250` by `0.005` on paired train OOF
 only. `refit` reuses the existing full GNN when variant and epoch count match;
-otherwise it runs one selected-variant refit.
+otherwise it runs one selected-variant refit. `calibrate` is a CPU OAR stage
+that holds out each deterministic patient fold in turn, evaluates temperature
+and positive-slope affine sigmoid mappings for both paired hybrid and
+Transformer OOF scores, and freezes the lowest-Brier mapping with log loss as
+the tie-breaker. Set `PAIRED_INCLUDE_ISOTONIC=1` before submission to include
+the non-decreasing isotonic challenger. Like `select`, the calibrate wrapper
+runs `uv sync --group neural` so it does not strip torch from the shared
+project environment; the calibration import path itself is torch-free. Calibration
+parameters remain under
+the ignored paired-protocol root; only aggregate fold metrics and suppressed
+reliability bins are written to
+`reports/phase8_p0_paired_oof_calibration.json`.
+
+The calibration stage keeps `rank_score` unchanged and defines a separate
+`probability_observed_prescription` mapping. It does not reopen or overwrite the
+one-shot ranking gate. Applying the mapping to the already consumed MIMIC test
+is retrospective only and must not select the mapping or support a new
+confirmatory claim.
 
 The final boundary is blocked until a reviewed newly isolated gate and matching
 cache partitions exist. The pipeline never chooses that split automatically.

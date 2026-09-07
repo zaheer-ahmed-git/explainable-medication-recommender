@@ -6,7 +6,8 @@
 #   scripts/calculco/submit_phase8_p0_paired_oof.sh transformer-fold FOLD
 #   scripts/calculco/submit_phase8_p0_paired_oof.sh gnn-variant VARIANT
 #   scripts/calculco/submit_phase8_p0_paired_oof.sh gnn-chain-remaining
-#   scripts/calculco/submit_phase8_p0_paired_oof.sh {transformer|gnn|select|refit|score}
+#   scripts/calculco/submit_phase8_p0_paired_oof.sh \
+#     {transformer|gnn|select|refit|calibrate|score}
 
 set -euo pipefail
 umask 077
@@ -34,6 +35,7 @@ job_env="$script_dir/phase8_p0_paired_oof_job.env"
   printf 'PAIRED_DEVICE=%q\n' "${PAIRED_DEVICE:-cuda}"
   printf 'PAIRED_GNN_PRECISION=%q\n' "${PAIRED_GNN_PRECISION:-bf16}"
   printf 'PAIRED_TRANSFORMER_FIXED_EPOCHS=%q\n' "${PAIRED_TRANSFORMER_FIXED_EPOCHS:-}"
+  printf 'PAIRED_INCLUDE_ISOTONIC=%q\n' "${PAIRED_INCLUDE_ISOTONIC:-0}"
   printf 'PAIRED_GATE_SCORE_CONFIRM=%q\n' "${PAIRED_GATE_SCORE_CONFIRM:-}"
   printf 'DUCKDB_THREADS=%q\n' "${DUCKDB_THREADS:-8}"
   printf 'DUCKDB_MEMORY_LIMIT=%q\n' "${DUCKDB_MEMORY_LIMIT:-24GB}"
@@ -121,6 +123,13 @@ submit_select() {
     -S "$script_dir/phase8_p0_paired_oof_select.sh"
 }
 
+submit_calibrate() {
+  oarsub \
+    -O "$project_home/scripts/calculco/logs/rm_phase8_p0_paired_calibrate_%jobid%.out" \
+    -E "$project_home/scripts/calculco/logs/rm_phase8_p0_paired_calibrate_%jobid%.err" \
+    -S "$script_dir/phase8_p0_paired_oof_calibrate.sh"
+}
+
 case "$action" in
   all-oof)
     # Independent submissions allow the five Transformer folds and six GNN
@@ -159,6 +168,7 @@ case "$action" in
     ;;
   select) submit_select ;;
   refit) submit_single refit ;;
+  calibrate) submit_calibrate ;;
   score)
     if [[ "${PAIRED_GATE_SCORE_CONFIRM:-}" != "I_UNDERSTAND_ONE_SHOT" ]]; then
       echo "Refusing one-shot gate submission without explicit confirmation." >&2
@@ -167,7 +177,7 @@ case "$action" in
     submit_single score
     ;;
   *)
-    echo "Usage: $0 {all-oof|transformer|gnn|transformer-fold FOLD|gnn-variant VARIANT|gnn-chain-remaining|select|refit|score}" >&2
+    echo "Usage: $0 {all-oof|transformer|gnn|transformer-fold FOLD|gnn-variant VARIANT|gnn-chain-remaining|select|refit|calibrate|score}" >&2
     exit 2
     ;;
 esac

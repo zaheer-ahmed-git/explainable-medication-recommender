@@ -24,7 +24,7 @@ from pipeline.gnn_training.contract import (
     preflight_errors,
 )
 from pipeline.gnn_training.data import configure_connection, write_json
-from pipeline.gnn_training.model import ABLATION_VARIANTS
+from pipeline.gnn_training.graph_encode import ABLATION_VARIANTS
 from pipeline.late_fusion_protocol import (
     PAIRED_OOF_PROTOCOL_VERSION,
     PAIRED_OOF_SELECTION_SCHEMA_VERSION,

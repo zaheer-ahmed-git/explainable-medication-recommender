@@ -145,22 +145,39 @@ task context, source-code inspection, or local agent memory.
   branch, and trains/qualifies late and zero-initialized residual fusion. Exact
   artifact hashes, canonical candidate reconciliation, non-finite-value
   rejection, and atomic one-shot final markers fail closed. The full-train
-  graph is never selection-eligible. The Transformer cache is a full-train
-  refit rather than Transformer OOF, so late alpha is documented as train
-  meta-fitting over GNN OOF plus a fixed Transformer covariate; promotion uses
-  the separate validation gate. Focused synthetic tests pass, including the
-  complete workflow. Protected preparation and cross-fit caches completed.
+  graph is never selection-eligible. The first asymmetric fusion track used a
+  full-train Transformer covariate with GNN OOF logits and failed the
+  validation hybrid bar (`hybrid_qualified=false`). The paired-OOF protocol
+  (`phase8-p0-paired-oof-late-fusion-v2`) replaces that estimand: Transformer
+  OOF on the same five patient folds, joint selection of GNN `full` and alpha
+  `0.25`, and a one-shot MIMIC-test ranking gate that passed
+  (`final_scoring_authorized=true`). Hybrid ranking lift on that gate does not
+  imply better probability calibration than the Transformer. Focused synthetic
+  tests cover the workflow. Protected preparation, OOF recovery, selection,
+  refit, and paired gate scoring completed; see
+  `Documentation/PairedOOFLateFusionProtocol.md` and
+  `Documentation/HybridModelResultReview.md`. A separate
+  `phase8-p0-paired-oof-calibration-v1` stage is implemented and synthetically
+  verified: patient-fold-held-out comparison of temperature, positive-slope
+  affine sigmoid, and optional isotonic mappings for both hybrid and
+  Transformer, with immutable model/OOF provenance and unchanged ranking.
+  First protected calibrate attempt (OAR `22661`) failed because bare `uv sync`
+  removed torch while `paired_oof` still imported `ABLATION_VARIANTS` from the
+  torch model module; variants now live in torch-free `graph_encode`, and the
+  calibrate wrapper syncs `--group neural` like select. Protected calibration
+  fitting remains pending after that fix, and the consumed test gate may be
+  used only retrospectively for calibration analysis.
   Development job 8825 failed before optimization because edge partitions can
-  contain multiple DuckDB Parquet fragments; the loader now assembles them
-  deterministically. Job 10962 passed loading but failed when clipping saw
-  non-finite mixed-precision gradients. AMP overflow now triggers bounded
-  loss-scale backoff and same-batch retry; full precision remains an explicit
-  fallback. Job 12214 then exposed the allocation-heavy per-edge relation
-  transform and was cancelled. Relation aggregation is now relation-grouped,
-  batches have group/node/edge ceilings, A100 precision defaults to BF16,
-  cross-fit hashing is single-pass with aggregate heartbeats, and atomic
-  epoch/completed-fold restart artifacts live outside the immutable cross-fit
-  tree. A replacement run and all protected metrics remain pending.
+  contain multiple DuckDB
+  Parquet fragments; the loader now assembles them deterministically. Job
+  10962 passed loading but failed when clipping saw non-finite mixed-precision
+  gradients. AMP overflow now triggers bounded loss-scale backoff and
+  same-batch retry; full precision remains an explicit fallback. Job 12214 then
+  exposed the allocation-heavy per-edge relation transform and was cancelled.
+  Relation aggregation is now relation-grouped, batches have group/node/edge
+  ceilings, A100 precision defaults to BF16, cross-fit hashing is single-pass
+  with aggregate heartbeats, and atomic epoch/completed-fold restart artifacts
+  live outside the immutable cross-fit tree.
   The P1 feature/relation v2 code adds a stay query, numeric/time attributes,
   relation gates/dropout, rank-only and dense-relation controls, OOF
   calibration, compact partitions, and array fold tasks. It requires a fresh

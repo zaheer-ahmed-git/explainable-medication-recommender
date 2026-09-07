@@ -4,7 +4,26 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ## [Unreleased]
 
+### Fixed
+
+- Paired-OOF calibrate OAR job `22661` failed on import after bare `uv sync`
+  removed torch from the shared environment. `ABLATION_VARIANTS` now lives in
+  torch-free `pipeline.gnn_training.graph_encode`, `paired_oof` imports it from
+  there, and `phase8_p0_paired_oof_calibrate.sh` uses `uv sync --group neural`
+  like the select worker so CPU calibration no longer depends on a torch model
+  import or strips the neural group.
+
 ### Added
+
+- Paired-OOF probability calibration protocol
+  (`phase8-p0-paired-oof-calibration-v1`) for the frozen hybrid and Transformer.
+  The CPU stage compares temperature and positive-slope affine sigmoid mappings,
+  with optional isotonic regression, using patient-fold-held-out train OOF
+  predictions; selects by Brier then log loss; preserves an independent
+  `rank_score`; and freezes alpha, seed, model/selection hashes, and OOF hashes
+  in protected storage. Aggregate reports suppress low-count reliability bins.
+  Focused synthetic tests pass; protected fitting and confirmatory calibration
+  evaluation remain pending.
 
 - A versioned, framework-independent explanation evidence contract in
   `pipeline.explainability` for pairwise medication-ranking decisions. The
@@ -17,15 +36,17 @@ All notable repository changes are recorded here. Dates use ISO 8601.
   validation remain planned.
 
 - Versioned paired-OOF late-fusion protocol
-  (`phase8-p0-paired-oof-late-fusion-v2`): five independently queueable,
-  fold-isolated Transformer jobs with fit-only preprocessing and fixed epochs;
-  six parallel GNN-variant OOF materializers reusing existing checkpoints;
-  exact candidate/fold/label alignment; joint variant and `0.000..0.250` alpha
-  selection at `0.005` resolution; late-only refit/reuse and inference; a
-  fail-closed newly frozen gate manifest; and atomic one-shot promotion scoring.
-  Added CPU/GPU Calculco workers, measured-runtime planning guidance, and
-  synthetic paired-OOF/alignment tests. Protected paired recovery is in
-  progress; selection and gate scoring remain pending.
+  (`phase8-p0-paired-oof-late-fusion-v2`): five fold-isolated Transformer OOF
+  jobs; six GNN-variant OOF materializers; joint selection of GNN `full` and
+  alpha `0.25` on paired train OOF (NDCG@10 lift about `+0.0092`); three-epoch
+  full GNN refit; one-shot MIMIC-test gate `mimiciv-test-paired-oof-v1` which
+  passed with about `+0.0131` NDCG@10 lift vs the frozen Transformer
+  (`final_scoring_authorized=true`). Ranking promotion is recorded separately
+  from probability calibration (hybrid Brier/ECE worse than Transformer on the
+  same test rows). Calculco recovery workers, CUDA fail-fast checks, and
+  synthetic paired-OOF tests accompany the protocol. Aggregate review:
+  `Documentation/HybridModelResultReview.md`. The earlier asymmetric fusion
+  selection (`hybrid_qualified=false`) remains historical.
 
 - Programmatic hybrid architecture diagrams
   (`uv run python -m visualization.hybrid_architecture_diagrams`): stacked-block

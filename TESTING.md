@@ -57,6 +57,10 @@ Paired-OOF tests additionally cover the exact `0.005` alpha grid,
 fold-isolated fixed-epoch Transformer OOF training, restored train-scope output,
 joint GNN-variant/alpha selection, fail-closed label/fold alignment, and
 explicit-CUDA rejection when a scheduler allocation exposes no CUDA device.
+They also cover temperature, positive-slope affine-sigmoid, and isotonic
+calibration; patient-fold-held-out calibration selection; unchanged rank
+scores; separate hybrid/Transformer mappings; model and OOF hash provenance;
+and aggregate-only calibration reports.
 The Phase 4-9 visualization generator has a focused synthetic test that verifies
 aggregate-only meeting-pack generation without raw clinical rows.
 

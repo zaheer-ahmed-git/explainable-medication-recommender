@@ -34,6 +34,7 @@ STAGES = (
     "materialize-gnn-oof",
     "select-paired-oof",
     "refit-paired-gnn",
+    "calibrate-paired-oof",
     "score-paired-late",
     "select-gnn",
     "refit-gnn",
@@ -48,6 +49,7 @@ GNN_STAGES = frozenset(
         "materialize-gnn-oof",
         "select-paired-oof",
         "refit-paired-gnn",
+        "calibrate-paired-oof",
         "score-paired-late",
         "select-gnn",
         "refit-gnn",
@@ -347,6 +349,13 @@ def required_stage_artifacts(
         return {}
 
     artifacts = graph_cache_artifacts(config)
+    if stage == "calibrate-paired-oof":
+        artifacts.update(
+            {
+                "paired_oof_selection": config.paired_oof_selection_path,
+                "paired_late_checkpoint": config.paired_late_checkpoint_path,
+            }
+        )
     if stage in FUSION_STAGES:
         artifacts.update(transformer_cache_artifacts(config))
         artifacts.update(checkpoint_artifacts(config, branch="gnn"))

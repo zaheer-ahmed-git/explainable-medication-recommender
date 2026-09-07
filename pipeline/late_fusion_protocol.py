@@ -14,6 +14,9 @@ PAIRED_OOF_PROTOCOL_VERSION = "phase8-p0-paired-oof-late-fusion-v2"
 PAIRED_OOF_SCHEMA_VERSION = "phase8-p0-paired-oof-predictions-v1"
 PAIRED_OOF_SELECTION_SCHEMA_VERSION = "phase8-p0-paired-oof-selection-v1"
 FROZEN_GATE_SCHEMA_VERSION = "phase8-p0-frozen-late-fusion-gate-v1"
+PAIRED_CALIBRATION_PROTOCOL_VERSION = "phase8-p0-paired-oof-calibration-v1"
+PAIRED_CALIBRATION_SCHEMA_VERSION = "phase8-p0-paired-oof-calibration-artifact-v1"
+PAIRED_CALIBRATION_REPORT_SCHEMA_VERSION = "phase8-p0-paired-oof-calibration-report-v1"
 
 PRODUCTION_FOLD_COUNT = 5
 ALPHA_MIN = Decimal("0.000")
@@ -58,3 +61,14 @@ def paired_selection_artifact_path(gnn_root: Path) -> Path:
 
 def paired_late_checkpoint_path(gnn_root: Path) -> Path:
     return protocol_root(Path(gnn_root).parent) / "checkpoints" / "late_fusion.json"
+
+
+def paired_calibration_artifact_path(gnn_root: Path) -> Path:
+    """Return the restricted, versioned paired-OOF calibration artifact path."""
+
+    return (
+        protocol_root(Path(gnn_root).parent)
+        / "calibration"
+        / PAIRED_CALIBRATION_PROTOCOL_VERSION
+        / "calibration.json"
+    )

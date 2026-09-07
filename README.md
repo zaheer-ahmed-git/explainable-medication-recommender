@@ -15,8 +15,9 @@ prescribe medication, and must not replace professional clinical judgment.
 ## Current Status
 
 The repository is in the data-foundation and experimental-model implementation
-stage. The software is research-only and protected-scale GNN results are still
-pending.
+stage. The software is research-only. Protected Phase D ranking branches and
+the paired-OOF late-fusion gate have completed aggregate evaluation; they do
+not authorize clinical use.
 
 - The research objective and target architecture are documented.
 - Licensed MIMIC-IV v3.1, MIMIC-IV-Note v2.2, and eICU-CRD v2.0 data are
@@ -66,20 +67,30 @@ pending.
   PyTorch R-GCN-style ranker, six pre-registered representation/relation controls,
   full-train refit, canonical standalone scoring, late/residual fusion, and
   fail-closed development/final gates. Protected training and development
-  scoring completed: the standalone GNN qualified for its graph-model track,
-  while late fusion improved Transformer validation NDCG@10 by about `+0.00484`
-  but missed the pre-registered `+0.005` hybrid promotion threshold; the frozen
-  Transformer was retained. The versioned paired-OOF late-fusion protocol is
-  now implemented to remove the earlier GNN-OOF/full-refit-Transformer
-  asymmetry, jointly select GNN variant and a `0.005` alpha grid on paired OOF,
-  reuse/refit only the selected full GNN, and enforce a one-shot newly frozen
-  gate. The first protected attempt completed four of five Transformer folds;
-  one Transformer fold and five GNN tasks exposed an unusable Calculco GPU
-  slot, while the full GNN materializer exceeded its former 12-hour walltime.
-  Targeted recovery now uses CUDA fail-fast checks, the proven GPU pool, and a
-  48-hour reservation; fold-1/full-variant recovery jobs `22470` and `22471`
-  are running after successful CUDA preflight. Selection and gate evaluation
-  remain pending.
+  scoring completed: the standalone GNN qualified for its graph-model track.
+  The first asymmetric late-fusion run improved Transformer validation NDCG@10
+  by about `+0.00484` but missed the pre-registered `+0.005` hybrid bar
+  (`reports/phase8_p0_fusion_training_selection.json` remains historical
+  `hybrid_qualified=false`). The versioned paired-OOF late-fusion protocol
+  (`phase8-p0-paired-oof-late-fusion-v2`) then replaced that asymmetric
+  evidence: five fold-isolated Transformer OOF folds, six GNN-variant OOF
+  materializations, joint selection of GNN variant `full` and alpha `0.25` on
+  paired train OOF (NDCG@10 lift about `+0.0092` over the best single branch),
+  a three-epoch full GNN refit, and a one-shot MIMIC-test gate
+  (`mimiciv-test-paired-oof-v1`). That gate passed with NDCG@10 lift about
+  `+0.0131` vs the frozen Transformer, MRR@10 and Hit@10 also improved, and
+  `final_scoring_authorized=true` in
+  `reports/phase8_p0_paired_oof_late_fusion_gate_score.json`. Ranking
+  promotion does not imply better probability calibration: on the same test
+  gate the hybrid has higher Brier score and 10-bin ECE than the Transformer.
+  A separate paired-OOF calibration stage is implemented under protocol
+  `phase8-p0-paired-oof-calibration-v1`: it compares temperature, positive-slope
+  affine sigmoid, and optional isotonic mappings in patient-fold-held-out CV for
+  both the hybrid and Transformer, while preserving the frozen ranking score.
+  Its protected fit and any retrospective test analysis remain pending.
+  Disclosure: MIMIC test was previously scored for the frozen Transformer
+  elsewhere in Phase 8. See `Documentation/PairedOOFLateFusionProtocol.md`
+  and `Documentation/HybridModelResultReview.md`.
   The versioned P1 representation is implemented in code: an explicit stay
   query node, fold-safe numeric value/deviation/trend/recency features, time-bin
   embeddings, learned relation gates/dropout, a rank-only baseline, dense
@@ -106,7 +117,9 @@ pending.
   bounded graph loading and graph-size batching, production-shape relation
   aggregation, exact-hash single-pass verification, restart boundaries,
   model/fusion behavior, canonical scoring, final-run claims, and an
-  end-to-end synthetic workflow.
+  end-to-end synthetic workflow. Paired-OOF tests also cover calibration
+  monotonicity, patient-fold isolation, branch-specific mapping selection,
+  immutable model/OOF provenance, and aggregate-only reporting.
 
 Do not interpret the poster's illustrative medication table or planned system
 diagram as a clinically validated implementation.
@@ -175,10 +188,12 @@ a medication is clinically optimal.
 - `Documentation/HybridModelFeatureStrategy.md`: planned Transformer/GNN
   feature boundaries and selection gates (post-8B; not neural training yet).
 - `Documentation/PhaseDRankingModelsExplained.md`: Transformer, standalone
-  GNN, and late-fusion inputs/outputs, gates, and why hybrid was not promoted.
+  GNN, and late-fusion inputs/outputs; asymmetric vs paired-OOF hybrid gates.
 - `Documentation/PairedOOFLateFusionProtocol.md`: paired five-fold evidence,
-  joint GNN/alpha selection, parallel OAR execution, one-shot gate contract,
-  and measured runtime estimates.
+  joint GNN/alpha selection, OAR execution, one-shot gate contract, and
+  protected completion status.
+- `Documentation/HybridModelResultReview.md`: aggregate ranking and
+  calibration comparison for the paired late-fusion gate.
 - `visualization/`: aggregate-only Phase 4-9 meeting figure-pack generator.
 - `Documentation/SimilarPapers.md`: related-work notes.
 - `FinalPosterCDS.pdf`: research poster.

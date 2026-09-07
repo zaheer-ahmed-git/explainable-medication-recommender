@@ -27,6 +27,17 @@ PAD_INDEX = 0
 UNK_INDEX = 1
 RESERVED_TOKEN_COUNT = 2
 
+# Pre-registered GNN ablations live here so CPU selection/calibration can import
+# them without the optional torch/neural dependency group.
+ABLATION_VARIANTS = (
+    "full",
+    "rank_only",
+    "no_message_passing",
+    "no_condition_medication",
+    "no_dense_lab_vital",
+    "no_lab_vital_intervention",
+)
+
 NODE_TYPES = ("condition", "medication", "lab", "vital", "intervention", "stay")
 NODE_ROLES = (
     "query_condition",

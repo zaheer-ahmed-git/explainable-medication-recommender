@@ -1,12 +1,15 @@
 # Phase D Ranking Models Explained
 
-This note explains the three protected ranking branches used in Phase D, why
-**hybrid late fusion was not promoted**, what **standalone GNN qualification**
-means, and how **late fusion** works.
+This note explains the three protected ranking branches used in Phase D, how
+**asymmetric late fusion failed promotion**, how **paired-OOF late fusion**
+later cleared a newly frozen MIMIC-test gate, what **standalone GNN
+qualification** means, and how **late fusion** works.
 
 It is a research/engineering description only. Observed prescriptions are
 historical positives, not proof of optimal care. Aggregate metrics below come
-from development (MIMIC validation) reports under `reports/`.
+from reports under `reports/`. Validation numbers describe the earlier
+asymmetric fusion track; paired-OOF numbers describe protocol
+`phase8-p0-paired-oof-late-fusion-v2`.
 
 ---
 
@@ -134,12 +137,25 @@ candidate; late won the internal choice).
 - Fusion checkpoint metadata (selected weight, temperature, model choice).
 - Validation metrics and a **hybrid promotion gate** vs the Transformer.
 
-**Protected development (validation @10):**  
+**Protected development (validation @10, asymmetric track):**  
 nDCG ≈ **0.4177**, MRR ≈ **0.5300**, Hit ≈ **0.8842**  
-Selected GNN weight α ≈ **0.1** (see §4).
+Selected GNN weight α ≈ **0.1**. That run **missed** the `+0.005` promotion
+bar by about `0.00016` and was **not** authorized
+(`reports/phase8_p0_fusion_training_selection.json`).
 
-Residual hybrid (not selected): nDCG ≈ **0.4063** — worse than late on the
-pre-registered selection order.
+**Paired-OOF protocol (current hybrid decision):**  
+Selected GNN variant **`full`**, α = **0.25**. Train OOF NDCG@10 lift over
+the best single branch ≈ **+0.0092**. One-shot MIMIC-test gate
+`mimiciv-test-paired-oof-v1` NDCG@10 ≈ **0.4250** vs Transformer ≈ **0.4119**
+(lift ≈ **+0.0131**); MRR@10 and Hit@10 also improved;
+`final_scoring_authorized=true` in
+`reports/phase8_p0_paired_oof_late_fusion_gate_score.json`. On the same test
+rows, hybrid Brier ≈ **0.262** and 10-bin ECE ≈ **0.420** vs Transformer
+Brier ≈ **0.210** and ECE ≈ **0.337** (worse probability calibration despite
+better ranking). See `Documentation/HybridModelResultReview.md`.
+
+Residual hybrid (asymmetric track, not selected): nDCG ≈ **0.4063** — worse
+than late on the pre-registered selection order.
 
 ---
 
@@ -229,11 +245,13 @@ scales; mixing without normalization would let one model dominate by accident.
 - Selection of \(\alpha\): best train nDCG@10 (then MRR, Hit; prefer smaller
   \(\alpha\) on ties).
 
-**Selected:** \(\alpha \approx 0.1\) → fused score is **90% Transformer
-z-score + 10% GNN z-score**.
+**Selected (asymmetric track):** \(\alpha \approx 0.1\) → fused score is
+**90% Transformer z-score + 10% GNN z-score**.
 
-That small weight matches the outcome: hybrid barely beats the Transformer,
-and does not clear the +0.005 promotion bar.
+That small weight matches the asymmetric outcome: hybrid barely beats the
+Transformer and does not clear the +0.005 promotion bar. The paired-OOF
+protocol later selected \(\alpha = 0.25\) with GNN `full` and cleared the
+MIMIC-test ranking gate (§5.3).
 
 ### 4.4 Late vs residual (internal choice, before the Transformer gate)
 
@@ -247,68 +265,90 @@ checkpoint records `selected_model = late`.
 
 ---
 
-## 5. Why hybrid promotion failed
+## 5. Asymmetric hybrid promotion failed; paired-OOF hybrid passed
 
 ### 5.1 Different gate, different reference
 
 | Gate | Candidate | Reference | Purpose |
 |------|-----------|-----------|---------|
 | GNN standalone | GNN | Graph XGBoost | Is the GNN a useful **relation** branch? |
-| Hybrid promotion | Late fusion | **Frozen Transformer** | Does fusion beat the **context** model enough to replace it? |
+| Hybrid promotion | Late fusion | **Frozen Transformer** | Does fusion beat the **context** model enough to replace it as the ranking scorer? |
 
-Hybrid is **not** judged against XGBoost. It must beat the Transformer.
+Hybrid is **not** judged against XGBoost. It must beat the Transformer on
+ranking metrics.
 
-### 5.2 Numbers
+### 5.2 Asymmetric track (historical)
 
-| Model | nDCG@10 | Required for hybrid (Transformer + 0.005) |
-|-------|--------:|------------------------------------------:|
+| Model | nDCG@10 (validation) | Required (Transformer + 0.005) |
+|-------|---------------------:|--------------------------------:|
 | Transformer | 0.4129 | — |
-| Late fusion | **0.4177** | **≈ 0.4179** |
+| Late fusion (α≈0.1) | **0.4177** | **≈ 0.4179** |
 | Δ | **+0.00484** | need **≥ +0.005** |
 
-MRR/Hit deltas were positive (fine). The **only** failure was nDCG lift
-**0.00016 short** of the pre-registered +0.005 bar.
+MRR/Hit deltas were positive. The **only** failure was nDCG lift about
+**0.00016 short** of the pre-registered bar.
 
-**Decision:** `retain_frozen_transformer`  
+**Decision (asymmetric track):** `retain_frozen_transformer`  
 `hybrid_qualified = false`  
 `final_scoring_authorized = false` for hybrid  
-(`reports/phase8_p0_fusion_training_selection.json`).
+(`reports/phase8_p0_fusion_training_selection.json`). Keep that file as
+historical; do not treat it as the current paired-OOF decision.
 
-### 5.3 What that does *not* mean
+### 5.3 Paired-OOF track (current)
 
-- It does **not** mean fusion is useless or that GNN adds nothing.
-- Hybrid still improves Transformer slightly (+0.0048 nDCG@10).
-- It **does** mean the project’s fail-closed rule refuses to **promote** hybrid
-  as the primary gated scorer / authorize one-shot **final hybrid** test
-  scoring.
+| Model | nDCG@10 (MIMIC test) | Required (Transformer + 0.005) |
+|-------|---------------------:|--------------------------------:|
+| Transformer | 0.4119 | — |
+| Paired late fusion (`full`, α=0.25) | **0.4250** | **≈ 0.4169** |
+| Δ | **+0.0131** | need **≥ +0.005** |
 
-Gates exist so tiny noisy lifts do not rewrite the frozen stack.
+MRR@10 Δ ≈ **+0.0122**, Hit@10 Δ ≈ **+0.0116**. Gate
+`mimiciv-test-paired-oof-v1` recorded `qualified=true` and
+`final_scoring_authorized=true`
+(`reports/phase8_p0_paired_oof_late_fusion_gate_score.json`).
+
+Disclosure: the frozen Transformer was previously scored on MIMIC test
+elsewhere in Phase 8, so the split is not wholly unseen for the broader
+program. The paired hybrid score on that gate is new.
+
+### 5.4 Ranking promotion vs probability calibration
+
+The hybrid gate is a **ranking** decision (NDCG/MRR/Hit). On the same test
+candidates, hybrid **sigmoid scores** are **worse calibrated** than the
+Transformer (higher Brier score and 10-bin ECE). That does **not** reverse
+the ranking promotion; it means fused scores should not be treated as better
+probability estimates without a separate calibration study.
+
+### 5.5 What the asymmetric failure did *not* mean
+
+- It did **not** mean fusion is useless or that GNN adds nothing.
+- Asymmetric hybrid still improved Transformer slightly (+0.0048 nDCG@10).
+- It **did** mean the fail-closed rule refused to promote that first hybrid
+  until a leakage-safe paired-OOF protocol cleared a newly frozen gate.
 
 ---
 
-## 6. Why earlier advice said “Transformer or qualified GNN” (not promoted hybrid)
-
-That advice was about **promotion and final-scoring policy**, not about
-deleting hybrid from the research story.
+## 6. How to use each artifact after paired-OOF promotion
 
 | Artifact | Use it for |
 |----------|------------|
-| **Qualified standalone GNN** | Relation-branch claims; optional `final score-gnn`; graph attributions in explainability |
-| **Frozen Transformer** | Context-branch claims; hybrid gate reference; token/context attributions |
-| **Late fusion (not promoted)** | Ablation / analysis: “10% GNN z-score helps a little but misses +0.005”; evidence that fusion is near the bar |
+| **Qualified standalone GNN** | Relation-branch claims; optional `final score-gnn`; graph attributions |
+| **Frozen Transformer** | Context-branch claims; hybrid gate reference; better-calibrated score magnitudes on the paired test gate |
+| **Paired late fusion (promoted for ranking)** | Ranking claims under protocol v2; disclose test-split reuse for Transformer and worse hybrid calibration |
+| **Asymmetric late fusion (historical)** | Ablation story: α≈0.1 nearly cleared +0.005 on validation, then superseded |
 
-You **can** still study hybrid in papers and explainability prototypes. You
-should **not** call it the gated promoted hybrid or run
-`final score-fusion` without a reviewed policy change, because
-`final_scoring_authorized` is false.
+You may still study historical asymmetric hybrid numbers for papers. Prefer
+paired-OOF aggregates when stating the current hybrid ranking result. Do not
+run the old `final score-fusion` path as if
+`phase8_p0_fusion_training_selection.json` authorized it.
 
-For **Milestone 9 grounded explanation**, the natural primary targets are:
+For **Milestone 9 grounded explanation**, natural primary targets remain:
 
 1. Explain **Transformer** rankings (context / feature evidence), and/or  
 2. Explain **GNN** rankings (subgraph / relation evidence),  
 
-and optionally show how late fusion would re-rank when \(\alpha > 0\), without
-pretending hybrid cleared promotion.
+and show how paired late fusion re-ranks when \(\alpha = 0.25\), with the
+calibration caveat above.
 
 ---
 
@@ -325,8 +365,8 @@ Locked ranking table (PCM) + subgraphs + features
         │                   │
         └───────────────────┴─► Late fusion (α on z-scores)
                                       │
-                                      ├─ vs Transformer gate → not promoted
-                                      └─ checkpoint kept for analysis
+                                      ├─ asymmetric validation gate → not promoted (historical)
+                                      └─ paired-OOF MIMIC-test gate → ranking promoted (protocol v2)
 ```
 
 ---
@@ -347,21 +387,27 @@ Locked ranking table (PCM) + subgraphs + features
 |--------|-----------------|
 | `reports/phase8_p0_gnn_score_evaluation.json` | GNN vs graph XGB metrics |
 | `reports/phase8_p0_gnn_training_selection.json` | GNN qualification / final auth |
-| `reports/phase8_p0_fusion_training_evaluation.json` | Late vs residual; α; train meta-fit |
-| `reports/phase8_p0_fusion_score_evaluation.json` | Hybrid vs Transformer metrics |
-| `reports/phase8_p0_fusion_training_selection.json` | Hybrid gate decision |
+| `reports/phase8_p0_fusion_training_evaluation.json` | Asymmetric late vs residual; α; train meta-fit (historical) |
+| `reports/phase8_p0_fusion_score_evaluation.json` | Asymmetric hybrid vs Transformer on validation (historical) |
+| `reports/phase8_p0_fusion_training_selection.json` | Asymmetric hybrid gate decision (`hybrid_qualified=false`) |
+| `reports/phase8_p0_paired_oof_late_fusion_selection.json` | Paired OOF joint variant/alpha selection |
+| `reports/phase8_p0_paired_oof_gnn_refit.json` | Selected full GNN refit / reuse |
+| `reports/phase8_p0_paired_oof_late_fusion_gate_score.json` | Paired one-shot MIMIC-test ranking gate + calibration aggregates |
+| `Documentation/HybridModelResultReview.md` | Human-readable aggregate comparison |
 
 Code entry points:
 
 - Transformer: `pipeline/neural_training/`
 - GNN: `pipeline/gnn_training/` (`train-gnn-fold`, `select-gnn`, `refit-gnn`, `score-gnn`)
-- Fusion: `pipeline/gnn_training/fusion.py`, `train_fusion.py`, `score_fusion.py`
+- Asymmetric fusion (historical): `pipeline/gnn_training/fusion.py`, `train_fusion.py`, `score_fusion.py`
+- Paired late fusion: `pipeline/gnn_training/paired_oof.py`, `paired_late.py`
 
 ---
 
 ## 10. Clinical / research caveats
 
 - Labels are **observed prescribing**, not gold-standard optimal therapy.
-- Development metrics are **validation**, not the one-shot MIMIC test.
+- Development metrics may be **validation** (asymmetric track) or **MIMIC test**
+  (paired-OOF gate); always name the split and protocol version.
 - eICU remains coverage-oriented until a separately reviewed mapping rebuild.
 - This document does not authorize clinical use or prescribe treatments.

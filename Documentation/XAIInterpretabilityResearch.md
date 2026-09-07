@@ -79,8 +79,10 @@ LIME learns a sparse local surrogate around the patient being explained ([Ribeir
 Integrated Gradients (IG) accumulates gradients along a path from baseline `x'` to input `x`:
 
 
-\operatorname{IG}_i(x)=(x_i-x'_i)\int_0^1
-\frac{\partial f(x'+\alpha(x-x'))}{\partial x_i}d\alpha .
+The equation is:
+
+IGi(x)=(xi−xi′).∫0-1(∂f(x′+α(x−x′))/∂xi).dα
+
 
 
 It was designed to satisfy sensitivity and implementation invariance, with a completeness relation to the baseline output ([Sundararajan et al., 2017](https://proceedings.mlr.press/v70/sundararajan17a.html)). The baseline is therefore part of the scientific question, not a plotting option. Very recent EHR work proposes a validation-set mean embedding as a manifold-aware baseline and group-sparse IG to reduce dense token explanations; it reports improved comprehensiveness/sufficiency and 9–18% lower token-level group density on two EHR tasks ([Amirahmadi et al., 2026](https://proceedings.mlr.press/v297/amirahmadi26a.html)). This is strong prior art against claiming novelty for sparse or EHR-specific IG alone, but it is directly useful as a baseline and design reference.

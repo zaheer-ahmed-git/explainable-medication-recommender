@@ -6,11 +6,24 @@ from dataclasses import replace
 from pathlib import Path
 
 import duckdb
+import numpy as np
 import pytest
 
 from pipeline.extract_utils import parquet_scan
 from pipeline.gnn_training.config import GNNTrainingConfig
-from pipeline.gnn_training.model import ABLATION_VARIANTS
+from pipeline.gnn_training.graph_encode import ABLATION_VARIANTS
+from pipeline.gnn_training.paired_calibration import (
+    AFFINE_SIGMOID_METHOD,
+    ISOTONIC_METHOD,
+    TEMPERATURE_METHOD,
+    apply_calibrator,
+    calibrate_paired_oof,
+    calibrated_output_fields,
+    cross_validate_calibrators,
+    fit_calibrator,
+    load_paired_branch_calibrator,
+    probability_metrics,
+)
 from pipeline.gnn_training.paired_oof import select_paired_oof_late_fusion
 from pipeline.gnn_training.runtime import resolve_device as resolve_gnn_device
 from pipeline.late_fusion_protocol import (
@@ -21,7 +34,7 @@ from pipeline.late_fusion_protocol import (
 )
 from pipeline.neural_training.config import NeuralOptimization
 from pipeline.neural_training.train import resolve_device as resolve_neural_device
-from pipeline.training_contract import sha256_file, write_json
+from pipeline.training_contract import load_json, sha256_file, write_json
 from tests.milestone6_helpers import write_parquet_rows
 from tests.neural_training_helpers import write_neural_fixture
 
@@ -344,3 +357,185 @@ def test_frozen_gate_contract_is_explicit_and_fail_closed(tmp_path: Path) -> Non
     write_json(config.paired_frozen_gate_manifest_path, gate)
     with pytest.raises(ValueError, match="violates the paired OOF protocol"):
         _validate_frozen_gate(config, checkpoint)
+
+
+def test_affine_calibration_fixes_base_rate_without_changing_rank() -> None:
+    scores = np.linspace(-2.0, 2.0, 100)
+    labels = np.zeros(100, dtype=np.float64)
+    labels[-10:] = 1.0
+
+    temperature = fit_calibrator(TEMPERATURE_METHOD, scores, labels)
+    affine = fit_calibrator(AFFINE_SIGMOID_METHOD, scores, labels)
+    temperature_probabilities = apply_calibrator(scores, temperature)
+    outputs = calibrated_output_fields(scores, affine)
+
+    assert np.array_equal(outputs["rank_score"], scores)
+    assert np.all(np.diff(outputs["probability_observed_prescription"]) > 0.0)
+    assert affine["parameters"]["slope"] > 0.0
+    assert affine["parameters"]["intercept"] < 0.0
+    assert (
+        probability_metrics(
+            labels,
+            outputs["probability_observed_prescription"],
+        )["brier_score"]
+        < probability_metrics(
+            labels,
+            temperature_probabilities,
+        )["brier_score"]
+    )
+
+
+def test_calibration_selection_holds_out_complete_patient_folds() -> None:
+    scores = np.tile(np.array([-2.0, -1.0, 0.0, 1.0, 2.0]), 3)
+    labels = np.tile(np.array([0.0, 0.0, 0.0, 0.0, 1.0]), 3)
+    patient_folds = np.repeat(np.arange(3), 5)
+
+    result = cross_validate_calibrators(
+        scores,
+        labels,
+        patient_folds,
+        fold_count=3,
+        methods=(
+            TEMPERATURE_METHOD,
+            AFFINE_SIGMOID_METHOD,
+            ISOTONIC_METHOD,
+        ),
+    )
+
+    assert result["selected_method"] in {
+        TEMPERATURE_METHOD,
+        AFFINE_SIGMOID_METHOD,
+        ISOTONIC_METHOD,
+    }
+    for method_result in result["method_results"].values():
+        assert [
+            row["held_out_patient_fold"] for row in method_result["fold_metrics"]
+        ] == [0, 1, 2]
+        assert all(
+            row["held_out_patient_fold"] not in row["fit_fold_indices"]
+            for row in method_result["fold_metrics"]
+        )
+        assert method_result["cross_fitted_metrics"]["row_count"] == len(scores)
+
+
+def test_paired_oof_calibration_artifact_locks_models_and_predictions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _selection_config(tmp_path)
+    _write_selection_artifacts(config)
+    monkeypatch.setattr(
+        "pipeline.gnn_training.paired_oof.preflight_errors",
+        lambda _config, stage: [],
+    )
+    selection_report = select_paired_oof_late_fusion(config)
+    assert selection_report["status"] == "completed"
+    assert selection_report["selected_gnn_variant"] == "full"
+
+    # This stage consumes the already-frozen real decision (full, alpha=0.25),
+    # so make the small synthetic selection artifact reflect that contract.
+    selection = load_json(config.paired_oof_selection_path)
+    selection["selected_alpha"] = 0.25
+    write_json(config.paired_oof_selection_path, selection)
+
+    write_json(config.paired_gnn_checkpoint_path, {"status": "synthetic"})
+    late_checkpoint = load_json(config.paired_late_checkpoint_path)
+    late_checkpoint.update(
+        {
+            "status": "completed",
+            "inference_ready": True,
+            "selected_alpha": 0.25,
+            "gnn_checkpoint": {
+                "path": str(config.paired_gnn_checkpoint_path),
+                "sha256": sha256_file(config.paired_gnn_checkpoint_path),
+            },
+        }
+    )
+    write_json(config.paired_late_checkpoint_path, late_checkpoint)
+    monkeypatch.setattr(
+        "pipeline.gnn_training.paired_calibration.preflight_errors",
+        lambda _config, stage: [],
+    )
+
+    report = calibrate_paired_oof(config, include_isotonic=True)
+
+    assert report["status"] == "completed", report.get("reason")
+    assert config.paired_calibration_path.is_file()
+    artifact = load_json(config.paired_calibration_path)
+    assert artifact["calibration_frozen"] is True
+    assert artifact["provenance"]["seed"] == config.seed
+    assert artifact["provenance"]["fold_count"] == config.fold_count
+    assert (
+        artifact["provenance"]["selected_alpha"]
+        == report["provenance"]["selected_alpha"]
+    )
+    assert artifact["provenance"]["transformer_checkpoint_sha256"]
+    assert artifact["provenance"]["gnn_refit_checkpoint_sha256"]
+    assert len(artifact["provenance"]["transformer_oof_sha256"]) == 2
+    assert artifact["provenance"]["selected_gnn_oof_sha256"]
+    assert set(artifact["branch_mappings"]) == {
+        "hybrid_late_fusion",
+        "transformer_patient_context",
+    }
+    assert all(
+        set(mapping["method_results"])
+        == {TEMPERATURE_METHOD, AFFINE_SIGMOID_METHOD, ISOTONIC_METHOD}
+        for mapping in artifact["branch_mappings"].values()
+    )
+    loaded = load_paired_branch_calibrator(
+        config,
+        baseline_name="hybrid_late_fusion",
+    )
+    assert (
+        loaded["method"]
+        == artifact["branch_mappings"]["hybrid_late_fusion"]["selected_method"]
+    )
+    assert "group-" not in config.paired_calibration_report_path.read_text(
+        encoding="utf-8"
+    )
+    branch_report = report["branch_results"]["hybrid_late_fusion"]
+    assert all(
+        fold["reporting_status"] == "suppressed_low_count"
+        and fold["positive_row_count"] is None
+        for candidate in branch_report["candidate_methods"].values()
+        for fold in candidate["fold_metrics"]
+    )
+
+    blocked = calibrate_paired_oof(config, include_isotonic=True)
+    assert blocked["status"] == "blocked_preflight"
+    assert blocked["errors"][0]["code"] == "paired_calibration_already_frozen"
+
+
+def test_paired_calibration_import_does_not_require_torch() -> None:
+    """CPU calibrate must import without the optional neural/torch group."""
+
+    import subprocess
+    import sys
+
+    script = """
+import sys
+
+class _BlockTorch:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "torch" or fullname.startswith("torch."):
+            raise ModuleNotFoundError("torch blocked for calibration import test")
+        return None
+
+sys.meta_path.insert(0, _BlockTorch())
+sys.modules.pop("torch", None)
+for name in list(sys.modules):
+    if name.startswith(("pipeline.gnn_training", "pipeline.late_fusion")):
+        del sys.modules[name]
+
+import pipeline.gnn_training.paired_calibration as module
+
+assert module.AFFINE_SIGMOID_METHOD == "affine_sigmoid"
+assert "torch" not in sys.modules
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr

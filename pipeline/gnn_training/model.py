@@ -16,6 +16,7 @@ from torch import nn
 
 from pipeline.gnn_training.config import GNNArchitecture
 from pipeline.gnn_training.graph_encode import (
+    ABLATION_VARIANTS,
     FORWARD_RELATION_TYPES,
     NODE_CONTINUOUS_FEATURES,
     NODE_ROLE_TO_INDEX,
@@ -23,15 +24,6 @@ from pipeline.gnn_training.graph_encode import (
     PAD_INDEX,
     RELATION_TO_INDEX,
     RELATION_TYPES,
-)
-
-ABLATION_VARIANTS = (
-    "full",
-    "rank_only",
-    "no_message_passing",
-    "no_condition_medication",
-    "no_dense_lab_vital",
-    "no_lab_vital_intervention",
 )
 
 

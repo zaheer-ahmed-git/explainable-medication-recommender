@@ -286,15 +286,30 @@ fusion and a zero-initialized residual head over a separately trained GNN copy;
 the frozen Transformer and standalone GNN checkpoints remain immutable.
 
 The first protected fusion run used a full-train Transformer covariate with GNN
-OOF logits; it improved validation NDCG@10 but did not clear the promotion bar.
-The versioned replacement protocol builds Transformer logits on the same five
-patient folds and fits every Transformer preprocessing artifact on the other
-four folds. It then jointly freezes GNN variant and fine-grid alpha on exact
-paired OOF candidates. Late-only inference directly blends within-group
-z-scored logits and does not train a residual head. Promotion remains a
-one-shot decision on a separately constructed, newly frozen gate; the scorer
-cannot create or infer that gate. See
-`Documentation/PairedOOFLateFusionProtocol.md`.
+OOF logits; it improved validation NDCG@10 by about `+0.00484` but did not
+clear the `+0.005` promotion bar
+(`reports/phase8_p0_fusion_training_selection.json`, historical). The
+versioned replacement protocol (`phase8-p0-paired-oof-late-fusion-v2`) builds
+Transformer logits on the same five patient folds, fits preprocessing on the
+other four folds only, jointly freezes GNN variant `full` and alpha `0.25` on
+exact paired OOF candidates, and scores late-only blends without a residual
+head. The one-shot MIMIC-test gate `mimiciv-test-paired-oof-v1` passed with
+about `+0.0131` NDCG@10 lift versus the frozen Transformer
+(`reports/phase8_p0_paired_oof_late_fusion_gate_score.json`,
+`final_scoring_authorized=true`). Ranking promotion is separate from
+probability calibration: the hybrid’s test Brier score and 10-bin ECE are
+worse than the Transformer’s on the same candidates. See
+`Documentation/PairedOOFLateFusionProtocol.md` and
+`Documentation/HybridModelResultReview.md`.
+
+Post-hoc paired-OOF calibration is implemented as a separate probability
+boundary (`phase8-p0-paired-oof-calibration-v1`). It freezes the selected
+variant, alpha, and rank score; compares temperature, positive-slope affine
+sigmoid, and optional isotonic mappings using held-out patient folds; fits
+separate mappings for hybrid and Transformer; and binds the protected artifact
+to model, selection, and OOF hashes. Ranking metrics continue to use the
+uncalibrated score. The protected calibration run and an untouched confirmatory
+calibration evaluation have not been completed.
 
 ## Explanation Boundary
 

@@ -2,13 +2,24 @@
 
 Protocol version: `phase8-p0-paired-oof-late-fusion-v2`
 
-Status: implemented; the first protected OOF attempt produced four completed
-Transformer folds and exposed recoverable Calculco GPU-allocation and GNN
-walltime failures. Targeted recovery jobs `22470` (Transformer fold 1) and
-`22471` (full GNN variant) were submitted on 2026-08-28; selection and the new
-frozen-gate evaluation remain blocked. This protocol replaces the asymmetric late-fusion evidence in which
-GNN logits were out-of-fold but Transformer logits came from a full-train
-refit.
+Status: protected OOF, selection, refit, and one-shot MIMIC-test gate scoring
+are **completed** for protocol `phase8-p0-paired-oof-late-fusion-v2`. Selected
+pair: GNN variant `full`, alpha `0.25`. Gate `mimiciv-test-paired-oof-v1`
+passed ranking promotion (`qualified=true`,
+`final_scoring_authorized=true` in
+`reports/phase8_p0_paired_oof_late_fusion_gate_score.json`). This protocol
+replaces the asymmetric late-fusion evidence in which GNN logits were
+out-of-fold but Transformer logits came from a full-train refit. The first
+protected attempt exposed recoverable Calculco GPU-allocation and walltime
+failures; recovery completed all eleven OOF reports before selection.
+
+Calibration extension: code for
+`phase8-p0-paired-oof-calibration-v1` is implemented and synthetically verified;
+the protected calibration fit remains pending after OAR job `22661` failed on a
+torch import caused by bare `uv sync`. That import path is now torch-free, and
+the calibrate wrapper syncs `--group neural` like select. Calibration is a
+post-hoc probability layer and does not modify or reopen the completed ranking
+gate.
 
 ## Locked selection rules
 
@@ -36,6 +47,24 @@ refit.
   scored on the same candidates.
 - Adaptive fusion is authorized only when the selected global OOF blend gains
   less than `+0.005` NDCG@10 over the best paired-OOF base model.
+
+## Locked calibration rules
+
+- Keep GNN `full`, alpha `0.25`, and the within-group z-score rank formula
+  frozen. NDCG, MRR, and Hit@10 continue to use `rank_score`.
+- Fit separate hybrid and Transformer mappings from paired MIMIC-train OOF
+  predictions only.
+- Hold out one complete deterministic patient fold at a time when comparing
+  temperature and positive-slope affine sigmoid mappings. Isotonic regression
+  is an optional predeclared challenger.
+- Select the lowest cross-fitted candidate-row Brier score, then log loss, with
+  deterministic method priority only for exact ties. ECE and reliability bins
+  are descriptive.
+- Refit the selected mapping on all paired train OOF rows and freeze it with
+  alpha, seed, fold count, selection hash, model hashes, and OOF hashes.
+- Expose calibrated values only as `probability_observed_prescription` for the
+  historical `(24h, 48h]` label under the locked candidate policy. It is not a
+  probability of clinical optimality.
 
 ## Execution graph
 
@@ -74,6 +103,9 @@ scripts/calculco/submit_phase8_p0_paired_oof.sh select
 # Reuses the existing exact full refit when compatible; otherwise fits once.
 scripts/calculco/submit_phase8_p0_paired_oof.sh refit
 
+# CPU-only calibration; add PAIRED_INCLUDE_ISOTONIC=1 to test isotonic too.
+scripts/calculco/submit_phase8_p0_paired_oof.sh calibrate
+
 # Only after a separately reviewed frozen-gate manifest exists:
 PAIRED_GATE_SCORE_CONFIRM=I_UNDERSTAND_ONE_SHOT \
   scripts/calculco/submit_phase8_p0_paired_oof.sh score
@@ -82,6 +114,9 @@ PAIRED_GATE_SCORE_CONFIRM=I_UNDERSTAND_ONE_SHOT \
 The scoring command never creates or guesses a gate. It requires
 `reports/phase8_p0_paired_oof_frozen_gate.json`, claims an exclusive one-shot
 marker before predictions, and leaves an interrupted or failed attempt claimed.
+The calibration command consumes train OOF only, writes its fitted artifact
+under the protected versioned protocol root, and writes aggregate CV evidence
+to `reports/phase8_p0_paired_oof_calibration.json`.
 
 ## First protected attempt and recovery controls
 

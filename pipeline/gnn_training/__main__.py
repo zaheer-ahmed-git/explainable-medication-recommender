@@ -68,6 +68,14 @@ def _add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--device", default=None, help="Torch device override.")
     parser.add_argument("--ablation-variant", default=None)
     parser.add_argument("--held-out-fold", type=int, default=None)
+    parser.add_argument(
+        "--include-isotonic",
+        action="store_true",
+        help=(
+            "Also evaluate isotonic regression during paired-OOF calibration; "
+            "temperature and affine sigmoid are always evaluated."
+        ),
+    )
 
     parser.add_argument("--hidden-dim", type=int, default=None)
     parser.add_argument("--relation-layers", type=int, default=None)
@@ -265,6 +273,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             "Refit or reuse the jointly selected GNN for late-only inference.",
         ),
         (
+            "calibrate-paired-oof",
+            "Select branch-specific probability mappings on paired train OOF.",
+        ),
+        (
             "score-paired-late",
             "One-shot late-only scoring on an explicitly frozen clean gate.",
         ),
@@ -336,6 +348,13 @@ def _run(
         from pipeline.gnn_training.paired_late import refit_paired_gnn
 
         return refit_paired_gnn(config)
+    if command == "calibrate-paired-oof":
+        from pipeline.gnn_training.paired_calibration import calibrate_paired_oof
+
+        return calibrate_paired_oof(
+            config,
+            include_isotonic=bool(args.include_isotonic),
+        )
     if command == "score-paired-late":
         from pipeline.gnn_training.paired_late import score_paired_late
 

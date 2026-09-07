@@ -23,6 +23,7 @@ from pipeline.config import (
 )
 from pipeline.late_fusion_protocol import (
     gnn_variant_oof_predictions_path,
+    paired_calibration_artifact_path,
     paired_late_checkpoint_path,
     paired_selection_artifact_path,
     protocol_root,
@@ -451,6 +452,12 @@ class GNNTrainingConfig:
         return paired_late_checkpoint_path(self.gnn_root)
 
     @property
+    def paired_calibration_path(self) -> Path:
+        """Return the protected calibration mapping selected on paired OOF."""
+
+        return paired_calibration_artifact_path(self.gnn_root)
+
+    @property
     def paired_gnn_checkpoint_path(self) -> Path:
         return self.paired_protocol_root / "checkpoints" / "gnn_relation_branch.pt"
 
@@ -477,6 +484,10 @@ class GNNTrainingConfig:
     @property
     def paired_late_score_report_path(self) -> Path:
         return self.reports_root / "phase8_p0_paired_oof_late_fusion_gate_score.json"
+
+    @property
+    def paired_calibration_report_path(self) -> Path:
+        return self.reports_root / "phase8_p0_paired_oof_calibration.json"
 
     @property
     def residual_oof_predictions_path(self) -> Path:
@@ -564,6 +575,7 @@ class GNNTrainingConfig:
             self.paired_protocol_root,
             self.paired_oof_selection_path,
             self.paired_late_checkpoint_path,
+            self.paired_calibration_path,
             self.paired_gnn_checkpoint_path,
             self.paired_late_score_root,
             self.paired_late_score_output_path,
@@ -595,6 +607,7 @@ class GNNTrainingConfig:
             self.fusion_selection_report_path,
             self.paired_oof_selection_report_path,
             self.paired_gnn_refit_report_path,
+            self.paired_calibration_report_path,
             self.paired_late_score_report_path,
         )
 
