@@ -150,9 +150,11 @@ the best single branch ≈ **+0.0092**. One-shot MIMIC-test gate
 (lift ≈ **+0.0131**); MRR@10 and Hit@10 also improved;
 `final_scoring_authorized=true` in
 `reports/phase8_p0_paired_oof_late_fusion_gate_score.json`. On the same test
-rows, hybrid Brier ≈ **0.262** and 10-bin ECE ≈ **0.420** vs Transformer
-Brier ≈ **0.210** and ECE ≈ **0.337** (worse probability calibration despite
-better ranking). See `Documentation/HybridModelResultReview.md`.
+rows, **uncalibrated** hybrid Brier ≈ **0.262** and 10-bin ECE ≈ **0.420** vs
+Transformer Brier ≈ **0.210** and ECE ≈ **0.337**. Those figures disclose raw
+rank scores, not the frozen mapping. Paired-OOF calibration (OAR `22662`)
+froze affine sigmoid on both branches (train-OOF Brier ≈ 0.069, ECE ≈ 0.001).
+See `Documentation/HybridModelResultReview.md`.
 
 Residual hybrid (asymmetric track, not selected): nDCG ≈ **0.4063** — worse
 than late on the pre-registered selection order.
@@ -314,10 +316,11 @@ program. The paired hybrid score on that gate is new.
 ### 5.4 Ranking promotion vs probability calibration
 
 The hybrid gate is a **ranking** decision (NDCG/MRR/Hit). On the same test
-candidates, hybrid **sigmoid scores** are **worse calibrated** than the
-Transformer (higher Brier score and 10-bin ECE). That does **not** reverse
-the ranking promotion; it means fused scores should not be treated as better
-probability estimates without a separate calibration study.
+candidates, **uncalibrated** hybrid scores have higher Brier and 10-bin ECE
+than the Transformer. That does **not** reverse ranking promotion. A separate
+train-OOF calibration (`phase8-p0-paired-oof-calibration-v1`, OAR `22662`)
+froze affine sigmoid on both branches (Brier ≈ 0.069, ECE ≈ 0.001). Report
+probabilities from that mapping, not from the ranking-gate Brier/ECE.
 
 ### 5.5 What the asymmetric failure did *not* mean
 
@@ -333,8 +336,8 @@ probability estimates without a separate calibration study.
 | Artifact | Use it for |
 |----------|------------|
 | **Qualified standalone GNN** | Relation-branch claims; optional `final score-gnn`; graph attributions |
-| **Frozen Transformer** | Context-branch claims; hybrid gate reference; better-calibrated score magnitudes on the paired test gate |
-| **Paired late fusion (promoted for ranking)** | Ranking claims under protocol v2; disclose test-split reuse for Transformer and worse hybrid calibration |
+| **Frozen Transformer** | Context-branch claims; hybrid gate reference |
+| **Paired late fusion (promoted for ranking)** | Ranking claims under protocol v2; disclose test-split reuse for Transformer; ranking-gate Brier/ECE are uncalibrated |
 | **Asymmetric late fusion (historical)** | Ablation story: α≈0.1 nearly cleared +0.005 on validation, then superseded |
 
 You may still study historical asymmetric hybrid numbers for papers. Prefer

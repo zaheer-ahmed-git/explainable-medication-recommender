@@ -6,7 +6,7 @@ This roadmap turns the research architecture into a sequence of verifiable
 data and modeling milestones. It supersedes status assumptions in older plans
 when they conflict with the current working tree.
 
-Last reviewed: 2026-07-31.
+Last reviewed: 2026-09-07.
 
 ## Current Baseline
 
@@ -39,9 +39,8 @@ synthetic end-to-end verification and Calculco wrappers. Protected Phase D
 cache construction, standalone GNN qualification, asymmetric fusion (historical
 validation miss), and the paired-OOF late-fusion protocol through one-shot
 MIMIC-test ranking promotion completed. A separate paired-train-OOF calibration
-stage is implemented and synthetically verified for the frozen hybrid and
-Transformer; its protected fit remains pending and cannot reopen the consumed
-ranking gate. The ignored `DepreciatedCode/` prototype supplies historical
+stage (`phase8-p0-paired-oof-calibration-v1`) completed on OAR `22662` for the frozen hybrid and Transformer: both branches selected affine sigmoid (cross-fitted Brier ≈ 0.069, ECE ≈ 0.001). Ranking-gate Brier/ECE remain uncalibrated-score disclosures. Calibration cannot reopen the consumed ranking
+gate. The ignored `DepreciatedCode/` prototype supplies historical
 conventions for candidate generation, patient-level splitting, baseline
 ranking, and ranking metrics.
 
@@ -840,9 +839,17 @@ fold fits. Its version bump requires rebuilding full and cross-fit GNN caches.
 
 ## Milestone 9: Grounded Explanation
 
-Status: not started.
+Status: numerical implementation started; clinical explanation and comparative
+evaluation remain pending.
 
-Assemble:
+The [implementation plan](ResearchFinal/ExplainabilityImplementationPlan.md)
+defines six phases. Phases 1–2 provide fixed-slate margin/route accounting and
+bounded grouped attribution with synthetic tests. Frozen-model adapters,
+source-consistent interventions, whole-ranking replay and verified reversal
+search are the next gates. No explanation-quality or novelty result is claimed.
+The removed preliminary ledger schema is not restored.
+
+After the computational explanation is validated, supporting layers may add:
 
 - local feature or token attribution;
 - GNN subgraph or path attribution;

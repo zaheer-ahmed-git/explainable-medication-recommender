@@ -1,0 +1,79 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{times}
+\usepackage{microtype}
+\usepackage[margin=1.7cm]{geometry}
+\usepackage[hidelinks]{hyperref}
+\usepackage{url}
+
+\pagestyle{empty}
+\setlength{\parskip}{0.55em}
+\setlength{\parindent}{0pt}
+\setlength{\topskip}{0pt}
+
+\begin{document}
+
+\begin{center}
+{\Large\bfseries Grounded Explainability for Clinician End Users\\[0.15em]
+of a Conversational Medication Ranking System}\\[0.7em]
+{\large Zaheer Ahmed and Adeel Ahmad}\\[0.25em]
+{\small SysReIC, LISIC --- UR~4491, Universit\'e du Littoral C\^ote d'Opale (ULCO), Calais, France}\\[0.12em]
+{\small\texttt{zaheer.ahmed@univ-littoral.fr},\quad
+\texttt{adeel.ahmad@univ-littoral.fr}}\\[0.45em]
+{\footnotesize XAI4U'2026 --- 3rd workshop on Explainable AI for End Users, IHM~2026}\\
+{\footnotesize 20~October~2026, LILLIAD, Villeneuve d'Ascq, France}
+\end{center}
+
+\vspace{0.15em}
+
+A medication ranking is useful to a clinician only if it can be inspected, compared with professional judgment, and questioned. Much of the XAI literature still reports feature attributions aimed at model developers. Clinician end users typically ask contrastive questions (why this option rather than another), need to decide how far to rely on a suggestion, and can be misled by fluent text that sounds clinical without tracking the model~\cite{miller2019,jacovi2020}. Explanations that look convincing can also increase overreliance~\cite{bucinca2021}. Those user needs shape how explanations should be designed in this setting.
+
+We are developing an explainable conversational medication recommender for clinician-facing decision support. The architecture combines three cooperating parts. Conversational understanding turns a clinical case description and structured record fields into a patient profile. A hybrid ranker then scores candidate medications: a Transformer branch models temporal and contextual dependencies in the stay, and a graph neural network branch models relations among diagnoses, medications, and laboratory concepts. The two scores are fused into a ranked list for expert review. The software is a research prototype. It does not prescribe treatment and does not replace clinical judgment. Historical ICU prescriptions from MIMIC-IV and eICU-CRD~\cite{johnson2023,pollard2018} are labels of observed practice, not proof that a medication was optimal.
+
+The grounded explainability module is being developed as a dedicated layer, kept separate from ranking so that a justification cannot drift into a free-form story. Current work on this module concentrates on contrastive, evidence-typed explanations of the fused ranking. For a given comparison, the explanation is designed to show which patient factors moved the scores, which relational evidence the graph branch used, whether encoded safety constraints agree or conflict with the ranking, and how uncertain the comparison is. The primary clinician-facing question is pairwise: why candidate~A is ranked above candidate~B, including cases where other candidates on the list change that comparison through slate normalisation. A language model may verbalise this structured evidence; it is not allowed to invent unsupported clinical claims. The intended interaction lets the clinician inspect alternatives, request a contrast, and see the provenance of each claim.
+
+Developing this module is as much an interaction problem as a modelling one. We are working on explanation content, presentation, and evaluation together: faithfulness of the explanation to the fused ranker, understandability for clinicians, and the effect of explanation on trust and appropriate reliance rather than on trust as a goal in itself. We would like to discuss with the workshop how much computational detail belongs in a clinician-facing view, how contrastive ranking explanations should be shown so that they support review instead of uncritical acceptance, and how to evaluate reliance without treating agreement with the model as success.
+
+\vspace{0.35em}
+{\small\bfseries Keywords.}
+explainable AI; clinician end users; grounded explanation; contrastive ranking; trust and reliance; clinical decision support.
+
+\renewcommand{\refname}{References}
+\vspace{-0.35em}
+\begin{thebibliography}{5}
+\setlength{\itemsep}{0.15em}
+\setlength{\parsep}{0pt}
+\setlength{\parskip}{0pt}
+\small
+
+\bibitem{miller2019}
+T.~Miller.
+\newblock Explanation in artificial intelligence: Insights from the social sciences.
+\newblock {\em Artificial Intelligence}, 267:1--38, 2019.
+
+\bibitem{jacovi2020}
+A.~Jacovi and Y.~Goldberg.
+\newblock Towards faithfully interpretable NLP systems: How should we define and evaluate faithfulness?
+\newblock In {\em Proc.\ ACL}, pages 4198--4205, 2020.
+
+\bibitem{bucinca2021}
+Z.~Bu\c{c}inca, M.~B.~Malaya, and K.~Z.~Gajos.
+\newblock To trust or to think: Cognitive forcing functions can reduce overreliance on AI in AI-assisted decision-making.
+\newblock {\em Proc.\ ACM Hum.-Comput.\ Interact.}, 5(CSCW1):188, 2021.
+
+\bibitem{johnson2023}
+A.~E.~W.~Johnson, L.~Bulgarelli, L.~Shen, A.~Gayles, A.~Shammout, S.~Horng, T.~J.~Pollard, S.~Hao, B.~Moody, B.~Gow, L.~H.~Lehman, L.~A.~Celi, and R.~G.~Mark.
+\newblock MIMIC-IV, a freely accessible electronic health record dataset.
+\newblock {\em Scientific Data}, 10:1, 2023.
+
+\bibitem{pollard2018}
+T.~J.~Pollard, A.~E.~W.~Johnson, J.~D.~Raffa, L.~A.~Celi, R.~G.~Mark, and O.~Badawi.
+\newblock The eICU Collaborative Research Database, a freely available multi-center database for critical care research.
+\newblock {\em Scientific Data}, 5:180178, 2018.
+
+\end{thebibliography}
+
+\end{document}

@@ -10,6 +10,25 @@
 6. Review the diff using `CODE_REVIEW.md`.
 7. Update affected docs and `CHANGELOG.md`.
 
+## Develop Ranking Explainability
+
+Follow [the implementation plan](Documentation/ResearchFinal/ExplainabilityImplementationPlan.md).
+Start with invented full-slate scores and the torch-independent numerical API.
+Export `PROJECT_HOME`, `DATASET_ROOT`, and `WORK_SCRATCH` before pipeline work.
+
+```bash
+uv run --no-sync pytest -q tests/test_explainability_margins.py tests/test_explainability_attribution.py
+```
+
+For each proposed source intervention, define its reference and all dependent
+sequence/summary/graph edits before attaching a real scorer. Keep candidate
+membership, model parameters and train-fit global graph statistics fixed. Check
+original-precision scorer parity and provenance before protected evaluation.
+Record query limits, seed, numerical residuals and reference assumptions; do
+not interpret permutation standard errors as clinical confidence. Protected
+replay and comparative experiments are separate future work, with aggregate
+reporting and OAR only when requested.
+
 ## Build or Change a Cohort
 
 1. Define source population, inclusion criteria, exclusion criteria, unit of
@@ -847,9 +866,12 @@ reliability bins are written to
 
 The calibration stage keeps `rank_score` unchanged and defines a separate
 `probability_observed_prescription` mapping. It does not reopen or overwrite the
-one-shot ranking gate. Applying the mapping to the already consumed MIMIC test
-is retrospective only and must not select the mapping or support a new
-confirmatory claim.
+one-shot ranking gate. OAR `22662` completed the protected fit: both branches
+froze affine sigmoid on train OOF (cross-fitted Brier ≈ 0.069, ECE ≈ 0.001) in
+`reports/phase8_p0_paired_oof_calibration.json`. Ranking-gate Brier/ECE remain
+uncalibrated-score disclosures. Applying the mapping to the already consumed
+MIMIC test is retrospective only and must not select the mapping or support a
+new confirmatory claim.
 
 The final boundary is blocked until a reviewed newly isolated gate and matching
 cache partitions exist. The pipeline never chooses that split automatically.
@@ -956,6 +978,8 @@ scripts/calculco/submit_graph_ablation.sh final
 ## Calculco HPC (ULCO)
 
 Use the cluster for heavy extraction, modeling, and long-running jobs.
+Student-facing login and CPU/GPU OAR notes:
+`Documentation/CalculcoStudentGuide.md`.
 
 1. Confirm `PROJECT_HOME` and `DATASET_ROOT` are exported.
 2. Read account-specific paths in gitignored `Documentation/CalculcoSetup.local.md`

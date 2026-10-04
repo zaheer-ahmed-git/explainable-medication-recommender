@@ -4,6 +4,36 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ## [Unreleased]
 
+### Added
+
+- Student-facing Calculco guide covering login, storage, OAR, and CPU versus
+  GPU job submission (`Documentation/CalculcoStudentGuide.md`).
+
+### Changed
+
+- Started the explainability implementation plan with a synthetic-tested CPU
+  numerical core: full-slate normalized branch margins, direct versus
+  normalization route allocation, and bounded shared-coalition grouped
+  attribution. Exact small games and seeded sampling expose baselines,
+  permutation standard errors, query counts and numerical residuals. The
+  removed evidence-ledger contract stays removed. Frozen clinical adapters,
+  replay, reversal search and explanation-quality evaluation remain planned.
+
+- Removed the preliminary `pipeline.explainability` evidence-ledger schema and
+  its synthetic tests. The fused-rank explanation method is now documented as
+  proposed research in `Documentation/ResearchFinal/ProposedExplainabilityIdea.md`
+  and will receive an implementation contract only after its specification is
+  reviewed.
+
+- Paired-OOF calibrate OAR job `22662` completed protocol
+  `phase8-p0-paired-oof-calibration-v1`. Both hybrid and Transformer branches
+  froze affine sigmoid on paired train OOF (cross-fitted Brier ≈ 0.069, 10-bin
+  ECE ≈ 0.001). Ranking-gate Brier/ECE remain disclosures of uncalibrated
+  scores. The first attempt (`22661`) failed after bare `uv sync` stripped
+  torch; that import path is torch-free and the calibrate wrapper syncs
+  `--group neural`. Aggregate report:
+  `reports/phase8_p0_paired_oof_calibration.json`.
+
 ### Fixed
 
 - Paired-OOF calibrate OAR job `22661` failed on import after bare `uv sync`
@@ -22,8 +52,7 @@ All notable repository changes are recorded here. Dates use ISO 8601.
   predictions; selects by Brier then log loss; preserves an independent
   `rank_score`; and freezes alpha, seed, model/selection hashes, and OOF hashes
   in protected storage. Aggregate reports suppress low-count reliability bins.
-  Focused synthetic tests pass; protected fitting and confirmatory calibration
-  evaluation remain pending.
+  Protected fit completed on OAR `22662` (both branches affine sigmoid).
 
 - A versioned, framework-independent explanation evidence contract in
   `pipeline.explainability` for pairwise medication-ranking decisions. The
@@ -42,8 +71,8 @@ All notable repository changes are recorded here. Dates use ISO 8601.
   full GNN refit; one-shot MIMIC-test gate `mimiciv-test-paired-oof-v1` which
   passed with about `+0.0131` NDCG@10 lift vs the frozen Transformer
   (`final_scoring_authorized=true`). Ranking promotion is recorded separately
-  from probability calibration (hybrid Brier/ECE worse than Transformer on the
-  same test rows). Calculco recovery workers, CUDA fail-fast checks, and
+  from probability calibration: ranking-gate Brier/ECE disclose uncalibrated
+  scores. Calculco recovery workers, CUDA fail-fast checks, and
   synthetic paired-OOF tests accompany the protocol. Aggregate review:
   `Documentation/HybridModelResultReview.md`. The earlier asymmetric fusion
   selection (`hybrid_qualified=false`) remains historical.

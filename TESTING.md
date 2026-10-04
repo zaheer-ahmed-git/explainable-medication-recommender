@@ -66,6 +66,20 @@ aggregate-only meeting-pack generation without raw clinical rows.
 
 Every new active module should arrive with focused tests.
 
+The explainability numerical core is tested using invented score slates and an
+independent small-game Shapley oracle. Tests cover branch accounting,
+third-candidate reversals, masks/non-finite rejection, floor crossings,
+comparison consistency, query/cache bounds, reproducibility and permutation
+standard errors. Optional tests compare against the actual torch fusion in
+float32 and float64; they skip if torch is absent. These tests do not load
+patient scores or validate clinical explanation quality.
+
+```bash
+uv run --no-sync pytest -q tests/test_explainability_margins.py tests/test_explainability_attribution.py
+```
+
+`--no-sync` preserves the currently installed optional neural group.
+
 **Execution context:** ULCO Calculco. Export `PROJECT_HOME` and `DATASET_ROOT`
 before pipeline CLIs. See `Documentation/Environment.md`.
 

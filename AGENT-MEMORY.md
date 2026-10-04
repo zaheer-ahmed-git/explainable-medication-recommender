@@ -31,6 +31,16 @@ task context, source-code inspection, or local agent memory.
 
 ## Current Repository State
 
+- Initial explainability numerics are implemented in
+  `pipeline.explainability.margins` and `pipeline.explainability.attribution`:
+  fixed-slate normalized branch margins, symmetric finite-change direct/scale
+  routes, and bounded shared-coalition exact/permutation attribution. Synthetic
+  tests cover the equations and production fusion parity. The former
+  `contract.py` ledger and its tests remain removed. Clinical source adapters,
+  original-precision checkpoint replay, graph explanation, reversal search,
+  and explanation-quality evaluation remain planned in
+  `Documentation/ResearchFinal/ExplainabilityImplementationPlan.md`.
+
 - The active data-foundation pipeline skeleton and focused tests are present as
   of 2026-06-20; full local cohort-filtered extraction and harmonization runs
   completed by 2026-07-01.
@@ -152,21 +162,22 @@ task context, source-code inspection, or local agent memory.
   OOF on the same five patient folds, joint selection of GNN `full` and alpha
   `0.25`, and a one-shot MIMIC-test ranking gate that passed
   (`final_scoring_authorized=true`). Hybrid ranking lift on that gate does not
-  imply better probability calibration than the Transformer. Focused synthetic
-  tests cover the workflow. Protected preparation, OOF recovery, selection,
-  refit, and paired gate scoring completed; see
+  imply better probability calibration than the Transformer; ranking-gate
+  Brier/ECE disclose uncalibrated scores. Focused synthetic tests cover the
+  workflow. Protected preparation, OOF recovery, selection, refit, paired gate
+  scoring, and paired-OOF calibration completed; see
   `Documentation/PairedOOFLateFusionProtocol.md` and
-  `Documentation/HybridModelResultReview.md`. A separate
-  `phase8-p0-paired-oof-calibration-v1` stage is implemented and synthetically
-  verified: patient-fold-held-out comparison of temperature, positive-slope
-  affine sigmoid, and optional isotonic mappings for both hybrid and
-  Transformer, with immutable model/OOF provenance and unchanged ranking.
-  First protected calibrate attempt (OAR `22661`) failed because bare `uv sync`
-  removed torch while `paired_oof` still imported `ABLATION_VARIANTS` from the
-  torch model module; variants now live in torch-free `graph_encode`, and the
-  calibrate wrapper syncs `--group neural` like select. Protected calibration
-  fitting remains pending after that fix, and the consumed test gate may be
-  used only retrospectively for calibration analysis.
+  `Documentation/HybridModelResultReview.md`. Protocol
+  `phase8-p0-paired-oof-calibration-v1` compares temperature, positive-slope
+  affine sigmoid, and optional isotonic mappings on patient-fold-held-out train
+  OOF for both hybrid and Transformer, with immutable model/OOF provenance and
+  unchanged ranking. First protected calibrate attempt (OAR `22661`) failed
+  because bare `uv sync` removed torch while `paired_oof` still imported
+  `ABLATION_VARIANTS` from the torch model module; variants now live in
+  torch-free `graph_encode`, and the calibrate wrapper syncs `--group neural`
+  like select. OAR `22662` then froze affine sigmoid on both branches
+  (cross-fitted Brier ≈ 0.069, ECE ≈ 0.001). The consumed test gate may be used
+  only retrospectively for calibration analysis.
   Development job 8825 failed before optimization because edge partitions can
   contain multiple DuckDB
   Parquet fragments; the loader now assembles them deterministically. Job

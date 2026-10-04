@@ -2,24 +2,26 @@
 
 Protocol version: `phase8-p0-paired-oof-late-fusion-v2`
 
-Status: protected OOF, selection, refit, and one-shot MIMIC-test gate scoring
-are **completed** for protocol `phase8-p0-paired-oof-late-fusion-v2`. Selected
-pair: GNN variant `full`, alpha `0.25`. Gate `mimiciv-test-paired-oof-v1`
-passed ranking promotion (`qualified=true`,
-`final_scoring_authorized=true` in
+Status: protected OOF, selection, refit, one-shot MIMIC-test gate scoring,
+and post-hoc probability calibration are **completed** for protocol
+`phase8-p0-paired-oof-late-fusion-v2` plus
+`phase8-p0-paired-oof-calibration-v1`. Selected pair: GNN variant `full`,
+alpha `0.25`. Gate `mimiciv-test-paired-oof-v1` passed ranking promotion
+(`qualified=true`, `final_scoring_authorized=true` in
 `reports/phase8_p0_paired_oof_late_fusion_gate_score.json`). This protocol
 replaces the asymmetric late-fusion evidence in which GNN logits were
 out-of-fold but Transformer logits came from a full-train refit. The first
 protected attempt exposed recoverable Calculco GPU-allocation and walltime
 failures; recovery completed all eleven OOF reports before selection.
 
-Calibration extension: code for
-`phase8-p0-paired-oof-calibration-v1` is implemented and synthetically verified;
-the protected calibration fit remains pending after OAR job `22661` failed on a
-torch import caused by bare `uv sync`. That import path is now torch-free, and
-the calibrate wrapper syncs `--group neural` like select. Calibration is a
-post-hoc probability layer and does not modify or reopen the completed ranking
-gate.
+Calibration: OAR `22661` failed on a torch import after bare `uv sync`. The
+import path is now torch-free, the calibrate wrapper syncs `--group neural`
+like select, and OAR `22662` completed the protected fit. Both hybrid and
+Transformer branches froze affine sigmoid on paired train OOF (cross-fitted
+Brier ≈ 0.069, 10-bin ECE ≈ 0.001). Aggregate evidence is
+`reports/phase8_p0_paired_oof_calibration.json`. Ranking-gate Brier/ECE remain
+disclosures of uncalibrated scores. Calibration is a post-hoc probability
+layer and does not modify or reopen the completed ranking gate.
 
 ## Locked selection rules
 
@@ -225,6 +227,7 @@ Completed Calculco jobs provide the following wall-clock basis:
 | Fusion validation score | 15m 30s |
 | Paired Transformer OOF folds (4 successful) | 53m49s--58m48s each |
 | First full GNN OOF materialization | exceeded 12h; killed at walltime |
+| Paired-OOF calibration (OAR `22662`) | 17m 45s |
 
 Planning estimates (exclusive of queue wait and new-gate construction):
 

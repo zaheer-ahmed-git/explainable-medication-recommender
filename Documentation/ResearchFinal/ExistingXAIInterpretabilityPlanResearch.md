@@ -2,6 +2,11 @@
 
 **Architecture Design**
 
+Historical literature/design review. For the current numerical prototype and
+remaining implementation gates, see
+[ProposedExplainabilityIdea.md](ProposedExplainabilityIdea.md) and
+[ExplainabilityImplementationPlan.md](ExplainabilityImplementationPlan.md).
+
 ## My Decision
 
 The strongest practical design is a layered explanation system in which each claim has a distinct evidential role:
@@ -13,7 +18,7 @@ The strongest practical design is a layered explanation system in which each cla
 5. **Uncertainty:** calibrated recommendation uncertainty and explanation stability/intervals, with an abstention or “insufficiently stable to explain” state.
 6. **Language:** an LLM may verbalize a structured evidence object, Every sentence should be mechanically traceable to an evidence atom and checked after generation.
 
-Close prior work already contains most of those ingredients in isolation or loose combination. *The defensible opportunity is an **end-to-end, constraint-aware rank-evidence ledger*** that explains the final pairwise medication ranking across temporal and graph branches, separates hard feasibility certificates from learned preference evidence, conserves the explained rank margin, quantifies explanation uncertainty, and constrains every natural-language claim to verified evidence.
+Close prior work already contains most of those ingredients in isolation or loose combination. The proposed research direction is documented separately in [ProposedExplainabilityIdea.md](ProposedExplainabilityIdea.md): a model-specific, contrastive explanation of the final fused ranking, with explicit branch, raw-gap, slate-normalisation, graph, and rank-reversal effects.
 
 This is a **potentially meaningful methodological contribution**, not yet a proven novelty claim. Pairwise/listwise Shapley ranking explanations, component attribution, graph-path explanations, safety-aware recommenders, and grounded LLM recommenders already exist. A paper would need to show that the proposed common decision target, intervention semantics, hard/soft constraint separation, conservation diagnostics, and end-to-end evaluation produce better faithfulness and clinical error detection than those components used separately.
 
@@ -26,7 +31,7 @@ Claims are separated as follows:
 - **Project inference:** a conclusion derived from the literature and the repository's architecture.
 - **Proposed research:** a design that has not yet been implemented or validated here.
 
-The active tree contains an experimental [Transformer event-sequence ranker](../pipeline/neural_training/model.py), [candidate-conditioned relational GNN](../pipeline/gnn_training/model.py), and [fusion implementations](../pipeline/gnn_training/fusion.py). A first, framework-independent [explanation evidence contract](../pipeline/explainability/contract.py) now implements part of Stage 0 below: it records a versioned pairwise decision, hierarchical signed evidence, conservation residual, hard safety certificates, external-knowledge support status, constrained model counterfactuals, and protected-reference declarations. It validates and serializes those records but does **not** yet compute Transformer/GNN explanations, log protected runs, generate clinical language, or establish clinical validity. This report therefore maps XAI to the code that exists without claiming a production recommender or validated clinical benefit.
+The active tree contains an experimental [Transformer event-sequence ranker](../../pipeline/neural_training/model.py), [candidate-conditioned relational GNN](../../pipeline/gnn_training/model.py), and [fusion implementations](../../pipeline/gnn_training/fusion.py). The new numerical margin/route and grouped-attribution core is tracked in the implementation plan. The old ledger contract remains removed; clinical source adapters, protected explanation logging, and runtime clinical explanation production remain planned. This report does not establish a production recommender or validated clinical benefit.
 
 Several terms are often conflated:
 
@@ -863,7 +868,7 @@ The user interface should label channels explicitly: **model evidence**, **safet
 
 ### 8.4 Staged implementation and research plan
 
-**Stage 0 — Explanation contract and logging (partially implemented).** The versioned, torch-free evidence schema and fail-closed synthetic contract tests are implemented in `[pipeline.explainability](../pipeline/explainability/contract.py)` and `[tests/test_explanation_contract.py](../tests/test_explanation_contract.py)`. The current schema enforces evidence hierarchy and margin conservation, distinguishes hard safety certificates from learned evidence, links retrieved knowledge to reranking evidence explicitly, requires replayed clinically permitted model counterfactuals, and stores references instead of clinical rows or source text. Candidate-slate capture beyond the explained pair, protected logging/storage policy, component adapters, and runtime integration remain planned. This is necessary engineering, not evidence of novelty or clinical validation.
+**Stage 0 — Decision snapshot and explanation specification (planned).** Define the frozen full-slate scoring trace, source groups, intervention semantics, route decomposition, replay checks, and data-safety boundaries described in [ProposedExplainabilityIdea.md](ProposedExplainabilityIdea.md). No explanation schema or runtime contract is currently present.
 
 **Stage 1 — Validated component explanations.** Implement grouped contrastive IG plus occlusion, a GNNExplainer baseline plus necessity/sufficiency, exact fusion decomposition, safety certificates, and deterministic templates. Benchmark cost and stability on synthetic fixtures and held-out development data.
 

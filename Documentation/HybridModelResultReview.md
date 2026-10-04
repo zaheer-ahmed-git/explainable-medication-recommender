@@ -75,22 +75,31 @@ This is the **new** frozen test gate (`mimiciv-test-paired-oof-v1`). Same candid
 
 So on test, paired late fusion is **clearly better** than the frozen Transformer on all three ranking metrics.
 
-### Probability calibration on the same test rows
+### Uncalibrated scores on the same test rows
 
 Ranking quality and probability calibration are different properties. The gate
-report also records row-level aggregates on the same MIMIC-test candidates:
+report also records row-level aggregates on the same MIMIC-test candidates.
+Those Brier and ECE figures are **uncalibrated** disclosures: they treat the
+raw ranking score as a probability. They are not the frozen affine-sigmoid
+mapping from `phase8-p0-paired-oof-calibration-v1`.
 
 | Model | Brier score (↓ better) | 10-bin ECE (↓ better) | ROC-AUC | Average precision |
 |-------|-----------------------:|----------------------:|--------:|------------------:|
 | Frozen Transformer | **0.210** | **0.337** | 0.743 | **0.215** |
 | Paired late fusion | 0.262 | 0.420 | **0.744** | 0.210 |
 
-“Worse probability calibration” means: if you treat the model’s score as an
-estimated probability that a candidate was prescribed, the hybrid’s numbers are
-**farther from the observed 0/1 labels** than the Transformer’s (higher Brier
-and ECE). That can happen even when **rank order** improves, because late
-fusion blends z-scored logits for ranking and does not re-calibrate the fused
-scores to probabilities.
+On those raw scores the hybrid sits farther from the observed 0/1 labels than
+the Transformer. That can happen even when **rank order** improves, because
+late fusion blends z-scored logits for ranking.
+
+### Paired-OOF calibration (train OOF, completed)
+
+OAR `22662` froze a separate probability layer on paired MIMIC-train OOF.
+Both branches selected affine sigmoid. Cross-fitted Brier ≈ 0.069 and 10-bin
+ECE ≈ 0.001 (hybrid 0.0688 / 0.0014; Transformer 0.0687 / 0.0013). Ranking
+`rank_score` is unchanged. Aggregate report:
+`reports/phase8_p0_paired_oof_calibration.json`. Applying the mapping to the
+consumed MIMIC-test gate would be retrospective only.
 
 **Disclosure:** Transformer was scored on MIMIC test before in the broader program; this gate is not wholly unseen for the Transformer, but the **paired fusion** score is new and passed the protocol gate.
 
@@ -133,6 +142,7 @@ In plain terms:
 |----------|------|
 | **Frozen Transformer** | Context-branch baseline; gate reference |
 | **Standalone GNN (`full` refit)** | Graph-branch evidence; explainability target |
-| **Paired late fusion** | **Promoted** hybrid for protocol v2; test gate passed |
+| **Paired late fusion** | **Promoted** hybrid for protocol v2; test ranking gate passed |
+| **Affine-sigmoid calibration** | Frozen probability layer on train OOF (OAR `22662`); not a ranking change |
 
 **Bottom line:** GNN alone does not beat Transformer on OOF or validation, but **blending 25% GNN + 75% Transformer** gives a consistent lift. The paired protocol turned a marginal old fusion (+0.0048) into a **material, gate-passing** improvement (+0.0131 on test).

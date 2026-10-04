@@ -1,41 +1,5 @@
-"""Typed contracts for auditable medication-ranking explanations."""
+"""Numerical experiments for fused-rank explanation; no clinical adapter yet.
 
-from pipeline.explainability.contract import (
-    EXPLANATION_LEDGER_SCHEMA_VERSION,
-    ComponentVersion,
-    ConstraintAction,
-    ConstraintStatus,
-    ContributionInterval,
-    CounterfactualEvidence,
-    DataSafetyDeclaration,
-    DecisionRecord,
-    DecisionStatus,
-    EvidenceAtom,
-    EvidenceChannel,
-    EvidenceDirection,
-    ExplanationLedger,
-    ExternalKnowledgeEvidence,
-    KnowledgeSupportStatus,
-    MarginStage,
-    SafetyConstraintCertificate,
-)
-
-__all__ = [
-    "EXPLANATION_LEDGER_SCHEMA_VERSION",
-    "ComponentVersion",
-    "ConstraintAction",
-    "ConstraintStatus",
-    "ContributionInterval",
-    "CounterfactualEvidence",
-    "DataSafetyDeclaration",
-    "DecisionRecord",
-    "DecisionStatus",
-    "EvidenceAtom",
-    "EvidenceChannel",
-    "EvidenceDirection",
-    "ExplanationLedger",
-    "ExternalKnowledgeEvidence",
-    "KnowledgeSupportStatus",
-    "MarginStage",
-    "SafetyConstraintCertificate",
-]
+The former evidence-ledger contract is intentionally not restored. Computation
+is available in ``margins`` and ``attribution``; neither module loads datasets.
+"""

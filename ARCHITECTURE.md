@@ -297,24 +297,34 @@ head. The one-shot MIMIC-test gate `mimiciv-test-paired-oof-v1` passed with
 about `+0.0131` NDCG@10 lift versus the frozen Transformer
 (`reports/phase8_p0_paired_oof_late_fusion_gate_score.json`,
 `final_scoring_authorized=true`). Ranking promotion is separate from
-probability calibration: the hybrid’s test Brier score and 10-bin ECE are
-worse than the Transformer’s on the same candidates. See
+probability calibration: the ranking-gate Brier score and 10-bin ECE disclose
+uncalibrated scores (hybrid worse than Transformer on those raw figures). See
 `Documentation/PairedOOFLateFusionProtocol.md` and
 `Documentation/HybridModelResultReview.md`.
 
-Post-hoc paired-OOF calibration is implemented as a separate probability
-boundary (`phase8-p0-paired-oof-calibration-v1`). It freezes the selected
-variant, alpha, and rank score; compares temperature, positive-slope affine
-sigmoid, and optional isotonic mappings using held-out patient folds; fits
-separate mappings for hybrid and Transformer; and binds the protected artifact
-to model, selection, and OOF hashes. Ranking metrics continue to use the
-uncalibrated score. The protected calibration run and an untouched confirmatory
-calibration evaluation have not been completed.
+Post-hoc paired-OOF calibration (`phase8-p0-paired-oof-calibration-v1`)
+completed on OAR `22662`. It froze the selected variant, alpha, and rank
+score; compared temperature and positive-slope affine sigmoid on held-out
+patient folds; and selected affine sigmoid for both hybrid and Transformer
+(cross-fitted Brier ≈ 0.069, 10-bin ECE ≈ 0.001). The protected artifact is
+bound to model, selection, and OOF hashes. Ranking metrics continue to use
+the uncalibrated score. Applying the mapping to the consumed MIMIC-test gate
+would be retrospective only.
 
 ## Explanation Boundary
 
-The explanation layer consumes evidence produced by the recommendation and
-knowledge layers:
+The initial `pipeline.explainability` numerical prototype consumes explicitly
+aligned, fixed-slate Transformer/GNN scores. `margins.py` reproduces the
+population-z blend in float64 and decomposes finite margin changes into direct
+gap and normalization routes. `attribution.py` shares bounded scorer callbacks
+across candidate comparisons for exact small games or seeded permutations.
+The former ledger contract remains removed. These modules perform no dataset
+access, model loading, serialization, rule execution, or language generation.
+Only synthetic numerical behavior is tested; original-precision frozen-model
+parity and source-consistent clinical interventions are future adapter gates.
+See [the implementation plan](Documentation/ResearchFinal/ExplainabilityImplementationPlan.md).
+
+The eventual explanation layer will also consume:
 
 - local feature or token attribution;
 - graph substructures and evidence paths;

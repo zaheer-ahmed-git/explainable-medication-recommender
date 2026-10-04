@@ -20,6 +20,11 @@ the paired-OOF late-fusion gate have completed aggregate evaluation; they do
 not authorize clinical use.
 
 - The research objective and target architecture are documented.
+- Explainability development has started with a CPU numerical core for fused
+  pairwise margins, direct/normalization routes, and bounded grouped attribution.
+  Synthetic tests cover the core; clinical input adapters, graph interventions,
+  replay and rank-reversal search remain planned. See the
+  [explainability implementation plan](Documentation/ResearchFinal/ExplainabilityImplementationPlan.md).
 - Licensed MIMIC-IV v3.1, MIMIC-IV-Note v2.2, and eICU-CRD v2.0 data are
   on Calculco protected storage (`$DATASET_ROOT`); the ignored `Dataset/`
   path is the default when data is colocated with the checkout.
@@ -81,13 +86,13 @@ not authorize clinical use.
   `+0.0131` vs the frozen Transformer, MRR@10 and Hit@10 also improved, and
   `final_scoring_authorized=true` in
   `reports/phase8_p0_paired_oof_late_fusion_gate_score.json`. Ranking
-  promotion does not imply better probability calibration: on the same test
-  gate the hybrid has higher Brier score and 10-bin ECE than the Transformer.
-  A separate paired-OOF calibration stage is implemented under protocol
-  `phase8-p0-paired-oof-calibration-v1`: it compares temperature, positive-slope
-  affine sigmoid, and optional isotonic mappings in patient-fold-held-out CV for
-  both the hybrid and Transformer, while preserving the frozen ranking score.
-  Its protected fit and any retrospective test analysis remain pending.
+  promotion does not imply better probability calibration: the ranking-gate
+  Brier score and 10-bin ECE disclose uncalibrated scores (hybrid higher than
+  the Transformer on those raw figures). A separate paired-OOF calibration
+  stage (`phase8-p0-paired-oof-calibration-v1`) completed on OAR `22662`: both
+  branches froze affine sigmoid on paired train OOF (cross-fitted Brier ≈ 0.069,
+  ECE ≈ 0.001) while preserving the frozen ranking score. Applying that mapping
+  to the consumed MIMIC-test gate would be retrospective only.
   Disclosure: MIMIC test was previously scored for the frozen Transformer
   elsewhere in Phase 8. See `Documentation/PairedOOFLateFusionProtocol.md`
   and `Documentation/HybridModelResultReview.md`.
@@ -217,7 +222,9 @@ commands.
 
 See [Documentation/Environment.md](Documentation/Environment.md) for path
 variables, gitignored files, and agent rules. Calculco platform notes:
-[Documentation/CalculcoSetup.md](Documentation/CalculcoSetup.md).
+[Documentation/CalculcoSetup.md](Documentation/CalculcoSetup.md). Student
+onboarding (SSH, disks, CPU and GPU jobs):
+[Documentation/CalculcoStudentGuide.md](Documentation/CalculcoStudentGuide.md).
 
 This project uses Python 3.13 and `uv` exclusively.
 
