@@ -4,6 +4,9 @@ Generic ULCO Calculco (CalcULCO) notes for this project. **Account-specific path
 usernames, and setup status live in gitignored local files** — not in this
 document.
 
+Student-facing walkthrough (login, storage, CPU/GPU OAR jobs):
+[CalculcoStudentGuide.md](CalculcoStudentGuide.md).
+
 **Platform migration (2026):** CalcULCO is being moved to a new hardware platform
 (phase II, summer 2026). During the transition, the login hostname may be
 `ritchie.univ-littoral.fr` while compute nodes are renamed (`orval*` →
@@ -157,20 +160,8 @@ suitable 512 GB / AVX-512 nodes. The main rule from admins: do not omit
 LPCA) became `chimay19` and `chimay20`. Project members have default access;
 others may run there in best-effort mode (killable by project members).
 
-### Planned summer outage
-
-A CGU-wide power event for solar-panel grid connection is expected in the **first
-half of July 2026** (exact date not yet announced). Even a short mains interruption
-will trigger a **platform shutdown of at least 24 hours** for storage rewiring and
-Infiniband cleanup. Plan long OAR jobs and data transfers accordingly.
 
 ### New accounts
 
 Request access via **calculco-admins@liste.univ-littoral.fr** if you need an
 account form during the transition.
-
-## Account-Specific Details
-
-Record usernames, quotas, transfer history, and checklist status only in
-**`Documentation/CalculcoSetup.local.md`** (gitignored). Template:
-`Documentation/CalculcoSetup.example.md`.

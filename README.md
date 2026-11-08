@@ -14,9 +14,17 @@ prescribe medication, and must not replace professional clinical judgment.
 
 ## Current Status
 
-The repository is currently in the data-foundation and architecture stage.
+The repository is in the data-foundation and experimental-model implementation
+stage. The software is research-only. Protected Phase D ranking branches and
+the paired-OOF late-fusion gate have completed aggregate evaluation; they do
+not authorize clinical use.
 
 - The research objective and target architecture are documented.
+- Explainability development has started with a CPU numerical core for fused
+  pairwise margins, direct/normalization routes, and bounded grouped attribution.
+  Synthetic tests cover the core; clinical input adapters, graph interventions,
+  replay and rank-reversal search remain planned. See the
+  [explainability implementation plan](Documentation/ResearchFinal/ExplainabilityImplementationPlan.md).
 - Licensed MIMIC-IV v3.1, MIMIC-IV-Note v2.2, and eICU-CRD v2.0 data are
   on Calculco protected storage (`$DATASET_ROOT`); the ignored `Dataset/`
   path is the default when data is colocated with the checkout.
@@ -31,9 +39,11 @@ The repository is currently in the data-foundation and architecture stage.
   cohort stays, demographics, conditions, medications, labs, vitals,
   allergies, interventions, and temporal events. Milestone 6 temporal feature,
   split, candidate-catalog, observed-label, and train-fitted preprocessing
-  artifact builders are also implemented. Phase 8 P0 feature families are
-  available as an isolated `--feature-set phase8_p0` ablation path, pending
-  protected-data reruns and promotion review. Milestone 7 baseline evaluation is implemented for aggregate
+  artifact builders are also implemented. The Phase 8 P0 CodexPLAN Step 9
+  package now adds a model-ready cohort, consistent input-derived provenance,
+  train-fit patient subgraphs and vocabularies, a schema-only data dictionary,
+  and explicit eICU coverage/evaluability gates. Its protected-data package is
+  complete. Milestone 7 baseline evaluation is implemented for aggregate
   coverage, deterministic random, global-popularity, condition-popularity,
   linear, and XGBoost baselines; validation winner frozen as `xgboost` and
   final-mode held-out MIMIC test metrics are recorded in
@@ -41,8 +51,57 @@ The repository is currently in the data-foundation and architecture stage.
   tooling is implemented and the protected-data graph gate passed for
   graph-ablation readiness. Milestone 8B graph-aware ablation tooling is
   implemented for graph-only XGBoost, graph-augmented XGBoost, late fusion, and
-  simple ensemble comparisons against the frozen XGBoost reference; protected
-  Milestone 8B ablation runs are still pending.
+  simple ensemble comparisons against the frozen XGBoost reference. The
+  protected Phase 8 P0 Milestone 8B run failed the required +0.005 NDCG@10
+  lift, so frozen XGBoost remained the Milestone 8B reference. Gate-first
+  Stage 1 structured recovery then cleared that bar: frozen selection
+  `xgboost_rank_ndcg_oof_late_fusion` (validation NDCG@10 ≈ `0.394607`) with
+  `neural_training_authorized=true`. The Stage 2 neural Transformer
+  patient/context training pipeline is implemented in `pipeline.neural_training`
+  (DuckDB cache preparation, PyTorch Transformer recommender, listwise training
+  with early stopping and temperature calibration, canonical-schema scoring,
+  and a validation gate/selection report against the Stage 1 winner). PyTorch
+  is an optional `neural` dependency group and is not synced by default; every
+  stage stays fail-closed behind the structured recovery gate and contract
+  lock. Protected development runs completed for v1/v2 and failed the neural
+  gate (v2 NDCG@10 ≈ `0.3955`, short of +0.005 and the MRR guard); v3 adds
+  Stage-1-matched graph tabular side features, stronger regularization, and
+  MRR-oriented primary-positive loss. The Phase D relation branch and frozen-
+  Transformer fusion workflow are now implemented in
+  `pipeline.gnn_training`: fold-excluded graph preparation, a native
+  PyTorch R-GCN-style ranker, six pre-registered representation/relation controls,
+  full-train refit, canonical standalone scoring, late/residual fusion, and
+  fail-closed development/final gates. Protected training and development
+  scoring completed: the standalone GNN qualified for its graph-model track.
+  The first asymmetric late-fusion run improved Transformer validation NDCG@10
+  by about `+0.00484` but missed the pre-registered `+0.005` hybrid bar
+  (`reports/phase8_p0_fusion_training_selection.json` remains historical
+  `hybrid_qualified=false`). The versioned paired-OOF late-fusion protocol
+  (`phase8-p0-paired-oof-late-fusion-v2`) then replaced that asymmetric
+  evidence: five fold-isolated Transformer OOF folds, six GNN-variant OOF
+  materializations, joint selection of GNN variant `full` and alpha `0.25` on
+  paired train OOF (NDCG@10 lift about `+0.0092` over the best single branch),
+  a three-epoch full GNN refit, and a one-shot MIMIC-test gate
+  (`mimiciv-test-paired-oof-v1`). That gate passed with NDCG@10 lift about
+  `+0.0131` vs the frozen Transformer, MRR@10 and Hit@10 also improved, and
+  `final_scoring_authorized=true` in
+  `reports/phase8_p0_paired_oof_late_fusion_gate_score.json`. Ranking
+  promotion does not imply better probability calibration: the ranking-gate
+  Brier score and 10-bin ECE disclose uncalibrated scores (hybrid higher than
+  the Transformer on those raw figures). A separate paired-OOF calibration
+  stage (`phase8-p0-paired-oof-calibration-v1`) completed on OAR `22662`: both
+  branches froze affine sigmoid on paired train OOF (cross-fitted Brier ≈ 0.069,
+  ECE ≈ 0.001) while preserving the frozen ranking score. Applying that mapping
+  to the consumed MIMIC-test gate would be retrospective only.
+  Disclosure: MIMIC test was previously scored for the frozen Transformer
+  elsewhere in Phase 8. See `Documentation/PairedOOFLateFusionProtocol.md`
+  and `Documentation/HybridModelResultReview.md`.
+  The versioned P1 representation is implemented in code: an explicit stay
+  query node, fold-safe numeric value/deviation/trend/recency features, time-bin
+  embeddings, learned relation gates/dropout, a rank-only baseline, dense
+  lab/vital ablations, compact one-fragment cache partitions, array-addressable
+  fold training, and OOF temperature fitting. Existing protected P0 caches are
+  incompatible with this layout and must be rebuilt before training.
 - Focused synthetic tests cover the current source-inventory, cohort,
   profiling, EDA-summary, extraction, and Milestone 5 harmonization contracts.
   Additional synthetic tests cover Milestone 6 temporal cutoffs, censoring,
@@ -51,8 +110,21 @@ The repository is currently in the data-foundation and architecture stage.
   linear and XGBoost baselines. Milestone 8 synthetic tests cover train-only
   graph fitting, cold-start reporting, sparse graphs, and report safety.
   Milestone 8B synthetic tests cover graph-feature joins, final-mode gating,
-  cold-start flags, fusion, eICU coverage-only behavior, and report safety. The
-  full Transformer-GNN model remains planned.
+  cold-start flags, fusion, eICU coverage-only behavior, and report safety.
+  Phase 8 P0 package tests additionally cover model-ready cohort timing,
+  provenance inference, train-only subgraphs, cold candidates, local
+  vocabularies, and schema-only reports. Stage 2 neural tests cover DuckDB cache
+  preparation, ranking metrics, shard assembly and collation, the Transformer
+  forward pass and losses, the fail-closed preflight/gate, and an end-to-end
+  prepare/train/score smoke test (PyTorch-dependent tests skip when the optional
+  `neural` group is not installed). Phase D GNN tests cover
+  contract/hash drift, patient-fold graph exclusion, temporal cutoffs,
+  bounded graph loading and graph-size batching, production-shape relation
+  aggregation, exact-hash single-pass verification, restart boundaries,
+  model/fusion behavior, canonical scoring, final-run claims, and an
+  end-to-end synthetic workflow. Paired-OOF tests also cover calibration
+  monotonicity, patient-fold isolation, branch-specific mapping selection,
+  immutable model/OOF provenance, and aggregate-only reporting.
 
 Do not interpret the poster's illustrative medication table or planned system
 diagram as a clinically validated implementation.
@@ -120,6 +192,13 @@ a medication is clinically optimal.
   final-mode gate.
 - `Documentation/HybridModelFeatureStrategy.md`: planned Transformer/GNN
   feature boundaries and selection gates (post-8B; not neural training yet).
+- `Documentation/PhaseDRankingModelsExplained.md`: Transformer, standalone
+  GNN, and late-fusion inputs/outputs; asymmetric vs paired-OOF hybrid gates.
+- `Documentation/PairedOOFLateFusionProtocol.md`: paired five-fold evidence,
+  joint GNN/alpha selection, OAR execution, one-shot gate contract, and
+  protected completion status.
+- `Documentation/HybridModelResultReview.md`: aggregate ranking and
+  calibration comparison for the paired late-fusion gate.
 - `visualization/`: aggregate-only Phase 4-9 meeting figure-pack generator.
 - `Documentation/SimilarPapers.md`: related-work notes.
 - `FinalPosterCDS.pdf`: research poster.
@@ -143,7 +222,9 @@ commands.
 
 See [Documentation/Environment.md](Documentation/Environment.md) for path
 variables, gitignored files, and agent rules. Calculco platform notes:
-[Documentation/CalculcoSetup.md](Documentation/CalculcoSetup.md).
+[Documentation/CalculcoSetup.md](Documentation/CalculcoSetup.md). Student
+onboarding (SSH, disks, CPU and GPU jobs):
+[Documentation/CalculcoStudentGuide.md](Documentation/CalculcoStudentGuide.md).
 
 This project uses Python 3.13 and `uv` exclusively.
 
@@ -349,6 +430,45 @@ Milestone 8B writes local row-level scores and model artifacts under ignored
 `reports/milestone8b_ablation_evaluation.json`, and
 `reports/milestone8b_frozen_selection.json`. It is a graph-aware ablation gate,
 not validated clinical recommendation behavior or full Transformer-GNN training.
+
+Audit and attempt rank-aware Stage 1 recovery on the Phase 8 P0 package with:
+
+```bash
+scripts/calculco/submit_phase8_p0_gate_recovery.sh development
+```
+
+This CPU-only OAR path first creates or verifies
+`reports/phase8_p0_training_contract_lock.json`, performs all feature and
+fusion selection on patient-grouped MIMIC-train folds, and evaluates one locked
+candidate on validation. Final MIMIC test mode is blocked unless the recovery
+selection clears the gate. The command is documented here but no job is
+submitted automatically.
+
+Run the Stage 2 neural Transformer branch when the structured recovery
+selection records `neural_training_authorized` (Stage 1 development has
+already frozen that authorization). The neural gate must clear +0.005
+NDCG@10 over the Stage 1 winner (`xgboost_rank_ndcg_oof_late_fusion`), not
+the older Milestone 8B XGBoost anchor. PyTorch is optional and not synced by
+default, so install the `neural` group on the worker first:
+
+```bash
+uv sync --group neural
+uv run python -m pipeline.neural_training prepare
+uv run python -m pipeline.neural_training train
+uv run python -m pipeline.neural_training score
+```
+
+`prepare` builds train-fit vocabularies, numeric normalization, and memory-
+bounded sharded DuckDB caches under ignored `Dataset/processed/phase8_p0/neural/`;
+`train` runs the listwise + auxiliary training loop with early stopping,
+checkpointing, and temperature calibration; `score` writes canonical scores plus
+aggregate-only reports
+`reports/phase8_p0_neural_prepare_manifest.json`,
+`reports/phase8_p0_neural_training_evaluation.json`,
+`reports/phase8_p0_neural_score_evaluation.json`, and
+`reports/phase8_p0_neural_training_selection.json`. For protected-data scale,
+submit the GPU OAR wrapper `scripts/calculco/phase8_p0_neural_training.sh` (see
+`WORKFLOWS.md`). Every stage stays fail-closed behind the recovery gate.
 
 Do not use `pip`, Poetry, Conda, global Python, or system site-packages.
 

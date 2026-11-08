@@ -10,6 +10,25 @@
 6. Review the diff using `CODE_REVIEW.md`.
 7. Update affected docs and `CHANGELOG.md`.
 
+## Develop Ranking Explainability
+
+Follow [the implementation plan](Documentation/ResearchFinal/ExplainabilityImplementationPlan.md).
+Start with invented full-slate scores and the torch-independent numerical API.
+Export `PROJECT_HOME`, `DATASET_ROOT`, and `WORK_SCRATCH` before pipeline work.
+
+```bash
+uv run --no-sync pytest -q tests/test_explainability_margins.py tests/test_explainability_attribution.py
+```
+
+For each proposed source intervention, define its reference and all dependent
+sequence/summary/graph edits before attaching a real scorer. Keep candidate
+membership, model parameters and train-fit global graph statistics fixed. Check
+original-precision scorer parity and provenance before protected evaluation.
+Record query limits, seed, numerical residuals and reference assumptions; do
+not interpret permutation standard errors as clinical confidence. Protected
+replay and comparative experiments are separate future work, with aggregate
+reporting and OAR only when requested.
+
 ## Build or Change a Cohort
 
 1. Define source population, inclusion criteria, exclusion criteria, unit of
@@ -255,7 +274,72 @@ oarsub -O "$PROJECT_HOME/scripts/calculco/logs/rm_phase8_p0_features_%jobid%.out
        -S "$PROJECT_HOME/scripts/calculco/phase8_p0_features.sh"
 ```
 
-2. Rebuild CodexPLAN Step 9 model-ready tabular artifacts:
+2. Rebuild the complete CodexPLAN Step 9 model-ready package.
+
+For protected-data scale, submit the dependency-ordered OAR chain through the
+submit wrapper:
+
+```bash
+scripts/calculco/submit_phase8_p0_model_ready.sh            # full chain
+```
+
+The wrapper writes the gitignored `scripts/calculco/phase8_p0_model_ready_job.env`
+and the worker sources it. OAR `-S` jobs run in a clean environment and do not
+inherit login-shell exports, so setting `PHASE8_P0_START_AT` or the subgraph
+knobs with a bare `export` before `oarsub` has no effect on the job. Use the
+wrapper (or edit the job env file) instead.
+
+The chain builds or reuses `temporal-features-v2`, then materializes the
+RxNorm-first primary training package, the ATC-3-first eICU sensitivity
+package, train-only preprocessing, graph edges, normalized patient subgraphs,
+local vocabularies, the schema-only data dictionary, and the final aggregate
+manifest. Downstream builders infer `feature_version` from their inputs and
+fail if version stamps conflict.
+
+Patient nodes are built in eight source-qualified stay-hash batches by default,
+keeping every ranking group for one stay together. High-cardinality edge and
+candidate joins are independently split into eight shards per node batch. Edge
+assembly encodes the small train-fit concept graph and per-shard subgraphs as
+integer memberships, builds condition-source and medication-source relations
+separately, and uses one DuckDB thread. This avoids the string-key node
+self-join that exhausted node-local spill space with 12 million nodes in one
+batch. Parts are streamed into the same canonical Parquet schemas.
+
+The aggregate subgraph manifest records both partition levels, part row counts,
+and the failed part index. After an edge-stage failure, reuse the completed
+training, ATC-3, preprocessing, and graph artifacts by resuming at the subgraph
+stage:
+
+```bash
+scripts/calculco/submit_phase8_p0_model_ready.sh subgraphs
+```
+
+Override the subgraph knobs at submit time, for example:
+
+```bash
+SUBGRAPH_JOIN_SHARDS=16 \
+  scripts/calculco/submit_phase8_p0_model_ready.sh subgraphs
+```
+
+Confirm the new job's `.out` log prints `PHASE8_P0_START_AT=subgraphs` before
+trusting the run. The edge builder keeps the large relation-specific joins on
+narrow integer keys and attaches the wide string columns only at the end, so the
+default 8 shards should fit node-local scratch. `failed to offload data block ...
+(X GiB/X GiB used)` means DuckDB hit its `max_temp_directory_size` (which
+defaults to ~90% of free space on the temp drive, e.g. a small `/tmp`), not the
+`memory_limit`. To resolve it:
+
+- Point `DUCKDB_TEMP_DIR` at a larger volume and raise the ceiling with
+  `DUCKDB_MAX_TEMP_DIR_SIZE` (e.g. `150GB`), or
+- increase `SUBGRAPH_JOIN_SHARDS` to `16` to shrink each part's working set.
+
+Do not increase `SUBGRAPH_BATCHES` unless node construction itself fails, and
+avoid very high shard counts (each part re-scans its node batch, so `32` shards
+runs far longer). Prefer a writable `WORK_SCRATCH` through the gitignored local
+environment. When unavailable, `common.sh` tries node-local `/scratch` before the
+smaller `/tmp` fallback.
+
+The equivalent core login-node commands for synthetic or bounded fixtures are:
 
 ```bash
 uv run python -m pipeline.build_training_table \
@@ -263,15 +347,56 @@ uv run python -m pipeline.build_training_table \
   --training-root "$DATASET_ROOT/processed/phase8_p0/training" \
   --manifest "$PROJECT_HOME/reports/phase8_p0_training_table_manifest.json"
 
+uv run python -m pipeline.build_training_table \
+  --features-root "$DATASET_ROOT/processed/phase8_p0/features" \
+  --training-root "$DATASET_ROOT/processed/phase8_p0/sensitivity/atc3_or_rxnorm/training" \
+  --candidate-token-strategy atc3_or_rxnorm \
+  --manifest "$PROJECT_HOME/reports/phase8_p0_atc3_training_table_manifest.json"
+
 uv run python -m pipeline.preprocessing \
   --features-root "$DATASET_ROOT/processed/phase8_p0/features" \
   --training-root "$DATASET_ROOT/processed/phase8_p0/training" \
   --preprocessing-root "$DATASET_ROOT/processed/phase8_p0/training/preprocessing" \
   --manifest "$PROJECT_HOME/reports/phase8_p0_preprocessing_manifest.json"
+
+uv run python -m pipeline.graph_suitability \
+  --features-root "$DATASET_ROOT/processed/phase8_p0/features" \
+  --training-root "$DATASET_ROOT/processed/phase8_p0/training" \
+  --graph-root "$DATASET_ROOT/processed/phase8_p0/graph/milestone8" \
+  --graph-schema-report "$PROJECT_HOME/reports/phase8_p0_milestone8_graph_schema.json" \
+  --suitability-report "$PROJECT_HOME/reports/phase8_p0_milestone8_graph_suitability.json" \
+  --ablation-plan "$PROJECT_HOME/reports/phase8_p0_milestone8_ablation_plan.json"
+
+uv run python -m pipeline.patient_subgraphs \
+  --features-root "$DATASET_ROOT/processed/phase8_p0/features" \
+  --training-root "$DATASET_ROOT/processed/phase8_p0/training" \
+  --graph-root "$DATASET_ROOT/processed/phase8_p0/graph/milestone8" \
+  --subgraphs-root "$DATASET_ROOT/processed/phase8_p0/graph/milestone8/patient_subgraphs" \
+  --manifest "$PROJECT_HOME/reports/phase8_p0_patient_subgraphs_manifest.json" \
+  --subgraph-batches 8 \
+  --subgraph-join-shards 8 \
+  --edge-duckdb-threads 1
+
+uv run python -m pipeline.model_ready_package \
+  --features-root "$DATASET_ROOT/processed/phase8_p0/features" \
+  --training-root "$DATASET_ROOT/processed/phase8_p0/training" \
+  --graph-root "$DATASET_ROOT/processed/phase8_p0/graph/milestone8" \
+  --subgraphs-root "$DATASET_ROOT/processed/phase8_p0/graph/milestone8/patient_subgraphs" \
+  --preprocessing-root "$DATASET_ROOT/processed/phase8_p0/training/preprocessing" \
+  --package-root "$DATASET_ROOT/processed/phase8_p0/model_ready" \
+  --data-dictionary "$PROJECT_HOME/reports/phase8_p0_model_ready_data_dictionary.json" \
+  --manifest "$PROJECT_HOME/reports/phase8_p0_model_ready_manifest.json" \
+  --primary-training-manifest "$PROJECT_HOME/reports/phase8_p0_training_table_manifest.json" \
+  --sensitivity-training-manifest "$PROJECT_HOME/reports/phase8_p0_atc3_training_table_manifest.json" \
+  --preprocessing-manifest "$PROJECT_HOME/reports/phase8_p0_preprocessing_manifest.json" \
+  --subgraphs-manifest "$PROJECT_HOME/reports/phase8_p0_patient_subgraphs_manifest.json"
 ```
 
-The OAR chain `scripts/calculco/phase8_p0_model_ready.sh` runs features when
-needed, then training-table construction and preprocessing.
+Do not run `pipeline.model_ready_package` before graph suitability and the
+ATC-3 sensitivity build; both are required by the completion manifest. If both
+candidate strategies have zero positive eICU ranking groups, the final
+manifest records `coverage_only_no_in_catalog_positive_groups` and prohibits
+external performance claims.
 
 3. Rerun Milestone 7 development evaluation on the isolated roots:
 
@@ -300,7 +425,9 @@ MILESTONE7_BASELINES=linear,xgboost \
   scripts/calculco/submit_phase8_p0_evaluate_baselines.sh development
 ```
 
-4. Rerun Milestone 8 and 8B development gates:
+4. Rerun Milestone 8B development gates. The model-ready chain already builds
+   the isolated Milestone 8 graph; rerun graph suitability only when its inputs
+   changed:
 
 ```bash
 uv run python -m pipeline.graph_suitability \
@@ -358,6 +485,408 @@ uv run python -m pipeline.feature_gate_review \
 Promote only after reviewing the gate JSON. If it rejects or is inconclusive,
 keep the default roots and current `milestone8b_*` reports canonical.
 
+## Run Phase 8 P0 Gate Recovery
+
+1. Confirm the completed model-ready and frozen reference reports exist. Do
+   not inspect patient rows.
+2. Submit the CPU-only development job:
+
+```bash
+cd "$PROJECT_HOME"
+scripts/calculco/submit_phase8_p0_gate_recovery.sh development
+```
+
+The worker runs `pipeline.training_contract` first. The first run creates
+`reports/phase8_p0_training_contract_lock.json`; later runs compare current
+manifest hashes and artifact metadata with that lock and fail on drift. The
+rank-aware runner then makes every feature, hyperparameter, and fusion choice
+on deterministic patient-grouped MIMIC-train folds.
+
+Development mode is memory-bounded: configuration screening runs on the
+deterministic train sample, while the locked finalist, binary reference OOF, and
+the validation gate use the full candidate universe streamed to narrow Parquet
+one fold at a time, with the fusion-weight search executed in DuckDB. The worker
+logs stage progress and peak RSS to the OAR `.out`, writes a contract-keyed
+`screening_checkpoint.json` so a resubmit resumes after screening, and defaults
+to `DUCKDB_THREADS=8`, `DUCKDB_MEMORY_LIMIT=24GB`, `MALLOC_ARENA_MAX=2`, and
+`PYTHONUNBUFFERED=1`. The DuckDB ceiling stays below the node budget so pandas,
+sklearn, and XGBoost keep headroom; ensure DuckDB spill lands on disk-backed
+scratch rather than a `/tmp` tmpfs (the worker warns on `/tmp` fallback).
+
+3. Review only these aggregate reports:
+
+```text
+reports/phase8_p0_training_contract_lock.json
+reports/phase8_p0_training_contract_audit_latest.json
+reports/phase8_p0_gate_recovery_evaluation.json
+reports/phase8_p0_gate_recovery_selection.json
+```
+
+Local sampled matrices, full scores, preprocessors, and models remain ignored
+under `$DATASET_ROOT/processed/phase8_p0/evaluation/gate_recovery/`.
+
+4. Run final mode only if the selection report records
+`neural_training_authorized=true`:
+
+```bash
+scripts/calculco/submit_phase8_p0_gate_recovery.sh final
+```
+
+The CLI independently blocks final MIMIC test scoring when the development
+gate failed. eICU is not used for fitting or tuning.
+
+## Run Phase 8 P0 Neural Training (Stage 2)
+
+Run the Stage 2 Transformer patient/context branch after the structured
+recovery gate records `neural_training_authorized=true` in
+`reports/phase8_p0_gate_recovery_selection.json` (Stage 1 development has
+already frozen that authorization). This section trains the Transformer branch;
+the separate implemented Phase D workflow is documented below.
+
+1. Confirm the gate selection is frozen/authorized and the model-ready
+   artifacts, contract lock, and Stage 1 recovery baseline scores exist under
+   `$DATASET_ROOT/processed/phase8_p0/evaluation/gate_recovery/baseline_scores.parquet`.
+   Do not inspect patient rows. The neural gate beats
+   `xgboost_rank_ndcg_oof_late_fusion` (≈ `0.394607` NDCG@10), not the older
+   Milestone 8B `xgboost_frozen_reference`.
+2. Install the optional PyTorch group on the worker (it is not synced by
+   default so the rest of the repository stays lightweight):
+
+```bash
+uv sync --group neural
+```
+
+3. Prepare train-fit vocabularies, numeric normalization, and memory-bounded
+   sharded DuckDB caches, then train and score:
+
+```bash
+uv run python -m pipeline.neural_training prepare
+uv run python -m pipeline.neural_training train
+uv run python -m pipeline.neural_training score
+```
+
+The `prepare` stage is PyTorch-free and can run on the login node for bounded
+fixtures; `train` and `score` import torch lazily and expect a GPU/CPU worker.
+Every stage runs the same fail-closed preflight (`contract` module): it verifies
+the training-contract lock and re-checks the neural gate. `prepare` builds
+vocabularies with reserved `PAD=0`/`UNK=1` tokens, computes train-only numeric
+and event-value normalization, fits train-only candidate priors
+(global and condition×candidate log-odds) plus `log1p(candidate_rank)` and
+Stage-1-matched train-fit graph tabular side features (support threshold 5),
+and writes `feature_layout.json` so training and scoring share one feature
+ordering. After any schema/prior/graph-side change (including the v3
+gap-recovery upgrade), **rerun `prepare` before `train`** so group caches
+contain the new candidate-side columns. `train` runs multi-positive listwise
+softmax, catalog-primary-positive listwise (MRR-oriented), and weighted
+auxiliary BCE (per-batch `pos_weight`) with AdamW warmup+cosine, EMA weight
+selection, early stopping on validation NDCG@10, gradient clipping, optional
+mixed precision, checkpointing, and post-hoc temperature calibration. `score`
+writes canonical `baseline_scores.parquet` rows, combines them with the Stage 1
+recovery baseline scores for authoritative DuckDB metrics, and records the
+neural gate decision against that winner (+0.005 NDCG@10).
+
+4. For protected-data scale, submit the GPU OAR wrapper (it installs the
+   `neural` group and runs the selected stages):
+
+```bash
+scripts/calculco/submit_phase8_p0_neural_training.sh development
+```
+
+The worker requests `/nodes=1/gpu=1` plus `#OAR -p gpudevice<>'-1'` (no extra
+quotes around the `-p` expression) so OAR places the job on a GPU host
+(chimay31+ / visu*), not a CPU node such as chimay01. Confirm
+`assigned_hostnames` with `oarstat -j <id> -f` / `oarstatmon.py` before trusting
+a long train run. To pin one host, set
+`#OAR -p network_address='chimay34' and gpudevice<>'-1'` in
+`phase8_p0_neural_training.sh`. Tune stages, mode, seed, sequence length, batch
+size, and DuckDB limits through the generated
+`scripts/calculco/phase8_p0_neural_training_job.env`.
+
+5. Review only these aggregate reports:
+
+```text
+reports/phase8_p0_neural_prepare_manifest.json
+reports/phase8_p0_neural_training_evaluation.json
+reports/phase8_p0_neural_score_evaluation.json
+reports/phase8_p0_neural_training_selection.json
+```
+
+Local caches, checkpoints, predictions, and row-level scores remain ignored
+under `$DATASET_ROOT/processed/phase8_p0/neural/`.
+
+6. Run final MIMIC test scoring only after the development selection records a
+   passing neural gate and the neural selection is frozen (`--mode final
+   --frozen-selection`). eICU is not used for fitting, tuning, or selection.
+
+## Run Phase 8 P0 GNN and Frozen-Transformer Fusion (Phase D)
+
+Phase D code and protected preparation are complete, but protected training has
+not completed successfully. The full-train graph is refit-only; model
+selection requires five patient-fold-excluded graph caches and exact artifact
+hashes.
+
+1. Export the Calculco paths and sync the existing optional PyTorch group:
+
+```bash
+export PROJECT_HOME=/path/to/ResearchModule
+export DATASET_ROOT=/path/to/protected/Dataset
+export WORK_SCRATCH=/path/to/job/scratch
+export REPORTS_ROOT="${REPORTS_ROOT:-$PROJECT_HOME/reports}"
+cd "$PROJECT_HOME"
+uv sync --group neural
+```
+
+2. Confirm the upstream aggregate contracts and frozen Transformer artifacts
+   exist without opening patient rows:
+
+```bash
+test -f "$REPORTS_ROOT/phase8_p0_training_contract_lock.json"
+test -f "$REPORTS_ROOT/phase8_p0_patient_subgraphs_manifest.json"
+test -f "$REPORTS_ROOT/phase8_p0_neural_training_selection.json"
+test -f "$DATASET_ROOT/processed/phase8_p0/neural/checkpoints/transformer_recommender.pt"
+uv run python -m pipeline.gnn_training --help
+```
+
+3. Review protected-NFS free space. Cross-fit preparation currently writes five
+   physical fold trees, so set `GNN_CROSSFIT_MIN_FREE_GIB` to the
+   reviewed minimum; Python also computes a cache-derived estimate and requires
+   whichever value is larger. Submit the CPU preparation job:
+
+```bash
+export WORK_SCRATCH=/workdir/<lab>/<username>
+# Defaults after the DuckDB OOM on job 7800: 4 threads, 128GB DuckDB ceiling,
+# and a large spill cap on WORK_SCRATCH. Override only after capacity review.
+GNN_CROSSFIT_MIN_FREE_GIB=<reviewed-value> \
+  scripts/calculco/submit_phase8_p0_gnn_prepare.sh
+```
+
+The wrapper requires DuckDB spill under `$WORK_SCRATCH`, runs
+`uv sync --group neural`, and executes only `prepare`. Cross-fit rebuilds the
+~9.5GB patient-subgraph edge table one ranking-group shard at a time so joins
+can spill instead of materializing the full edge set in RAM. It
+does not print patient rows. Preparation is ready only when both reports record
+`status=completed`:
+
+```text
+reports/phase8_p0_gnn_prepare_manifest.json
+reports/phase8_p0_gnn_crossfit_graph_manifest.json
+```
+
+Restricted graph caches, exact hash manifests, frozen Transformer contexts and
+logits, and vocabularies stay under
+`$DATASET_ROOT/processed/phase8_p0/gnn/`.
+
+4. The P1 feature/relation versions invalidate the earlier prepared GNN tree.
+   Rerun and review `prepare` before GPU work. Then submit the restartable
+   `(variant, fold)` OAR array:
+
+```bash
+scripts/calculco/submit_phase8_p0_gnn_fold_array.sh
+```
+
+After every array task has a compatible completed-fold checkpoint and hash
+sidecar manifest, run
+selection and full-train refit as separate jobs, then submit later stages
+individually:
+
+```bash
+scripts/calculco/submit_phase8_p0_gnn_training.sh development select-gnn
+scripts/calculco/submit_phase8_p0_gnn_training.sh development refit-gnn
+scripts/calculco/submit_phase8_p0_gnn_training.sh development score-gnn
+scripts/calculco/submit_phase8_p0_gnn_training.sh development train-fusion
+scripts/calculco/submit_phase8_p0_gnn_training.sh development score-fusion
+```
+
+Set `GNN_AFTER_JOB_ID=<prior OAR job id>` on each submission to add an OAR
+anterior-job dependency (`oarsub -a`), including selection after the fold
+array, refit after selection, and each reviewed scoring/fusion boundary.
+Note that `-a` starts the next job when the prior **ends**, including on
+failure; prefer success-gated watchers when a failed prior must block the
+next stage.
+
+For end-of-job alerts, set `GNN_OAR_NOTIFY` before submit (passed to
+`oarsub --notify`), for example
+`GNN_OAR_NOTIFY='[END,ERROR]mail:you@example.com'`. For a job already
+running, use `scripts/calculco/watch_oar_job.sh <job_id> --mail you@example.com`
+(optional `--on-success '…'` to submit the next stage only when
+`exit_code` is 0).
+
+The compatibility `train-gnn` command still performs missing folds, selection,
+and refit serially, but the OAR array is the protected-scale workflow. Six
+pre-registered variants include full, rank-only, no message passing, and three
+relation-removal controls. `select-gnn` writes selected GNN OOF logits and fits
+temperature from those patient-grouped train OOF logits; `refit-gnn` trains the
+selected variant on the full train graph. `score-gnn`
+compares the standalone branch with the locked graph-only XGBoost reference.
+Fusion keeps the Transformer immutable and compares late versus residual
+candidates against the frozen Transformer validation metrics. Late-fusion
+alpha is fit on the intersection of patient-fold GNN OOF logits with the
+full-train frozen Transformer cache; that cache excludes zero-positive train
+groups by design, matching the refit graph.
+
+Calculco A100 jobs default to BF16 (`GNN_PRECISION=bf16`); FP16 remains an
+explicit option and alone uses dynamic loss scaling and bounded overflow
+retry. Use `GNN_PRECISION=fp32` or the legacy `GNN_MIXED_PRECISION=0` for a
+separately reviewed full-precision diagnostic. Batches are greedily bounded by
+`GNN_BATCH_RANKING_GROUPS=32`, `GNN_MAX_EDGES_PER_BATCH=100000`, and
+`GNN_MAX_NODES_PER_BATCH=8192`. Microbatches accumulate to
+`GNN_GRADIENT_ACCUMULATION_GROUPS=32` before each optimizer step; tune ceilings
+from measured aggregate distributions, not patient examples. New prepared
+caches enforce one Parquet fragment per table/split/shard. The complete tree is
+content-hashed once per allocation; later preflights in that allocation reuse
+a mode-0600 attestation after a metadata fingerprint check. Training reports
+one aggregate-safe heartbeat every
+`GNN_PROGRESS_INTERVAL_BATCHES=100` batches.
+
+The relation layer aggregates edges by relation before applying each dense
+transform and therefore does not materialize an `E×H×H` tensor. Atomic epoch
+resume state and completed-fold checkpoints live under the configured GNN
+checkpoint root, outside the immutable cross-fit cache. Resume is accepted
+only for matching seed, layout, architecture, optimization, and cross-fit
+manifest locks.
+
+The frozen Transformer representations are a full-train refit, not
+Transformer OOF outputs. Late-fusion weight fitting is recorded as train
+meta-fitting over GNN OOF logits and a fixed train-derived Transformer
+covariate; only the separate validation gate supports promotion.
+
+5. Review aggregate reports only:
+
+```text
+reports/phase8_p0_gnn_training_evaluation.json
+reports/phase8_p0_gnn_score_evaluation.json
+reports/phase8_p0_gnn_training_selection.json
+reports/phase8_p0_fusion_training_evaluation.json
+reports/phase8_p0_fusion_score_evaluation.json
+reports/phase8_p0_fusion_training_selection.json
+```
+
+6. Final scoring is optional, gated, atomic, and one-shot. Submit exactly one
+   selected scorer only after its development selection authorizes final
+   scoring:
+
+```bash
+GNN_FINAL_SCORE_CONFIRM=I_UNDERSTAND_ONE_SHOT \
+  scripts/calculco/submit_phase8_p0_gnn_training.sh final score-gnn
+
+# Or, for an authorized promoted hybrid:
+GNN_FINAL_SCORE_CONFIRM=I_UNDERSTAND_ONE_SHOT \
+  scripts/calculco/submit_phase8_p0_gnn_training.sh final score-fusion
+```
+
+The scoring command creates an exclusive completion/attempt marker before
+test predictions. A concurrent run or interrupted attempt remains blocked; do
+not remove or reset the marker without a separate reviewed recovery decision.
+The broader MIMIC test split is not wholly unseen because the frozen
+Transformer was evaluated earlier, and reports disclose that limitation.
+
+## Run Paired-OOF Late Fusion (Protocol v2)
+
+Use this workflow to replace the asymmetric original late-fusion meta-fit. The
+five Transformer folds and six GNN-variant OOF materializations are independent
+and are submitted as two parallel OAR arrays:
+
+```bash
+export PROJECT_HOME DATASET_ROOT WORK_SCRATCH
+scripts/calculco/submit_phase8_p0_paired_oof.sh all-oof
+```
+
+Each Transformer task rebuilds fit-only preprocessing and uses the matching
+fold-excluded graph. Each GNN task scores all five held-out checkpoints for one
+variant. Do not submit selection until all eleven aggregate reports say
+`status=completed`.
+
+For a failed individual task, use the targeted retry boundary rather than
+repeating an array:
+
+```bash
+scripts/calculco/submit_phase8_p0_paired_oof.sh transformer-fold 1
+scripts/calculco/submit_phase8_p0_paired_oof.sh gnn-variant full
+```
+
+The GPU worker reserves 48 hours, is restricted to the proven
+`chimay33`/`chimay34` pool, and fails before pipeline work when CUDA is not
+visible. The first full GNN materializer exceeded the former 12-hour limit, so
+do not use the original 6--10 hour planning estimate. Submit additional GNN
+variants only after reviewing the first recovery task's completion and runtime.
+
+To run the remaining variants serially with mail alerts and automatic hand-off,
+start a login-node watcher inside `tmux` or `screen`:
+
+```bash
+export PROJECT_HOME DATASET_ROOT WORK_SCRATCH
+PAIRED_GNN_CHAIN_MAIL=you@example.com \
+  scripts/calculco/watch_paired_gnn_oof_chain.sh
+```
+
+The chain skips variants whose aggregate report already says `status=completed`,
+submits the next pending variant only after the prior job finishes with exit
+code 0 **and** the aggregate report says `completed`, and mails on every job end.
+On failure it stops instead of continuing. Optional auto-selection after the
+last variant:
+
+```bash
+PAIRED_GNN_CHAIN_MAIL=you@example.com \
+PAIRED_GNN_CHAIN_ON_COMPLETE='scripts/calculco/submit_phase8_p0_paired_oof.sh select' \
+  scripts/calculco/watch_paired_gnn_oof_chain.sh
+```
+
+For one variant at a time without the chain, use `gnn-variant VARIANT`. For OAR
+dependencies on a future submit, set `PAIRED_AFTER_JOB_ID=<prior job id>`
+(starts even on failure, like `GNN_AFTER_JOB_ID`). For submit-time OAR notify,
+set `PAIRED_OAR_NOTIFY='[END,ERROR]mail:you@example.com'`. If built-in OAR
+notify is unreliable, prefer the watcher; it uses `send_oar_mail.sh` with a
+filesystem fallback when `mail`/`mailx` fail. Test mail once:
+
+```bash
+scripts/calculco/send_oar_mail.sh you@example.com "Calculco OAR test" "Watcher mail works."
+```
+
+```bash
+scripts/calculco/submit_phase8_p0_paired_oof.sh select
+scripts/calculco/submit_phase8_p0_paired_oof.sh refit
+scripts/calculco/submit_phase8_p0_paired_oof.sh calibrate
+```
+
+`select` is a CPU OAR job. It requires exact fold/candidate/label alignment and
+searches the locked alpha grid `0.000..0.250` by `0.005` on paired train OOF
+only. `refit` reuses the existing full GNN when variant and epoch count match;
+otherwise it runs one selected-variant refit. `calibrate` is a CPU OAR stage
+that holds out each deterministic patient fold in turn, evaluates temperature
+and positive-slope affine sigmoid mappings for both paired hybrid and
+Transformer OOF scores, and freezes the lowest-Brier mapping with log loss as
+the tie-breaker. Set `PAIRED_INCLUDE_ISOTONIC=1` before submission to include
+the non-decreasing isotonic challenger. Like `select`, the calibrate wrapper
+runs `uv sync --group neural` so it does not strip torch from the shared
+project environment; the calibration import path itself is torch-free. Calibration
+parameters remain under
+the ignored paired-protocol root; only aggregate fold metrics and suppressed
+reliability bins are written to
+`reports/phase8_p0_paired_oof_calibration.json`.
+
+The calibration stage keeps `rank_score` unchanged and defines a separate
+`probability_observed_prescription` mapping. It does not reopen or overwrite the
+one-shot ranking gate. OAR `22662` completed the protected fit: both branches
+froze affine sigmoid on train OOF (cross-fitted Brier ≈ 0.069, ECE ≈ 0.001) in
+`reports/phase8_p0_paired_oof_calibration.json`. Ranking-gate Brier/ECE remain
+uncalibrated-score disclosures. Applying the mapping to the already consumed
+MIMIC test is retrospective only and must not select the mapping or support a
+new confirmatory claim.
+
+The final boundary is blocked until a reviewed newly isolated gate and matching
+cache partitions exist. The pipeline never chooses that split automatically.
+After freezing `reports/phase8_p0_paired_oof_frozen_gate.json`:
+
+```bash
+PAIRED_GATE_SCORE_CONFIRM=I_UNDERSTAND_ONE_SHOT \
+  scripts/calculco/submit_phase8_p0_paired_oof.sh score
+```
+
+The command claims the gate before scoring and applies the unchanged `+0.005`
+NDCG@10 / `-0.01` secondary guards. See
+`Documentation/PairedOOFLateFusionProtocol.md` for the manifest contract,
+artifact layout, measured prior runtimes, and planning ranges.
+
 ## Run Milestone 8 Graph Suitability
 
 1. Confirm Milestone 6 feature/training artifacts exist and Milestone 7 frozen
@@ -381,8 +910,9 @@ oarsub -O "$PROJECT_HOME/scripts/calculco/logs/rm_graph_%jobid%.out" \
    `reports/milestone8_ablation_plan.json`.
 5. Keep concept-level graph edges local under ignored
    `$DATASET_ROOT/processed/graph/milestone8/`.
-6. Do not train or claim a Transformer-GNN improvement until the graph gate and
-   held-out baseline evidence are reviewed.
+6. Treat this as an upstream graph gate only. Phase D still requires its own
+   protected preparation, validation selection, and frozen-artifact review
+   before any Transformer-GNN improvement claim.
 
 ## Run Milestone 8B Graph Ablations
 
@@ -448,6 +978,8 @@ scripts/calculco/submit_graph_ablation.sh final
 ## Calculco HPC (ULCO)
 
 Use the cluster for heavy extraction, modeling, and long-running jobs.
+Student-facing login and CPU/GPU OAR notes:
+`Documentation/CalculcoStudentGuide.md`.
 
 1. Confirm `PROJECT_HOME` and `DATASET_ROOT` are exported.
 2. Read account-specific paths in gitignored `Documentation/CalculcoSetup.local.md`

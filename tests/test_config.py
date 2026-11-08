@@ -106,6 +106,22 @@ def test_resolve_duckdb_memory_limit_reads_env() -> None:
     assert config.resolve_duckdb_memory_limit(environ={}) is None
 
 
+def test_resolve_duckdb_max_temp_dir_size_reads_env() -> None:
+    assert (
+        config.resolve_duckdb_max_temp_dir_size(
+            environ={"DUCKDB_MAX_TEMP_DIR_SIZE": "150GB"}
+        )
+        == "150GB"
+    )
+    assert (
+        config.resolve_duckdb_max_temp_dir_size(
+            environ={"DUCKDB_MAX_TEMP_DIR_SIZE": "  "}
+        )
+        is None
+    )
+    assert config.resolve_duckdb_max_temp_dir_size(environ={}) is None
+
+
 def test_resolve_duckdb_threads_reads_positive_int() -> None:
     assert config.resolve_duckdb_threads(environ={"DUCKDB_THREADS": "8"}) == 8
     assert config.resolve_duckdb_threads(environ={"DUCKDB_THREADS": "0"}) is None

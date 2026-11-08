@@ -6,6 +6,275 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ### Added
 
+- Student-facing Calculco guide covering login, storage, OAR, and CPU versus
+  GPU job submission (`Documentation/CalculcoStudentGuide.md`).
+
+### Changed
+
+- Started the explainability implementation plan with a synthetic-tested CPU
+  numerical core: full-slate normalized branch margins, direct versus
+  normalization route allocation, and bounded shared-coalition grouped
+  attribution. Exact small games and seeded sampling expose baselines,
+  permutation standard errors, query counts and numerical residuals. The
+  removed evidence-ledger contract stays removed. Frozen clinical adapters,
+  replay, reversal search and explanation-quality evaluation remain planned.
+
+- Removed the preliminary `pipeline.explainability` evidence-ledger schema and
+  its synthetic tests. The fused-rank explanation method is now documented as
+  proposed research in `Documentation/ResearchFinal/ProposedExplainabilityIdea.md`
+  and will receive an implementation contract only after its specification is
+  reviewed.
+
+- Paired-OOF calibrate OAR job `22662` completed protocol
+  `phase8-p0-paired-oof-calibration-v1`. Both hybrid and Transformer branches
+  froze affine sigmoid on paired train OOF (cross-fitted Brier ≈ 0.069, 10-bin
+  ECE ≈ 0.001). Ranking-gate Brier/ECE remain disclosures of uncalibrated
+  scores. The first attempt (`22661`) failed after bare `uv sync` stripped
+  torch; that import path is torch-free and the calibrate wrapper syncs
+  `--group neural`. Aggregate report:
+  `reports/phase8_p0_paired_oof_calibration.json`.
+
+### Fixed
+
+- Paired-OOF calibrate OAR job `22661` failed on import after bare `uv sync`
+  removed torch from the shared environment. `ABLATION_VARIANTS` now lives in
+  torch-free `pipeline.gnn_training.graph_encode`, `paired_oof` imports it from
+  there, and `phase8_p0_paired_oof_calibrate.sh` uses `uv sync --group neural`
+  like the select worker so CPU calibration no longer depends on a torch model
+  import or strips the neural group.
+
+### Added
+
+- Paired-OOF probability calibration protocol
+  (`phase8-p0-paired-oof-calibration-v1`) for the frozen hybrid and Transformer.
+  The CPU stage compares temperature and positive-slope affine sigmoid mappings,
+  with optional isotonic regression, using patient-fold-held-out train OOF
+  predictions; selects by Brier then log loss; preserves an independent
+  `rank_score`; and freezes alpha, seed, model/selection hashes, and OOF hashes
+  in protected storage. Aggregate reports suppress low-count reliability bins.
+  Protected fit completed on OAR `22662` (both branches affine sigmoid).
+
+- A versioned, framework-independent explanation evidence contract in
+  `pipeline.explainability` for pairwise medication-ranking decisions. The
+  fail-closed schema separates hierarchical model contributions, hard safety
+  certificates, external knowledge, constrained non-causal counterfactuals,
+  uncertainty metadata, and protected references; checks rank-margin and
+  parent/child evidence conservation; and provides deterministic JSON plus a
+  stable digest. Synthetic tests cover serialization and invalid evidence.
+  Component explainers, protected logging, language generation, and clinical
+  validation remain planned.
+
+- Versioned paired-OOF late-fusion protocol
+  (`phase8-p0-paired-oof-late-fusion-v2`): five fold-isolated Transformer OOF
+  jobs; six GNN-variant OOF materializers; joint selection of GNN `full` and
+  alpha `0.25` on paired train OOF (NDCG@10 lift about `+0.0092`); three-epoch
+  full GNN refit; one-shot MIMIC-test gate `mimiciv-test-paired-oof-v1` which
+  passed with about `+0.0131` NDCG@10 lift vs the frozen Transformer
+  (`final_scoring_authorized=true`). Ranking promotion is recorded separately
+  from probability calibration: ranking-gate Brier/ECE disclose uncalibrated
+  scores. Calculco recovery workers, CUDA fail-fast checks, and
+  synthetic paired-OOF tests accompany the protocol. Aggregate review:
+  `Documentation/HybridModelResultReview.md`. The earlier asymmetric fusion
+  selection (`hybrid_qualified=false`) remains historical.
+
+- Programmatic hybrid architecture diagrams
+  (`uv run python -m visualization.hybrid_architecture_diagrams`): stacked-block
+  internal views of the Pre-LN Transformer encoder
+  (`pipeline.neural_training.model`) and R-GCN relation layers
+  (`pipeline.gnn_training.model` / `fusion.py`), with solid vs dashed styling for
+  implemented modules versus pending protected-training status.
+
+### Changed
+
+- Neural Transformer gap-recovery v3 (`phase8-p0-neural-transformer-v3`) after
+  protected v2 job 28374 nearly tied Stage 1 NDCG but missed the +0.005 lift and
+  failed the MRR guard: join Stage-1-matched train-fit graph tabular features
+  (support threshold 5; context + direct summaries that late fusion carries)
+  into group caches; residual numeric MLP with feature dropout; candidate-side
+  feature MLP; condition-gated dual-path scorer; catalog-primary-positive
+  listwise term for MRR; EMA weight selection; lower peak LR (`5e-5`), higher
+  weight decay / dropout, aux-BCE `0.05`, patience 2 with min-delta. Requires
+  rerunning `prepare` before `train`. GNN message passing and the Stage 1 NDCG
+  gate bar remain unchanged.
+
+- Neural Transformer gap-recovery upgrade
+  (`phase8-p0-neural-transformer-v2`): numeric MLP stay encoder, learned
+  positional encodings, dual-path candidate scorer (MLP + scaled
+  context–candidate dot product), train-only global and condition×candidate
+  log-odds priors plus `log1p(candidate_rank)` in group caches, AdamW
+  warmup+cosine schedule (peak LR `1e-4`, weight decay `1e-3`, dropout `0.2`,
+  patience 5), and per-batch aux-BCE `pos_weight` with weight `0.1`. Requires
+  rerunning `prepare` before `train`. Synthetic tests cover priors, dual-path
+  scoring, and the LR schedule. GNN/fusion remain out of scope; the Stage 1
+  NDCG gate bar is unchanged.
+
+### Fixed
+
+- Paired-OOF recovery now fails explicitly when CUDA was requested but is not
+  visible, restricts GPU work to the proven `chimay33`/`chimay34` pool, reserves
+  48 hours for five-fold GNN materialization, and supports targeted
+  `transformer-fold` / `gnn-variant` retries. This addresses first-attempt jobs
+  `22101` and `22106..22110` on an unusable `chimay31` GPU slot and job `22105`,
+  which exceeded the former 12-hour walltime. Four Transformer OOF folds remain
+  completed. Single-task retry, refit, and score submissions use one-line OAR
+  parameter files for compatibility with Calculco's `oarsub -S`; selection
+  remains blocked pending recovery of the missing fold and all six GNN variant
+  tables. Targeted recovery jobs `22470` (Transformer fold 1) and `22471` (full
+  GNN variant) started on `chimay34` on 2026-08-28 and passed the new CUDA
+  preflight.
+
+- Late-fusion meta-fit no longer requires GNN OOF train candidates to equal the
+  full PCM set when joining the frozen Transformer cache. Full-train / frozen
+  caches exclude zero-positive train groups by design; fusion now requires an
+  exact join against that refit-eligible frozen subset. Unblocks `train-fusion`
+  after protected job 20314.
+
+- Implemented the versioned GNN P1 representation/modeling contract: explicit
+  stay-query nodes and relations; fold-safe numeric value, statistical
+  deviation, trend, recency and time-bin attributes; learned relation gates and
+  relation dropout; rank-only and dense lab/vital controls; patient-grouped OOF
+  temperature fitting; one-fragment cache partitions; effective-group gradient
+  accumulation; allocation-local integrity attestations; and independently
+  schedulable `(variant, fold)`, selection, and refit commands. This changes the
+  GNN feature/relation versions and therefore requires a fresh protected
+  `prepare`; no performance claim is made.
+
+- GNN training no longer materializes a dense `E×H×H` relation-weight tensor.
+  Weighted source states are accumulated by relation before each transform,
+  preserving forward/gradient behavior while removing the allocation that
+  requested about 5.5 GiB in protected job 12214. Graph batches now have
+  independent group/node/edge ceilings; A100 jobs default explicitly to BF16;
+  and aggregate CUDA/progress heartbeats make long epochs observable. Exact
+  cross-fit verification hashes each file once per preflight instead of
+  repeatedly traversing fold and global trees. Atomic epoch state and reusable
+  completed-fold checkpoints are stored outside immutable cross-fit caches and
+  accepted only against matching configuration and artifact locks. Calculco
+  submissions now run one development stage per OAR job. Job 12214 was
+  cancelled; a protected-scale validation run and all performance claims are
+  still pending.
+
+- GNN and residual-fusion mixed-precision optimization now treats non-finite
+  scaled gradients as recoverable AMP overflow: it skips the unsafe update,
+  backs off the loss scale, and retries the same batch up to a bounded limit.
+  Persistent overflow and any full-precision non-finite gradient still fail
+  closed with model-parameter diagnostics. Epoch history records optimizer
+  steps, overflow retries, maximum pre-clip gradient norm, and minimum loss
+  scale. The CLI and Calculco wrapper expose an explicit
+  `GNN_MIXED_PRECISION=0` fallback while preserving mixed precision by default.
+  This addresses the optimization failure in protected job 10962; successful
+  protected training remains pending.
+
+- GNN graph-shard loading now accepts every deterministically ordered Parquet
+  fragment in one logical Hive split/shard partition, matching DuckDB's
+  multi-file `COPY ... PARTITION_BY` output while retaining one logical shard
+  as the memory boundary. This fixes the pre-training loader failure observed
+  in protected development job 8825 without requiring another `prepare` run.
+
+- Neural `prepare` no longer dies on DuckDB `STDDEV_SAMP is out of range` when
+  train stay features contain extreme finite values (job 28346). Mean/std now
+  exclude non-finite values and magnitudes above `1e100`, map those cells to the
+  normalized mean in the caches, and record aggregate exclusion counts. The OAR
+  neural wrapper now uses `/nodes=1/gpu=1` with `#OAR -p gpudevice<>'-1'` (no
+  extra quotes; quoted `-p` breaks `oarsub -S`) so jobs do not land on CPU-only
+  nodes (28346/28347 on chimay01).
+
+- Updated Stage 2 neural comparison baseline and status docs after Stage 1 gate
+  recovery froze `xgboost_rank_ndcg_oof_late_fusion` with
+  `neural_training_authorized=true` (validation NDCG@10 ≈ `0.394607`). The
+  Transformer now gates against that Stage 1 winner (+0.005 NDCG@10, MRR/Hit
+  guards) using gate-recovery `baseline_scores.parquet`, not Milestone 8B
+  `xgboost_frozen_reference` (`0.374899`). Fail decision is
+  `retain_structured_recovery_baseline`. Default reference paths and OAR
+  `--reference-scores` follow the Stage 1 package; docs
+  (`TrainingPlan`, roadmap, `AGENT-MEMORY`, `WORKFLOWS`, detailed plan) no
+  longer claim neural work is unauthorized.
+
+- Made `pipeline.gate_recovery` development mode memory-safe after two OAR
+  runs (28134, 28215) were OOM-killed (exit 137) during full-universe fold
+  scoring and pandas OOF fusion. Configuration screening now runs on the
+  deterministic train sample only, while the locked finalist, binary reference
+  OOF, and validation gate still use the full candidate universe. Finalist and
+  reference out-of-fold scores stream to narrow Parquet one fold at a time, and
+  the fusion-weight search runs in DuckDB over that Parquet instead of
+  concatenating and merging the universe in pandas. Added stdlib progress and
+  peak-RSS logging, a contract-keyed screening checkpoint for resume, and a
+  filter for the repeated all-null median-imputation warning. The CPU worker
+  `scripts/calculco/phase8_p0_gate_recovery.sh` now defaults to
+  `DUCKDB_THREADS=8`, `DUCKDB_MEMORY_LIMIT=24GB`, sets `MALLOC_ARENA_MAX=2` and
+  `PYTHONUNBUFFERED=1`, and warns when DuckDB spill falls back to `/tmp`.
+  Screening selection is now sample-based; the neural-readiness gate metric and
+  its fail-closed contract are unchanged.
+
+### Added
+
+- Phase D GNN and frozen-Transformer fusion workflow in
+  `pipeline.gnn_training`: a lazy five-stage CLI; exact immutable
+  contracts; full-train refit and patient-fold-excluded graph caches; frozen
+  Transformer representation extraction; a native PyTorch R-GCN-style
+  medication ranker with four pre-registered relation ablations; standalone
+  selection/refit/calibration/scoring; late and zero-initialized residual
+  fusion; canonical DuckDB scoring; and atomic one-shot final gates. Added
+  focused synthetic contract, leakage, temporal-cutoff, batching, model,
+  scoring, non-finite-value, final-claim, and end-to-end tests. Added separate
+  capacity-gated CPU prepare and GPU train/score Calculco wrappers. Protected
+  preparation later completed; successful training and metrics remain pending
+  after loader failure job 8825 and mixed-precision optimization failure job
+  10962.
+
+- Stage 2 conditional neural Transformer patient/context training pipeline:
+  `pipeline.neural_training` implements a `prepare`/`train`/`score` CLI with
+  `development` and `final` modes. `prepare` builds train-fit event/condition/
+  candidate/categorical vocabularies (reserved `PAD=0`/`UNK=1`), train-only
+  numeric and event-value normalization, a persisted `feature_layout.json`, and
+  memory-bounded hash-sharded DuckDB caches. `train` fits a Transformer event
+  encoder plus static-context encoder and candidate scorer with a multi-positive
+  listwise softmax and auxiliary BCE objective, early stopping on validation
+  NDCG@10, gradient clipping, optional mixed precision, checkpointing, and
+  post-hoc temperature calibration. `score` writes canonical
+  `baseline_scores.parquet` rows, computes authoritative DuckDB metrics against
+  the Stage 1 structured recovery baseline, and records a neural gate/selection
+  report. Every
+  stage is fail-closed behind the structured recovery gate
+  (`neural_training_authorized`) and the training-contract lock. PyTorch is added
+  as an optional `neural` dependency group (imported lazily) and is not synced by
+  default. Added synthetic torch-guarded tests for data prep, ranking metrics,
+  dataset collation, the model/losses, the preflight/gate, and an end-to-end
+  smoke test, plus a configurable GPU OAR wrapper
+  (`scripts/calculco/phase8_p0_neural_training.sh`) and job env template.
+
+- Gate-first Phase 8 P0 Stage 1 implementation: `pipeline.training_contract`
+  locks pinned versions, aggregate manifest hashes, artifact metadata/schemas,
+  row counts, fit scope, split integrity, and temporal-label boundaries;
+  `pipeline.gate_recovery` performs patient-fold rank-aware XGBoost screening,
+  train-OOF fusion selection, one-shot validation gating, and fail-closed final
+  scoring using the existing baseline score schema and metrics. Added focused
+  synthetic tests and CPU-only Calculco submit/worker wrappers. PyTorch was kept
+  out of this Stage 1 change; the Stage 2 neural branch (see the entry above) was
+  added separately and stays fail-closed behind this gate.
+
+- CodexPLAN Step 10 graph/hybrid readiness review on the Phase 8 P0 stack:
+  `Documentation/CodexPLANStep10GraphHybridReadiness.md` and aggregate
+  `reports/codexplan_step10_graph_hybrid_readiness.json`. Graph structure gate
+  passes (`pass_for_graph_ablation`); Milestone 8B hybrid lift fails, so frozen
+  tabular XGBoost remains the reference and neural Transformer-GNN training is
+  not authorized yet.
+
+- `scripts/calculco/submit_phase8_p0_model_ready.sh` wrapper and
+  `phase8_p0_model_ready_job.env` (gitignored, with a committed `.example`) so
+  OAR jobs receive `PHASE8_P0_START_AT` and the subgraph memory knobs. OAR `-S`
+  jobs run in a clean environment and ignore login-shell exports, which caused a
+  resume-at-subgraphs attempt to silently rerun from training. `phase8_p0_model_ready.sh`
+  now sources the job env file, matching the Milestone 7/8B submit pattern.
+
+- Complete CodexPLAN Step 9 Phase 8 P0 package implementation:
+  `pipeline.patient_subgraphs` materializes normalized per-ranking-group node,
+  edge, candidate, and index artifacts from train-fit graph edges;
+  `pipeline.model_ready_package` writes train-derived vocabularies, a
+  schema-only data dictionary, and an aggregate completion manifest with
+  explicit eICU evaluability gates. Downstream builders now infer and validate
+  feature provenance from their inputs, and the training builder writes a
+  model-ready `cohort_stays` artifact. The Calculco chain now runs both
+  RxNorm-first and ATC-3-first label builds before graph/package assembly.
 - Aggregate-only Phase 4-9 meeting visualization pack:
   `visualization.phase4_to_9` reads completed report manifests, writes ignored
   charts under `visualization/figures/`, and creates
@@ -188,6 +457,33 @@ All notable repository changes are recorded here. Dates use ISO 8601.
 
 ### Fixed
 
+- Phase 8 P0 patient-subgraph edge join no longer exhausts DuckDB's spill
+  directory (`failed to offload data block ... (X GiB/X GiB used)`). Root cause:
+  popular concept nodes make the naive `graph_edges`-to-`dst`-membership join fan
+  out across nearly all ~916k subgraphs (e.g. a common candidate medication is a
+  member of 915k subgraphs), producing billions of intermediate rows. The
+  per-relation expansion is now forced to start from the small `src` side (one
+  query condition per subgraph; ~50 candidate medications) behind a
+  `MATERIALIZED` optimization barrier, so the `subgraph_key` correlation is
+  applied before touching popular `dst` nodes. The self-joins also carry only
+  integer keys (`subgraph_key`, `src_node_index`, `dst_node_index`, `edge_id`)
+  and attach wide string/provenance columns once at the end via an `edge_id`
+  join back to the small train-fit edge relation. Verified on the real 94.8M-node
+  data: edge shard 0/64 (which killed jobs 7563/7617/7639/7660) now completes in
+  ~46s under a 12 GiB spill cap. Also fixes the 32-shard workaround that OAR
+  killed after 3h+ from repeated full node-batch re-scans.
+- DuckDB spill capacity is now explicitly configurable via
+  `DUCKDB_MAX_TEMP_DIR_SIZE` (`pipeline.config.resolve_duckdb_max_temp_dir_size`,
+  `configure_duckdb_connection`, and `pipeline.patient_subgraphs
+  --duckdb-max-temp-dir-size`), so operators can raise the cap when
+  `DUCKDB_TEMP_DIR` points at a larger volume instead of inheriting the small
+  auto-detected default. Wired through `phase8_p0_model_ready.sh`,
+  `submit_phase8_p0_model_ready.sh`, and the job env example.
+- Phase 8 P0 patient-subgraph spill exhaustion now has bounded
+  source-qualified stay-hash node materialization plus independently sharded,
+  integer-encoded, relation-specific edge and candidate joins. The OAR chain
+  exposes `SUBGRAPH_JOIN_SHARDS`, caps edge assembly at one DuckDB thread, can
+  resume at the subgraph stage, and prefers node-local `/scratch` over `/tmp`.
 - Harmonization lab/vital OOMs now have a bounded materialization path:
   `pipeline.harmonize` writes large lab and vital domains as smaller
   source-query/hash-batched parts, combines them into the canonical Parquet

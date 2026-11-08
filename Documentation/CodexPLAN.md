@@ -73,16 +73,25 @@ Default direction: analyze all ICU stays across MIMIC and eICU, use sepsis as th
    - `graph_edges`: global heterogeneous graph edges with relation type and provenance.
    - `patient_subgraphs`: per-stay graph batches for GNN scoring.
    - Supporting artifacts: vocabularies, candidate catalog, split manifest, preprocessing report, data dictionary.
-   - CodexPLAN Step 9 means rebuilding these model-ready tabular artifacts from
-     the selected feature stack. It is separate from Roadmap Milestone 9
+   - CodexPLAN Step 9 means rebuilding these model-ready tabular artifacts from the selected feature stack. It is separate from Roadmap Milestone 9
      grounded explanation.
 
 10. **Graph and Hybrid-Model Readiness**
+   - Status (2026-07-18): complete as a readiness gate on the Phase 8 P0 stack.
+     Detailed review: `Documentation/CodexPLANStep10GraphHybridReadiness.md`;
+     aggregate summary: `reports/codexplan_step10_graph_hybrid_readiness.json`.
    - Quantify node counts, edge counts, degree distributions, connected components, sparsity, cold-start rates, relation coverage, and leakage risk.
-   - Transformer inputs: tabular stay features, event sequences, optional note embeddings.
-   - GNN inputs: patient-condition-medication-lab/intervention graph, DDI/ontology/co-occurrence edges, per-stay subgraphs.
+     Phase 8 P0 result: 4,479 nodes / 391,416 train-fit edges; one connected
+     component; leakage audit pass; gate `pass_for_graph_ablation`.
+   - Transformer inputs: tabular stay features (215 Phase 8 P0 columns), event
+     sequences (pre-decision; meds excluded by default); note embeddings deferred.
+   - GNN inputs: five node types and five train-fit relation types; per-stay
+     subgraphs materialized; external DDI/ontology deferred.
    - Fusion target: score each candidate medication within a `stay + condition` ranking group.
    - Gate: build baselines before the Transformer-GNN model; hybrid complexity must improve over transparent baselines.
+     Milestone 8B on Phase 8 P0 failed the +0.005 NDCG@10 lift gate (best
+     graph-augmented +0.0019); frozen XGBoost retained. Do not start neural
+     Transformer-GNN training on this evidence.
 
 ## EDA and Visualization Plan
 

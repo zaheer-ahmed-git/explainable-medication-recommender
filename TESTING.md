@@ -12,8 +12,9 @@ integration, and final-mode gating. Milestone 8 graph-readiness tooling has
 synthetic tests for train-only graph fitting, cold-start reporting, sparse
 graphs, and report safety. Milestone 8B graph-aware ablation tooling has
 synthetic tests for train-fit graph features, cold-start flags, fusion,
-final-mode gating, eICU coverage-only behavior, and report safety. Graph neural
-models are still planned and still need their own tests as they are added.
+final-mode gating, eICU coverage-only behavior, and report safety. Phase D
+graph neural and frozen-Transformer fusion code has focused synthetic tests;
+protected-scale verification remains pending.
 Condition mapping tests also cover active A1/B3 sepsis mapping generation and
 `icd_prefix` project-group matching. Training-table tests cover the default
 RxNorm-first candidate token strategy and the ATC-3-first coverage-sensitivity
@@ -22,11 +23,62 @@ artifact fitting and aggregate-only preprocessing manifests.
 Phase 8 P0 tests cover train-only condition vocabulary fitting, lab/vital trend
 boundaries, explicit missingness columns, aggregate-only feature manifests,
 downstream learned-baseline/graph-ablation feature pickup, and the promotion
-gate review writer.
+gate review writer. CodexPLAN Step 9 package tests cover input-derived version
+stamps, model-ready cohort timing fields, train-fit patient subgraphs, cold
+candidates, future-event exclusion, bounded source-stay hash materialization,
+integer-encoded relation-specific edge joins, independent join sharding,
+temporary-part cleanup, normalized vocabulary outputs, schema-only data
+dictionaries, and eICU coverage-only claim blocking.
+Gate-first Stage 1 tests cover immutable contract metadata, pinned versions,
+unsafe-column rejection, temporal and medication leakage, patient-fold
+isolation, positive-group negative sampling, authoritative ranking-metric
+parity, OOF fusion, changed-lock detection, and final-mode blocking. The
+protected recovery run remains an HPC verification step. Stage 2 neural
+Transformer tests cover DuckDB cache preparation (train-only vocabularies,
+normalization, priors, Stage-1-matched graph side-feature fallback, feature
+layout, sharded materialization), the NumPy ranking-metric accumulator, shard
+assembly and torch collation, the Transformer forward pass, listwise /
+primary-positive / combined losses, EMA schedule helpers, the fail-closed
+preflight/gate, and an end-to-end prepare/train/score smoke test.
+PyTorch-dependent tests use `pytest.importorskip("torch")` and skip when the
+optional `neural` group is not installed. GNN tests cover fail-closed
+contracts and exact hash locks, fold-excluded support/vocabulary fitting,
+future-event exclusion beyond 24 hours, compact graph loading and batching,
+group/node/edge batch ceilings, production-shape grouped relation aggregation
+and gradient equivalence, allocation-attestation reuse, one-fragment cache
+partitions, restart-safe checkpoint placement, stay-query construction,
+numeric/time node attributes, rank-only and dense-relation controls, OOF
+temperature fitting, relation expansion/normalization, R-GCN and fusion
+behavior, frozen Transformer immutability/alignment, canonical score reconciliation,
+non-finite-value rejection, mixed-precision gradient-overflow backoff,
+full-precision gradient failure, atomic final-run claims, and the complete
+five-stage synthetic smoke workflow.
+Paired-OOF tests additionally cover the exact `0.005` alpha grid,
+fold-isolated fixed-epoch Transformer OOF training, restored train-scope output,
+joint GNN-variant/alpha selection, fail-closed label/fold alignment, and
+explicit-CUDA rejection when a scheduler allocation exposes no CUDA device.
+They also cover temperature, positive-slope affine-sigmoid, and isotonic
+calibration; patient-fold-held-out calibration selection; unchanged rank
+scores; separate hybrid/Transformer mappings; model and OOF hash provenance;
+and aggregate-only calibration reports.
 The Phase 4-9 visualization generator has a focused synthetic test that verifies
 aggregate-only meeting-pack generation without raw clinical rows.
 
 Every new active module should arrive with focused tests.
+
+The explainability numerical core is tested using invented score slates and an
+independent small-game Shapley oracle. Tests cover branch accounting,
+third-candidate reversals, masks/non-finite rejection, floor crossings,
+comparison consistency, query/cache bounds, reproducibility and permutation
+standard errors. Optional tests compare against the actual torch fusion in
+float32 and float64; they skip if torch is absent. These tests do not load
+patient scores or validate clinical explanation quality.
+
+```bash
+uv run --no-sync pytest -q tests/test_explainability_margins.py tests/test_explainability_attribution.py
+```
+
+`--no-sync` preserves the currently installed optional neural group.
 
 **Execution context:** ULCO Calculco. Export `PROJECT_HOME` and `DATASET_ROOT`
 before pipeline CLIs. See `Documentation/Environment.md`.
@@ -63,9 +115,23 @@ uv run pytest tests/test_config.py tests/test_features.py tests/test_build_train
 uv run pytest tests/test_preprocessing.py
 uv run pytest tests/test_config.py tests/test_milestone7_baselines.py
 uv run pytest tests/test_config.py tests/test_graph_suitability.py
+uv run pytest tests/test_patient_subgraphs.py tests/test_model_ready_package.py
 uv run pytest tests/test_config.py tests/test_graph_ablation.py
 uv run pytest tests/test_feature_gate_review.py tests/test_features.py \
   tests/test_milestone7_baselines.py tests/test_graph_ablation.py
+uv run pytest tests/test_training_contract.py tests/test_gate_recovery.py
+uv run pytest tests/test_neural_data.py tests/test_neural_metrics.py \
+  tests/test_neural_contract.py
+# Torch-dependent (skip without the optional neural group):
+uv sync --group neural
+uv run pytest tests/test_neural_dataset.py tests/test_neural_model.py \
+  tests/test_neural_train_score.py tests/test_neural_schedule.py
+uv run pytest tests/test_gnn_contract.py tests/test_gnn_crossfit.py \
+  tests/test_gnn_data.py tests/test_gnn_dataset.py \
+  tests/test_gnn_model.py \
+  tests/test_gnn_frozen_transformer.py tests/test_gnn_scoring.py \
+  tests/test_gnn_train_score.py
+uv run pytest tests/test_paired_oof.py
 uv run pytest tests/test_phase4_to_9_visualization.py
 uv run pytest tests/test_condition_normalization.py
 uv run pytest tests/test_condition_mapping_builder.py
@@ -163,6 +229,27 @@ are needed.
 
 Phase 8 P0 completion additionally requires synthetic tests for train-only
 condition vocabularies, temporal trend cutoffs, report safety, downstream model
-feature selection, and gate-review behavior. Protected-data completion requires
-isolated `phase8_p0_*` aggregate reports and no promotion until
+feature selection, model-ready cohort timing, version consistency, train-fit
+subgraphs, vocabulary/data-dictionary safety, eICU evaluability status, and
+gate-review behavior. Protected-data completion requires the successful
+`scripts/calculco/phase8_p0_model_ready.sh` OAR chain, an aggregate final
+package manifest with all required artifacts, and no promotion until
 `reports/phase8_p0_feature_gate_review.json` passes.
+
+Gate-recovery Stage 1 additionally requires contract-lock drift checks,
+declared-versus-actual row counts, safe model projections, aggregate-only
+reports, train-only patient-fold selection, group-preserving sampling, metric
+parity, OOF-only fusion selection, one-shot validation, and final/test
+blocking. Protected completion requires the CPU OAR development run and a
+reviewed `reports/phase8_p0_gate_recovery_selection.json`; it does not imply
+that the gate passed or authorize Stage 2.
+
+Stage 2 neural Transformer completion additionally requires the torch-free cache
+preparation, metric, and preflight/gate tests plus the torch-guarded dataset,
+model/loss, and end-to-end smoke tests (run after `uv sync --group neural`). It
+requires fail-closed behavior when `neural_training_authorized` is absent or the
+contract lock drifts, train-only vocabularies and normalization, canonical
+`baseline_scores.parquet` output, and aggregate-only neural reports. Protected
+completion requires the GPU OAR run via
+`scripts/calculco/phase8_p0_neural_training.sh`; the development run does not
+authorize final MIMIC test scoring unless the neural selection clears the gate.

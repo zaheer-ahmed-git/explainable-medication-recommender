@@ -1,19 +1,30 @@
-# Phase 4-9 Visualization Pack
+# Visualization Pack
 
-This folder contains an aggregate-only meeting visualization generator for the
-current Phase 4 through Phase 9 work.
+Generators under this folder draw aggregate-only figures for meetings and
+architecture reviews. They do not read raw clinical rows.
 
-Run from the project root after the relevant `reports/*.json` manifests exist:
+## Hybrid Transformer / GNN internals
+
+Stacked-block diagrams of the active model modules (Pre-LN Transformer encoder
+stack and R-GCN message-passing layers):
+
+```bash
+uv run python -m visualization.hybrid_architecture_diagrams
+```
+
+Writes `figures/transformer_architecture.png` (and `.pdf`),
+`figures/gnn_architecture.png` (and `.pdf`), plus
+`hybrid_architecture_diagrams.md`. Generated PNGs/PDFs under `figures/` are
+gitignored; regenerate locally when presenting.
+
+## Phase 4–9 meeting pack
+
+Aggregate report charts for milestones 4–9:
 
 ```bash
 uv run python -m visualization.phase4_to_9
 ```
 
-Outputs are written under `visualization/figures/` plus
-`visualization/meeting_figure_pack.md` and
-`visualization/meeting_figure_pack.json`. Those generated files are gitignored.
-
-The generator reads aggregate report manifests only. It does not inspect raw
-clinical rows, note text, patient identifiers, row-level scores, or local model
-artifacts.
-
+Requires the relevant `reports/*.json` manifests. Outputs land under
+`figures/` plus `meeting_figure_pack.md` / `meeting_figure_pack.json`
+(gitignored).

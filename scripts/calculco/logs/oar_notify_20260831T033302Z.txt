@@ -1,0 +1,44 @@
+timestamp: 2026-08-31T03:33:02Z
+to: dev.zaheer.ahmad@gmail.com
+from: zahmed@calculco.univ-littoral.fr
+subject: OAR 22520 rm_phase8_p0_paired_oof Terminated (ok=1)
+mail_status: queued_on_opale_mta
+
+OAR job 22520 ended
+  name:      rm_phase8_p0_paired_oof
+  state:     Terminated
+  exit_code: 0 (0,0,0)
+  host:      chimay33
+  stopTime:  2026-08-31 05:31:25
+  ok:        1
+
+--- mail verbose ---
+[<-] 220 opale-mta.univ-littoral.fr ESMTP Postfix
+[->] HELO calculco.univ-littoral.fr
+[<-] 250 opale-mta.univ-littoral.fr
+[->] MAIL FROM:<zahmed@calculco.univ-littoral.fr>
+[<-] 250 2.1.0 Ok
+[->] RCPT TO:<dev.zaheer.ahmad@gmail.com>
+[<-] 250 2.1.5 Ok
+[->] DATA
+[<-] 354 End data with <CR><LF>.<CR><LF>
+[->] Received: by calculco.univ-littoral.fr (sSMTP sendmail emulation); Mon, 31 Aug 2026 05:33:02 +0200
+[->] Date: Mon, 31 Aug 2026 05:33:02 +0200
+[->] From: zahmed@calculco.univ-littoral.fr
+[->] To: dev.zaheer.ahmad@gmail.com
+[->] Subject: OAR 22520 rm_phase8_p0_paired_oof Terminated (ok=1)
+[->] MIME-Version: 1.0
+[->] Content-Type: text/plain; charset="UTF-8"
+[->] Content-Transfer-Encoding: 8bit
+[->] 
+[->] OAR job 22520 ended
+[->]   name:      rm_phase8_p0_paired_oof
+[->]   state:     Terminated
+[->]   exit_code: 0 (0,0,0)
+[->]   host:      chimay33
+[->]   stopTime:  2026-08-31 05:31:25
+[->]   ok:        1
+[->] .
+[<-] 250 2.0.0 Ok: queued as 1152D9FF0E
+[->] QUIT
+[<-] 221 2.0.0 Bye

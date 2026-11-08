@@ -44,10 +44,21 @@ def test_training_builder_uses_train_only_candidates_and_label_window(
 
     assert manifest["status"] == "completed"
     assert {
+        "cohort_stays",
         "split_manifest",
         "candidate_catalog",
         "patient_condition_medication",
     } == set(manifest["artifacts"])
+
+    cohort_rows = read_parquet_rows(training_root / "cohort_stays.parquet")
+    cohort_by_stay = {str(row["stay_uid"]): row for row in cohort_rows}
+    train_cohort = cohort_by_stay[str(fixture["train_stay"])]
+    assert train_cohort["split"] == "train"
+    assert train_cohort["t0_hours_from_admit"] == 0.0
+    assert train_cohort["prediction_time_hours_from_admit"] == 24.0
+    assert train_cohort["label_window_end_hours_from_admit"] == 48.0
+    assert train_cohort["eligibility_status"] == "eligible_primary"
+    assert train_cohort["age_years"] == 66.0
 
     split_rows = read_parquet_rows(training_root / "split_manifest.parquet")
     patient_splits: dict[str, set[str]] = {}
@@ -95,6 +106,40 @@ def test_training_builder_uses_train_only_candidates_and_label_window(
         row["missing_medication_start_time_events"] > 0 for row in label_loss_rows
     )
     assert parsed_manifest["data_safety"]["manifest_contains_patient_rows"] is False
+
+
+def test_phase8_training_infers_v2_feature_provenance(tmp_path: Path) -> None:
+    fixture = write_milestone6_harmonized_fixture(tmp_path)
+    features_root = tmp_path / "Dataset" / "processed" / "phase8_p0" / "features"
+    training_root = tmp_path / "Dataset" / "processed" / "phase8_p0" / "training"
+
+    feature_result = build_feature_artifacts(
+        FeatureBuildConfig(
+            harmonized_root=Path(fixture["harmonized_root"]),
+            features_root=features_root,
+            manifest_path=tmp_path / "reports" / "phase8_features.json",
+            feature_set="phase8_p0",
+        )
+    )
+    assert feature_result["status"] == "completed"
+
+    manifest = build_training_artifacts(
+        TrainingTableBuildConfig(
+            harmonized_root=Path(fixture["harmonized_root"]),
+            features_root=features_root,
+            training_root=training_root,
+            manifest_path=tmp_path / "reports" / "phase8_training.json",
+        )
+    )
+
+    assert manifest["status"] == "completed"
+    assert manifest["versions"]["feature_version"] == "temporal-features-v2"
+    cohort_rows = read_parquet_rows(training_root / "cohort_stays.parquet")
+    assert {row["feature_version"] for row in cohort_rows} == {"temporal-features-v2"}
+    split_rows = read_parquet_rows(training_root / "split_manifest.parquet")
+    catalog_rows = read_parquet_rows(training_root / "candidate_catalog.parquet")
+    assert {row["feature_version"] for row in split_rows} == {"temporal-features-v2"}
+    assert {row["feature_version"] for row in catalog_rows} == {"temporal-features-v2"}
 
 
 def test_training_builder_can_use_atc_class_candidate_tokens(tmp_path: Path) -> None:

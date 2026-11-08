@@ -7,7 +7,7 @@ target research architecture.
 
 ## Current State
 
-As of 2026-07-10, the active repository contains research documents,
+As of 2026-07-24, the active repository contains research documents,
 configuration, local licensed datasets, an ignored synthetic prototype,
 metadata-only source inventory, and adult ICU/unit-stay cohort materialization.
 The active `pipeline/` provides configuration, safe path/header inspection,
@@ -29,8 +29,22 @@ gated by frozen validation selection. Milestone 8 graph-readiness tooling can
 build train-only concept-level graph edges and aggregate suitability reports.
 Milestone 8B graph-aware ablation tooling can compare graph-only XGBoost,
 graph-augmented XGBoost, late fusion, and simple ensemble scores against the
-frozen XGBoost reference. Full Transformer/GNN neural models and clinical
-recommendations are not yet implemented in the active working tree.
+frozen XGBoost reference. The Phase 8 P0 CodexPLAN Step 9 implementation also
+materializes a model-ready cohort, normalized patient query subgraphs from
+train-fit concept edges, train-derived vocabularies, and a schema-only package
+dictionary with consistent upstream feature-version inference. The gate-first
+modeling boundary is implemented by `pipeline.training_contract`, which locks
+aggregate manifests, schemas, row counts, fit scope, and temporal/split
+invariants, and `pipeline.gate_recovery`, which selects a rank-aware XGBoost
+recovery candidate using only patient-grouped MIMIC-train folds. The Stage 2
+neural Transformer patient/context branch is implemented in
+`pipeline.neural_training` (DuckDB cache preparation, a PyTorch Transformer
+recommender, listwise + auxiliary training with early stopping and temperature
+calibration, canonical-schema scoring, and a validation gate/selection report).
+PyTorch lives in an optional `neural` dependency group and every stage stays
+fail-closed behind the recorded recovery gate. The GNN relation branch and the
+joint fusion head remain planned; the protected recovery run is pending, and
+validation and test remain fail-closed behind the recorded gates.
 
 The legacy prototype demonstrates useful conventions such as:
 
@@ -77,6 +91,11 @@ pipeline/
   build_training_table.py
   preprocessing.py
   graph_suitability.py
+  patient_subgraphs.py
+  model_ready_package.py
+  training_contract.py
+  gate_recovery.py
+  neural_training/
 tests/
 notebooks/
 reports/
@@ -183,12 +202,42 @@ The current Milestone 8B implementation is an intermediate graph-aware ablation
 gate using existing DuckDB, scikit-learn, and XGBoost dependencies. It does not
 add a neural framework or claim a full hybrid model.
 
+The subsequent Stage 1 recovery layer preserves the same score schema and
+authoritative metrics. It locks training inputs before fitting, excludes
+zero-positive ranking groups from fitting while reporting their aggregate
+coverage, and permits a single validation evaluation only after all feature,
+hyperparameter, and late-fusion choices are frozen on MIMIC-train folds.
+Protected Stage 1 development has passed and authorized the Transformer
+prototype; Stage 2 scores against that Stage 1 winner rather than the older
+Milestone 8B XGBoost anchor.
+
 ## Hybrid Model
 
 ### Transformer Branch
 
 Models contextual and temporal interactions among demographics, diagnoses,
 laboratories, vitals, prior interventions, and optional note representations.
+**Implemented (Stage 2, gated):** `pipeline.neural_training` encodes the
+train-fit static context and event sequence with a Transformer encoder and
+scores medication candidates with a dual-path scorer over projected
+candidate-side features (catalog rank, train-fit priors, and Stage-1-matched
+train-fit graph tabular summaries — not GNN message passing). It consumes only
+leakage-reviewed inputs, reuses the training-contract lock and canonical score
+schema, and runs only when the structured recovery gate records
+`neural_training_authorized`. Its validation bar is the Stage 1 recovery
+winner (`xgboost_rank_ndcg_oof_late_fusion`), not Milestone 8B
+`xgboost_frozen_reference`. The separate Phase D GNN and fusion package is
+implemented. Protected preparation completed. Job 8825 failed in shard loading
+and led to multi-file partition support; job 10962 passed loading but failed on
+a mixed-precision gradient overflow before producing a model. The optimizer
+now performs bounded loss-scale backoff and same-batch retry, but successful
+protected training remains pending. Job 12214 subsequently reproduced a CUDA
+OOM caused by materializing one dense relation matrix per edge. Relation
+messages now aggregate weighted source states by relation before applying the
+fifteen dense transforms, avoiding the `E×H×H` temporary while preserving the
+registered equation. Training batches have independent group, node, and edge
+ceilings; Calculco A100 jobs default to BF16; and aggregate heartbeats expose
+integrity and epoch progress without logging restricted keys.
 
 ### GNN Branch
 
@@ -196,15 +245,86 @@ Models heterogeneous relations among patients or stays, diagnoses,
 medications, laboratory concepts, and curated medical knowledge. Graph
 construction must avoid test-set and future-event leakage.
 
+**Implemented (Phase D code, protected training pending):**
+`pipeline.gnn_training` consumes the locked Milestone 8 patient subgraphs,
+expands five cached forward relations into reverses and self-loops, and adds
+two stay-query relations with their reverses at load time. A native PyTorch
+R-GCN-style encoder produces stay-query/candidate/context representations and
+medication logits. Patient-grouped model selection uses
+physical fold-excluded graph caches: held-out patients are removed before
+support counts, coprescription, temporal event edges, vocabulary, cold-start
+state, and edge normalization are fitted. The full-train graph is marked
+`full_train_refit_only` and cannot drive selection.
+
+Cross-fit cache trees are immutable inputs and are hashed exactly once per
+preflight. Mutable epoch and completed-fold checkpoints live under the main
+GNN checkpoint root, never inside those digest-locked trees. A restart reuses
+state only when the seed, feature layout, architecture, optimization settings,
+and cross-fit manifest hash all match.
+
+The versioned P1 representation adds a dedicated stay/query node, six-hour
+time-bin embeddings, and bounded numeric node attributes for value, observed
+value mask, train-fit statistical-deviation direction, trend, and recency.
+Fold selection fits numeric normalization without the held-out patient fold.
+Six registered variants include a rank-only control, the full gated model,
+no-message-passing and relation-removal controls, plus a dense lab/vital
+ablation. Relation gates are learned and relation dropout is applied during
+training. Standalone temperature is fitted from patient-grouped train OOF
+logits, not the validation qualification split.
+
+The alternative fold-global concept-graph encoder remains an explicit future
+experiment rather than the default: incoming normalization is currently
+patient-subgraph-specific, so sharing one encoded global graph would change
+the registered estimand. The compact representation instead avoids physical
+duplication of stay nodes by adding them deterministically in the loader.
+
 ### Fusion
 
 Combines patient-context and graph-aware embeddings to score medication
-candidates. Fusion choices and ablations must be recorded.
+candidates. The implemented candidates are constrained within-group late
+fusion and a zero-initialized residual head over a separately trained GNN copy;
+the frozen Transformer and standalone GNN checkpoints remain immutable.
+
+The first protected fusion run used a full-train Transformer covariate with GNN
+OOF logits; it improved validation NDCG@10 by about `+0.00484` but did not
+clear the `+0.005` promotion bar
+(`reports/phase8_p0_fusion_training_selection.json`, historical). The
+versioned replacement protocol (`phase8-p0-paired-oof-late-fusion-v2`) builds
+Transformer logits on the same five patient folds, fits preprocessing on the
+other four folds only, jointly freezes GNN variant `full` and alpha `0.25` on
+exact paired OOF candidates, and scores late-only blends without a residual
+head. The one-shot MIMIC-test gate `mimiciv-test-paired-oof-v1` passed with
+about `+0.0131` NDCG@10 lift versus the frozen Transformer
+(`reports/phase8_p0_paired_oof_late_fusion_gate_score.json`,
+`final_scoring_authorized=true`). Ranking promotion is separate from
+probability calibration: the ranking-gate Brier score and 10-bin ECE disclose
+uncalibrated scores (hybrid worse than Transformer on those raw figures). See
+`Documentation/PairedOOFLateFusionProtocol.md` and
+`Documentation/HybridModelResultReview.md`.
+
+Post-hoc paired-OOF calibration (`phase8-p0-paired-oof-calibration-v1`)
+completed on OAR `22662`. It froze the selected variant, alpha, and rank
+score; compared temperature and positive-slope affine sigmoid on held-out
+patient folds; and selected affine sigmoid for both hybrid and Transformer
+(cross-fitted Brier ≈ 0.069, 10-bin ECE ≈ 0.001). The protected artifact is
+bound to model, selection, and OOF hashes. Ranking metrics continue to use
+the uncalibrated score. Applying the mapping to the consumed MIMIC-test gate
+would be retrospective only.
 
 ## Explanation Boundary
 
-The explanation layer consumes evidence produced by the recommendation and
-knowledge layers:
+The initial `pipeline.explainability` numerical prototype consumes explicitly
+aligned, fixed-slate Transformer/GNN scores. `margins.py` reproduces the
+population-z blend in float64 and decomposes finite margin changes into direct
+gap and normalization routes. `attribution.py` shares bounded scorer callbacks
+across candidate comparisons for exact small games or seeded permutations.
+The former ledger contract remains removed. These modules perform no dataset
+access, model loading, serialization, rule execution, or language generation.
+Only synthetic numerical behavior is tested; original-precision frozen-model
+parity and source-consistent clinical interventions are future adapter gates.
+See [the implementation plan](Documentation/ResearchFinal/ExplainabilityImplementationPlan.md).
+
+The eventual explanation layer will also consume:
 
 - local feature or token attribution;
 - graph substructures and evidence paths;
@@ -246,10 +366,11 @@ unsupported clinical claims or substitute narrative confidence for evidence.
   Milestone 8 implements five concept node types and five train-fit relation
   types; planned extensions (DDI, ontology) are documented in
   `Documentation/HybridModelFeatureStrategy.md` and remain unimplemented.
-- Transformer input representation. **Planning direction recorded** in
-  `Documentation/HybridModelFeatureStrategy.md`; Milestone 6 stay features and
-  event sequences are the implemented baseline; stay-level condition multi-hot
-  and neural encoders are not yet implemented.
+- Transformer input representation. **Implemented for the Stage 2 branch:**
+  `pipeline.neural_training` consumes Milestone 6 stay features and event
+  sequences with train-derived vocabularies, numeric normalization, and an index
+  condition embedding (see `Documentation/HybridModelFeatureStrategy.md`).
+  Stay-level condition multi-hot and note encoders remain unimplemented.
 - Rule-source curation and versioning.
 - Human evaluation protocol for explanation usefulness.
 
