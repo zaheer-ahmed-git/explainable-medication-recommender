@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Sequence
@@ -13,6 +13,7 @@ from typing import Any, Sequence
 import duckdb
 import joblib
 
+from pipeline.artifact_metadata import infer_consistent_version
 from pipeline.config import (
     DUCKDB_MEMORY_LIMIT,
     DUCKDB_TEMP_DIR,
@@ -54,7 +55,7 @@ class PreprocessingBuildConfig:
     manifest_path: Path = DEFAULT_MANIFEST_PATH
     seed: int = RANDOM_SEED
     condition_tokens: tuple[str, ...] = ()
-    feature_version: str = FEATURE_VERSION
+    feature_version: str | None = None
     label_version: str = LABEL_VERSION
     split_version: str = SPLIT_VERSION
     duckdb_temp_directory: Path | None = DUCKDB_TEMP_DIR
@@ -123,6 +124,20 @@ def condition_filter_sql(config: PreprocessingBuildConfig) -> str:
         return "TRUE"
     tokens = ", ".join(sql_string(token) for token in config.condition_tokens)
     return f"pcm.index_condition_token IN ({tokens})"
+
+
+def resolve_feature_version(
+    config: PreprocessingBuildConfig,
+) -> PreprocessingBuildConfig:
+    """Return config stamped from feature and ranking-table inputs."""
+
+    version = infer_consistent_version(
+        (config.patient_stay_features_path, config.patient_condition_medication_path),
+        column_name="feature_version",
+        declared_version=config.feature_version,
+        fallback_version=FEATURE_VERSION,
+    )
+    return replace(config, feature_version=version)
 
 
 def categorical_vocabulary_summary(
@@ -195,7 +210,7 @@ def base_manifest(
             "seed": config.seed,
         },
         "versions": {
-            "feature_version": config.feature_version,
+            "feature_version": config.feature_version or FEATURE_VERSION,
             "label_version": config.label_version,
             "split_version": config.split_version,
         },
@@ -231,7 +246,7 @@ def save_preprocessor_artifact(
             "category_summary": list(category_summary),
             "training_counts": training_counts,
             "versions": {
-                "feature_version": config.feature_version,
+                "feature_version": config.feature_version or FEATURE_VERSION,
                 "label_version": config.label_version,
                 "split_version": config.split_version,
             },
@@ -255,6 +270,18 @@ def build_preprocessing_artifacts(
             generated_at=generated_at,
         )
         manifest["missing_inputs"] = missing
+        write_json(config.manifest_path, manifest)
+        return manifest
+
+    try:
+        config = resolve_feature_version(config)
+    except ValueError as error:
+        manifest = base_manifest(
+            config,
+            status="failed_feature_version_mismatch",
+            generated_at=generated_at,
+        )
+        manifest["reason"] = safe_error_message(error)
         write_json(config.manifest_path, manifest)
         return manifest
 
@@ -381,6 +408,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Seed used for deterministic weak-negative sampling.",
     )
     parser.add_argument(
+        "--feature-version",
+        default=None,
+        help=(
+            "Optional expected feature version. By default it is inferred from "
+            "the input artifacts."
+        ),
+    )
+    parser.add_argument(
         "--duckdb-temp-dir",
         type=Path,
         default=DUCKDB_TEMP_DIR,
@@ -410,6 +445,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             manifest_path=args.manifest,
             seed=args.seed,
             condition_tokens=parse_repeated_csv(args.condition_token),
+            feature_version=args.feature_version,
             duckdb_temp_directory=args.duckdb_temp_dir,
             duckdb_memory_limit=args.duckdb_memory_limit,
             duckdb_threads=args.duckdb_threads,

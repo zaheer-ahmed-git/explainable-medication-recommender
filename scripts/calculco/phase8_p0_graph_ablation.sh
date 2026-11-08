@@ -100,6 +100,7 @@ echo "DUCKDB_MEMORY_LIMIT=${DUCKDB_MEMORY_LIMIT:-}"
 : "${MILESTONE8B_FROZEN_SELECTION:=0}"
 : "${MILESTONE8B_CONDITION_TOKENS:=}"
 : "${MILESTONE8B_ALLOW_DEVELOPMENT_MILESTONE7_REFERENCE:=1}"
+: "${PHASE8_P0_FEATURE_VERSION:=temporal-features-v2}"
 
 args=(
   --features-root "$features_root"
@@ -116,6 +117,7 @@ args=(
   --milestone8-suitability-report "$milestone8_suitability_report"
   --mode "$MILESTONE8B_MODE"
   --top-k "$MILESTONE8B_TOP_K"
+  --feature-version "$PHASE8_P0_FEATURE_VERSION"
 )
 if [[ "$MILESTONE8B_FROZEN_SELECTION" == "1" ]]; then
   args+=(--frozen-selection)

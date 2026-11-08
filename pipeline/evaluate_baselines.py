@@ -6,7 +6,7 @@ import argparse
 import json
 import math
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Sequence
@@ -14,6 +14,7 @@ from typing import Any, Sequence
 import duckdb
 import numpy as np
 
+from pipeline.artifact_metadata import infer_consistent_version
 from pipeline.config import (
     BASELINE_VERSION,
     DUCKDB_MEMORY_LIMIT,
@@ -80,7 +81,7 @@ class BaselineEvaluationConfig:
     baselines: tuple[str, ...] = NON_LEARNED_BASELINES
     evaluation_version: str = EVALUATION_VERSION
     baseline_version: str = BASELINE_VERSION
-    feature_version: str = FEATURE_VERSION
+    feature_version: str | None = None
     label_version: str = LABEL_VERSION
     split_version: str = SPLIT_VERSION
     min_subgroup_positive_groups: int = MIN_SUBGROUP_POSITIVE_GROUPS
@@ -150,6 +151,20 @@ def missing_input_tables(config: BaselineEvaluationConfig) -> list[dict[str, str
         for table_name, path in required
         if not path.exists()
     ]
+
+
+def resolve_feature_version(
+    config: BaselineEvaluationConfig,
+) -> BaselineEvaluationConfig:
+    """Return config stamped from feature and ranking-table inputs."""
+
+    version = infer_consistent_version(
+        (config.patient_stay_features_path, config.patient_condition_medication_path),
+        column_name="feature_version",
+        declared_version=config.feature_version,
+        fallback_version=FEATURE_VERSION,
+    )
+    return replace(config, feature_version=version)
 
 
 def parse_top_k(raw: str) -> tuple[int, ...]:
@@ -648,7 +663,7 @@ def base_manifest(
         "versions": {
             "baseline_version": config.baseline_version,
             "evaluation_version": config.evaluation_version,
-            "feature_version": config.feature_version,
+            "feature_version": config.feature_version or FEATURE_VERSION,
             "label_version": config.label_version,
             "split_version": config.split_version,
         },
@@ -1404,6 +1419,18 @@ def build_baseline_evaluation(
         write_json(config.evaluation_report_path, manifest)
         return manifest
 
+    try:
+        config = resolve_feature_version(config)
+    except ValueError as error:
+        manifest = base_manifest(
+            config,
+            status="failed_feature_version_mismatch",
+            generated_at=generated_at,
+        )
+        manifest["reason"] = safe_error_message(error)
+        write_json(config.evaluation_report_path, manifest)
+        return manifest
+
     with duckdb.connect(database=":memory:") as connection:
         configure_connection(config, connection)
         coverage_report = build_coverage_report(
@@ -1633,6 +1660,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Seed used for deterministic random baseline scores.",
     )
     parser.add_argument(
+        "--feature-version",
+        default=None,
+        help=(
+            "Optional expected feature version. By default it is inferred from "
+            "the input artifacts."
+        ),
+    )
+    parser.add_argument(
         "--duckdb-temp-dir",
         type=Path,
         default=DUCKDB_TEMP_DIR,
@@ -1671,6 +1706,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 seed=args.seed,
                 condition_tokens=parse_repeated_csv(args.condition_token),
                 baselines=baselines,
+                feature_version=args.feature_version,
                 duckdb_temp_directory=args.duckdb_temp_dir,
                 duckdb_memory_limit=args.duckdb_memory_limit,
                 duckdb_threads=args.duckdb_threads,
@@ -1690,7 +1726,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "blocked_final_requires_frozen_selection",
     }:
         return 2
-    return 1 if manifest["status"] == "failed" else 0
+    return 0 if manifest["status"] == "completed" else 1
 
 
 if __name__ == "__main__":

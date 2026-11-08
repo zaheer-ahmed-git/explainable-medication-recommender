@@ -320,6 +320,7 @@ def configure_duckdb_connection(
     *,
     temp_directory: Path | str | None = None,
     memory_limit: str | None = None,
+    max_temp_directory_size: str | None = None,
     threads: int | None = None,
     preserve_insertion_order: bool = False,
 ) -> None:
@@ -332,6 +333,12 @@ def configure_duckdb_connection(
     Relaxing insertion order, enabling a spill ``temp_directory`` (DuckDB does not
     read the OS ``TMPDIR`` itself), and bounding memory/threads make the same
     query stream and offload to disk instead of dying.
+
+    ``max_temp_directory_size`` bounds how much DuckDB may spill to
+    ``temp_directory``. DuckDB otherwise defaults it to ~90% of the free space on
+    that drive, so a small node-local ``/tmp`` silently caps spilling and raises
+    ``failed to offload data block ... (X GiB/X GiB used)`` on larger-than-memory
+    joins. Set it explicitly when spilling to a larger volume.
     """
 
     connection.execute("PRAGMA enable_progress_bar=false")
@@ -345,6 +352,10 @@ def configure_duckdb_connection(
         connection.execute(f"SET temp_directory = {sql_string(temp_path)}")
     if memory_limit:
         connection.execute(f"SET memory_limit = {sql_string(memory_limit)}")
+    if max_temp_directory_size:
+        connection.execute(
+            f"SET max_temp_directory_size = {sql_string(max_temp_directory_size)}"
+        )
     if threads and threads > 0:
         connection.execute(f"SET threads = {int(threads)}")
 

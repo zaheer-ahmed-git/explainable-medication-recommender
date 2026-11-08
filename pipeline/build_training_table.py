@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Sequence
 
 import duckdb
 
+from pipeline.artifact_metadata import infer_consistent_version
 from pipeline.config import (
     COHORT_VERSION,
     DEFAULT_MODELING_PARAMETERS,
@@ -44,7 +45,12 @@ SCHEMA_VERSION = "milestone6-training-table-manifest-v1"
 DEFAULT_MANIFEST_PATH = REPORTS_ROOT / "training_table_manifest.json"
 CANDIDATE_TOKEN_STRATEGIES = ("rxnorm_or_atc", "atc3_or_rxnorm")
 
-REQUIRED_HARMONIZED_TABLES = ("conditions", "medications")
+REQUIRED_HARMONIZED_TABLES = (
+    "cohort_stays",
+    "demographics",
+    "conditions",
+    "medications",
+)
 REQUIRED_FEATURE_TABLES = ("cohort_decision_times", "patient_stay_features")
 
 
@@ -67,7 +73,7 @@ class TrainingTableBuildConfig:
     cohort_version: str = COHORT_VERSION
     harmonization_version: str = HARMONIZATION_VERSION
     medication_mapping_version: str = MEDICATION_MAPPING_VERSION
-    feature_version: str = FEATURE_VERSION
+    feature_version: str | None = None
     label_version: str = LABEL_VERSION
     split_version: str = SPLIT_VERSION
     candidate_token_strategy: str = str(
@@ -88,6 +94,10 @@ class TrainingTableBuildConfig:
     @property
     def split_manifest_path(self) -> Path:
         return self.training_root / "split_manifest.parquet"
+
+    @property
+    def model_ready_cohort_stays_path(self) -> Path:
+        return self.training_root / "cohort_stays.parquet"
 
     @property
     def candidate_catalog_path(self) -> Path:
@@ -161,6 +171,20 @@ def validate_config(config: TrainingTableBuildConfig) -> None:
             "candidate_token_strategy must be one of "
             + ", ".join(CANDIDATE_TOKEN_STRATEGIES)
         )
+
+
+def resolve_feature_version(
+    config: TrainingTableBuildConfig,
+) -> TrainingTableBuildConfig:
+    """Return config stamped from the upstream feature artifacts."""
+
+    version = infer_consistent_version(
+        (config.cohort_decision_times_path, config.patient_stay_features_path),
+        column_name="feature_version",
+        declared_version=config.feature_version,
+        fallback_version=FEATURE_VERSION,
+    )
+    return replace(config, feature_version=version)
 
 
 def input_join_integrity_query(config: TrainingTableBuildConfig) -> str:
@@ -349,10 +373,73 @@ SELECT
     split,
     COUNT(*) AS stay_count,
     {sql_string(config.cohort_version)} AS cohort_version,
+    {sql_string(config.feature_version or FEATURE_VERSION)} AS feature_version,
     {sql_string(config.split_version)} AS split_version,
     {config.split_seed} AS split_seed
 FROM {parquet_scan(decision)}
 GROUP BY source, patient_uid, split
+"""
+
+
+def model_ready_cohort_stays_query(
+    config: TrainingTableBuildConfig,
+    *,
+    generated_at: str,
+) -> str:
+    """Build one model-ready cohort row per harmonized stay."""
+
+    cohort = harmonized_path(config, "cohort_stays")
+    demographics = harmonized_path(config, "demographics")
+    decision = config.cohort_decision_times_path
+    return f"""
+SELECT
+    c.source,
+    c.source_version,
+    c.patient_uid,
+    c.encounter_uid,
+    c.stay_uid,
+    c.source_patient_id,
+    c.source_encounter_id,
+    c.source_stay_id,
+    demo.age_years,
+    demo.age_topcoded,
+    demo.sex,
+    demo.race_or_ethnicity,
+    demo.hospital_id,
+    demo.ward_id,
+    demo.admission_type,
+    demo.admission_source,
+    demo.unit_type,
+    demo.last_unit_type,
+    demo.stay_type,
+    demo.stay_sequence,
+    d.stay_start_timestamp,
+    d.stay_end_timestamp,
+    d.stay_start_offset_minutes,
+    d.stay_end_offset_minutes,
+    d.stay_end_hours_from_admit,
+    d.los_hours,
+    d.split,
+    d.t0_hours_from_admit,
+    d.prediction_time_hours_from_admit,
+    d.label_window_end_hours_from_admit,
+    d.t0_timestamp,
+    d.prediction_timestamp,
+    d.label_window_end_timestamp,
+    d.eligibility_status,
+    d.primary_training_eligible,
+    d.cohort_version,
+    d.harmonization_version,
+    {sql_string(config.feature_version or FEATURE_VERSION)} AS feature_version,
+    d.split_version,
+    {sql_string(generated_at)} AS generated_at
+FROM {parquet_scan(cohort)} AS c
+INNER JOIN {parquet_scan(decision)} AS d
+    ON c.source = d.source
+    AND c.stay_uid = d.stay_uid
+LEFT JOIN {parquet_scan(demographics)} AS demo
+    ON c.source = demo.source
+    AND c.stay_uid = demo.stay_uid
 """
 
 
@@ -411,6 +498,7 @@ SELECT
     positive_train_stay_count,
     positive_train_event_count,
     {sql_string(config.medication_mapping_version)} AS medication_mapping_version,
+    {sql_string(config.feature_version or FEATURE_VERSION)} AS feature_version,
     {sql_string(config.label_version)} AS label_version,
     {sql_string(config.split_version)} AS split_version,
     {config.split_seed} AS split_seed,
@@ -485,7 +573,7 @@ SELECT
     d.label_window_end_hours_from_admit,
     {sql_string(config.cohort_version)} AS cohort_version,
     {sql_string(config.harmonization_version)} AS harmonization_version,
-    {sql_string(config.feature_version)} AS feature_version,
+    {sql_string(config.feature_version or FEATURE_VERSION)} AS feature_version,
     {sql_string(config.label_version)} AS label_version,
     {sql_string(config.split_version)} AS split_version,
     {config.split_seed} AS split_seed,
@@ -539,7 +627,7 @@ def base_manifest(
         "versions": {
             "cohort_version": config.cohort_version,
             "harmonization_version": config.harmonization_version,
-            "feature_version": config.feature_version,
+            "feature_version": config.feature_version or FEATURE_VERSION,
             "label_version": config.label_version,
             "split_version": config.split_version,
             "medication_mapping_version": config.medication_mapping_version,
@@ -590,6 +678,33 @@ SELECT
     COUNT(*) AS patient_count,
     SUM(CASE WHEN split_count > 1 THEN 1 ELSE 0 END) AS patients_with_multiple_splits
 FROM per_patient
+"""
+
+
+def model_ready_cohort_integrity_query(config: TrainingTableBuildConfig) -> str:
+    """Return aggregate uniqueness and required-field checks for cohort rows."""
+
+    cohort = config.model_ready_cohort_stays_path
+    return f"""
+WITH per_stay AS (
+    SELECT source, stay_uid, COUNT(*) AS row_count
+    FROM {parquet_scan(cohort)}
+    GROUP BY source, stay_uid
+)
+SELECT
+    (SELECT COUNT(*) FROM {parquet_scan(cohort)}) AS row_count,
+    SUM(CASE WHEN row_count > 1 THEN 1 ELSE 0 END) AS duplicate_stay_count,
+    (SELECT COUNT(*)
+     FROM {parquet_scan(cohort)}
+     WHERE source IS NULL
+        OR stay_uid IS NULL
+        OR split IS NULL
+        OR t0_hours_from_admit IS NULL
+        OR prediction_time_hours_from_admit IS NULL
+        OR label_window_end_hours_from_admit IS NULL
+        OR eligibility_status IS NULL
+        OR feature_version IS NULL) AS missing_required_field_row_count
+FROM per_stay
 """
 
 
@@ -703,6 +818,10 @@ ORDER BY source, split
         connection,
         split_integrity_query(config),
     )[0]
+    manifest["model_ready_cohort_integrity"] = fetch_dict_rows(
+        connection,
+        model_ready_cohort_integrity_query(config),
+    )[0]
     manifest["candidate_catalog_counts"] = fetch_dict_rows(
         connection,
         f"""
@@ -721,7 +840,9 @@ SELECT
     split,
     COUNT(*) AS row_count,
     SUM(CASE WHEN label_prescribed THEN 1 ELSE 0 END) AS positive_row_count,
-    COUNT(DISTINCT ranking_group_id) AS ranking_group_count
+    COUNT(DISTINCT ranking_group_id) AS ranking_group_count,
+    COUNT(DISTINCT CASE WHEN label_prescribed THEN ranking_group_id END)
+        AS positive_ranking_group_count
 FROM {parquet_scan(table)}
 GROUP BY source, split
 ORDER BY source, split
@@ -739,6 +860,24 @@ ORDER BY source, split
         connection,
         out_of_catalog_positive_query(config),
     )
+    external_rows = [
+        row
+        for row in manifest["training_rows_by_source_split"]
+        if row["source"] == "eicu_crd" and row["split"] == "external"
+    ]
+    positive_groups = sum(
+        int(row.get("positive_ranking_group_count") or 0) for row in external_rows
+    )
+    manifest["external_validation"] = {
+        "source": "eicu_crd",
+        "status": (
+            "externally_evaluable"
+            if positive_groups > 0
+            else "coverage_only_no_in_catalog_positive_groups"
+        ),
+        "positive_ranking_group_count": positive_groups,
+        "performance_claims_allowed": positive_groups > 0,
+    }
 
 
 def build_training_artifacts(
@@ -760,6 +899,18 @@ def build_training_artifacts(
         write_json(config.manifest_path, manifest)
         return manifest
 
+    try:
+        config = resolve_feature_version(config)
+    except ValueError as error:
+        manifest = base_manifest(
+            config,
+            status="failed_feature_version_mismatch",
+            generated_at=generated_at,
+        )
+        manifest["reason"] = safe_error_message(error)
+        write_json(config.manifest_path, manifest)
+        return manifest
+
     manifest = base_manifest(config, status="completed", generated_at=generated_at)
     tables: list[dict[str, Any]] = []
     with duckdb.connect(database=":memory:") as connection:
@@ -775,6 +926,11 @@ def build_training_artifacts(
             return manifest
 
         build_specs = (
+            (
+                "cohort_stays",
+                model_ready_cohort_stays_query(config, generated_at=generated_at),
+                config.model_ready_cohort_stays_path,
+            ),
             (
                 "split_manifest",
                 split_manifest_query(config),
@@ -814,6 +970,13 @@ def build_training_artifacts(
                 > 0
             ):
                 manifest["status"] = "failed_split_integrity"
+            cohort_integrity = manifest["model_ready_cohort_integrity"]
+            if (
+                int(cohort_integrity.get("duplicate_stay_count") or 0) > 0
+                or int(cohort_integrity.get("missing_required_field_row_count") or 0)
+                > 0
+            ):
+                manifest["status"] = "failed_model_ready_cohort_integrity"
 
     manifest["tables"] = tables
     write_json(config.manifest_path, manifest)
@@ -886,6 +1049,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Seed recorded with split artifacts.",
     )
     parser.add_argument(
+        "--feature-version",
+        default=None,
+        help=(
+            "Optional expected feature version. By default it is inferred from "
+            "the input feature artifacts."
+        ),
+    )
+    parser.add_argument(
         "--duckdb-temp-dir",
         type=Path,
         default=DUCKDB_TEMP_DIR,
@@ -918,6 +1089,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             prediction_offset_hours=args.prediction_offset_hours,
             label_window_hours=args.label_window_hours,
             split_seed=args.split_seed,
+            feature_version=args.feature_version,
             duckdb_temp_directory=args.duckdb_temp_dir,
             duckdb_memory_limit=args.duckdb_memory_limit,
             duckdb_threads=args.duckdb_threads,
@@ -930,7 +1102,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if manifest["status"] == "failed_missing_inputs":
         return 2
-    return 1 if manifest["status"] == "failed" else 0
+    return 0 if manifest["status"] == "completed" else 1
 
 
 if __name__ == "__main__":

@@ -6,13 +6,14 @@ import argparse
 import json
 from collections import defaultdict, deque
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import duckdb
 
+from pipeline.artifact_metadata import infer_consistent_version
 from pipeline.config import (
     DUCKDB_MEMORY_LIMIT,
     DUCKDB_TEMP_DIR,
@@ -77,7 +78,7 @@ class GraphSuitabilityConfig:
     seed: int = RANDOM_SEED
     graph_version: str = GRAPH_VERSION
     report_version: str = MILESTONE8_REPORT_VERSION
-    feature_version: str = FEATURE_VERSION
+    feature_version: str | None = None
     label_version: str = LABEL_VERSION
     split_version: str = SPLIT_VERSION
     duckdb_temp_directory: Path | None = DUCKDB_TEMP_DIR
@@ -140,6 +141,20 @@ def missing_input_tables(config: GraphSuitabilityConfig) -> list[dict[str, str]]
     ]
 
 
+def resolve_feature_version(
+    config: GraphSuitabilityConfig,
+) -> GraphSuitabilityConfig:
+    """Return config stamped from sequence and ranking-table inputs."""
+
+    version = infer_consistent_version(
+        (config.event_sequences_path, config.patient_condition_medication_path),
+        column_name="feature_version",
+        declared_version=config.feature_version,
+        fallback_version=FEATURE_VERSION,
+    )
+    return replace(config, feature_version=version)
+
+
 def schema_report_shell(
     config: GraphSuitabilityConfig,
     *,
@@ -199,7 +214,7 @@ def schema_report_shell(
         "versions": {
             "graph_version": config.graph_version,
             "report_version": config.report_version,
-            "feature_version": config.feature_version,
+            "feature_version": config.feature_version or FEATURE_VERSION,
             "label_version": config.label_version,
             "split_version": config.split_version,
         },
@@ -321,7 +336,7 @@ SELECT
     'mimiciv' AS fit_source,
     'train' AS fit_split,
     {sql_string(config.graph_version)} AS graph_version,
-    {sql_string(config.feature_version)} AS feature_version,
+    {sql_string(config.feature_version or FEATURE_VERSION)} AS feature_version,
     {sql_string(config.label_version)} AS label_version,
     {sql_string(config.split_version)} AS split_version,
     {sql_string(generated_at)} AS generated_at
@@ -733,6 +748,41 @@ def failed_reports(
     return suitability
 
 
+def failed_feature_version_report(
+    config: GraphSuitabilityConfig,
+    *,
+    generated_at: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Write aggregate-only reports for inconsistent provenance stamps."""
+
+    schema = schema_report_shell(config, generated_at=generated_at)
+    schema.update(status="failed_feature_version_mismatch", reason=reason)
+    suitability = {
+        "schema_version": config.report_version,
+        "status": "failed_feature_version_mismatch",
+        "generated_at": generated_at,
+        "reason": reason,
+        "data_safety": {
+            "report_contains_patient_rows": False,
+            "report_contains_row_samples": False,
+        },
+    }
+    ablation = build_ablation_plan(
+        config,
+        generated_at=generated_at,
+        gate={
+            "result": "blocked_feature_version_mismatch",
+            "next_action": "Rebuild inputs with one consistent feature version.",
+        },
+    )
+    ablation["status"] = "blocked_feature_version_mismatch"
+    write_json(config.schema_report_path, schema)
+    write_json(config.suitability_report_path, suitability)
+    write_json(config.ablation_plan_path, ablation)
+    return suitability
+
+
 def build_graph_suitability(config: GraphSuitabilityConfig) -> dict[str, Any]:
     """Build Milestone 8 graph-readiness artifacts and aggregate reports."""
 
@@ -740,6 +790,15 @@ def build_graph_suitability(config: GraphSuitabilityConfig) -> dict[str, Any]:
     missing = missing_input_tables(config)
     if missing:
         return failed_reports(config, generated_at=generated_at, missing=missing)
+
+    try:
+        config = resolve_feature_version(config)
+    except ValueError as error:
+        return failed_feature_version_report(
+            config,
+            generated_at=generated_at,
+            reason=safe_error_message(error),
+        )
 
     schema = schema_report_shell(config, generated_at=generated_at)
     config.graph_root.mkdir(parents=True, exist_ok=True)
@@ -801,7 +860,7 @@ def build_graph_suitability(config: GraphSuitabilityConfig) -> dict[str, Any]:
                 "versions": {
                     "graph_version": config.graph_version,
                     "report_version": config.report_version,
-                    "feature_version": config.feature_version,
+                    "feature_version": config.feature_version or FEATURE_VERSION,
                     "label_version": config.label_version,
                     "split_version": config.split_version,
                 },
@@ -887,6 +946,14 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Output path for the aggregate Milestone 8B ablation plan.",
     )
     parser.add_argument(
+        "--feature-version",
+        default=None,
+        help=(
+            "Optional expected feature version. By default it is inferred from "
+            "the input artifacts."
+        ),
+    )
+    parser.add_argument(
         "--duckdb-temp-dir",
         type=Path,
         default=DUCKDB_TEMP_DIR,
@@ -918,6 +985,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             schema_report_path=args.schema_report,
             suitability_report_path=args.suitability_report,
             ablation_plan_path=args.ablation_plan,
+            feature_version=args.feature_version,
             duckdb_temp_directory=args.duckdb_temp_dir,
             duckdb_memory_limit=args.duckdb_memory_limit,
             duckdb_threads=args.duckdb_threads,
@@ -930,7 +998,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if report["status"] == "failed_missing_inputs":
         return 2
-    return 1 if report["status"] == "failed" else 0
+    return 0 if report["status"] == "completed" else 1
 
 
 if __name__ == "__main__":
